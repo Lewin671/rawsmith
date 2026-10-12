@@ -1,0 +1,15 @@
+/target
+# Photos and anything rendered from them never belong in this repository.
+*.ARW
+*.arw
+*.dng
+*.DNG
+*.jpg
+*.jpeg
+*.JPG
+*.png
+*.tif
+*.tiff
+*.rawsmith.json
+/local/
+.DS_Store
