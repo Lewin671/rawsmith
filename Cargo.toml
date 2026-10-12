@@ -1,0 +1,21 @@
+[package]
+name = "rawsmith"
+version = "0.1.0"
+edition = "2021"
+description = "AI-friendly RAW developing CLI: decode, develop and grade photos from a reproducible parameter file"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+jpeg-encoder = "0.6"
+png = "0.17"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+debug = 1
+
+[profile.dev]
+opt-level = 2
