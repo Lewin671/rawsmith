@@ -29,12 +29,7 @@ fn cubic(image: &Image, channel: usize, x: f32, y: f32) -> f32 {
     let (fx, fy) = (x - x0, y - y0);
     let weights = |t: f32| {
         let (t2, t3) = (t * t, t * t * t);
-        [
-            -0.5 * t3 + t2 - 0.5 * t,
-            1.5 * t3 - 2.5 * t2 + 1.0,
-            -1.5 * t3 + 2.0 * t2 + 0.5 * t,
-            0.5 * t3 - 0.5 * t2,
-        ]
+        [-0.5 * t3 + t2 - 0.5 * t, 1.5 * t3 - 2.5 * t2 + 1.0, -1.5 * t3 + 2.0 * t2 + 0.5 * t, 0.5 * t3 - 0.5 * t2]
     };
     let (wx, wy) = (weights(fx), weights(fy));
     let mut sum = 0.0;
@@ -76,15 +71,11 @@ pub fn correct(image: &Image, tables: &LensTables) -> Image {
     // point that reaches furthest out in the source lands on the source edge.
     let edge_radius = cx.min(cy) / half_diagonal;
     let green = scale(None, 1.0);
-    let fill = (0..=64)
-        .map(|i| green.at(edge_radius + (1.0 - edge_radius) * i as f32 / 64.0))
-        .fold(f32::MIN, f32::max)
+    let fill = (0..=64).map(|i| green.at(edge_radius + (1.0 - edge_radius) * i as f32 / 64.0)).fold(f32::MIN, f32::max)
         * crate::tune("lens_fill", 1.0);
     let scales = [scale(Some(&tables.ca_red), fill), scale(None, fill), scale(Some(&tables.ca_blue), fill)];
     // Light falloff the lens caused, as a gain that undoes it.
-    let gain = Radial(
-        tables.vignetting.iter().map(|&v| ((v as f32 / 8192.0 - 1.0).exp2() - 0.5).exp2()).collect(),
-    );
+    let gain = Radial(tables.vignetting.iter().map(|&v| ((v as f32 / 8192.0 - 1.0).exp2() - 0.5).exp2()).collect());
 
     let mut out = Image::new(w, h);
     out.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
@@ -114,7 +105,8 @@ mod tests {
         for (i, p) in image.data.iter_mut().enumerate() {
             *p = [(i % 7) as f32, (i % 5) as f32, (i % 3) as f32];
         }
-        let tables = LensTables { distortion: vec![0; 16], ca_red: vec![0; 16], ca_blue: vec![0; 16], vignetting: vec![0; 16] };
+        let tables =
+            LensTables { distortion: vec![0; 16], ca_red: vec![0; 16], ca_blue: vec![0; 16], vignetting: vec![0; 16] };
         let out = correct(&image, &tables);
         for (a, b) in image.data.iter().zip(&out.data) {
             for c in 0..3 {
@@ -133,12 +125,21 @@ mod tests {
         }
         let ramp: Vec<i16> = (0..16).map(|i| -(i * 40)).collect();
         let vignetting: Vec<i16> = (0..16).map(|i| i * 800).collect();
-        let out = correct(&image, &LensTables { distortion: ramp, ca_red: vec![0; 16], ca_blue: vec![0; 16], vignetting });
+        let out =
+            correct(&image, &LensTables { distortion: ramp, ca_red: vec![0; 16], ca_blue: vec![0; 16], vignetting });
         // Centre untouched; the right edge now shows content from further in, brighter.
         assert!((out.at(100, 50)[0] - 100.0).abs() < 1.5);
         let source_x = 99.5 + (190.0 - 99.5) * 0.985;
         assert!(out.at(190, 50)[0] / source_x > 1.05);
-        let flat = correct(&image, &LensTables { distortion: (0..16).map(|i| -(i * 40)).collect(), ca_red: vec![0; 16], ca_blue: vec![0; 16], vignetting: vec![0; 16] });
+        let flat = correct(
+            &image,
+            &LensTables {
+                distortion: (0..16).map(|i| -(i * 40)).collect(),
+                ca_red: vec![0; 16],
+                ca_blue: vec![0; 16],
+                vignetting: vec![0; 16],
+            },
+        );
         assert!(flat.at(190, 50)[0] < 189.5);
     }
 }

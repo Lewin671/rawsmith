@@ -54,7 +54,8 @@ impl Drop for Fixture {
 fn run(args: &[&str]) -> (bool, Value) {
     let out = Command::new(env!("CARGO_BIN_EXE_rawsmith")).args(args).output().unwrap();
     let text = if out.status.success() { &out.stdout } else { &out.stderr };
-    let value = serde_json::from_slice(text).unwrap_or_else(|_| panic!("output is not JSON: {}", String::from_utf8_lossy(text)));
+    let value = serde_json::from_slice(text)
+        .unwrap_or_else(|_| panic!("output is not JSON: {}", String::from_utf8_lossy(text)));
     (out.status.success(), value)
 }
 
@@ -120,7 +121,10 @@ fn edits_change_the_picture_in_the_expected_direction() {
     assert!(chroma(&render(&["saturation=-100"])) < 0.5);
     // Warmer white balance pushes neutrals towards yellow (+b).
     let warm = render(&["temperature=9000"]);
-    assert!(warm["neutral_cast"][1].as_f64().unwrap() > base["neutral_cast"][1].as_f64().unwrap() + 1.0 || chroma(&warm) > chroma(&base));
+    assert!(
+        warm["neutral_cast"][1].as_f64().unwrap() > base["neutral_cast"][1].as_f64().unwrap() + 1.0
+            || chroma(&warm) > chroma(&base)
+    );
 }
 
 #[test]
@@ -134,8 +138,8 @@ fn edit_saves_a_sparse_recipe_that_render_then_uses() {
     assert!(saved.get("contrast").is_none(), "defaults are not stored");
     assert!(saved["rawsmith"].is_string());
 
-    // Signed values are relative; the saved recipe is what render uses.
-    let v = ok(&["edit", s(&f.raw), "--set", "exposure=+0.25", "-o", s(&f.path("p.jpg")), "--size", "160"]);
+    // += changes the saved value; the saved recipe is what render uses.
+    let v = ok(&["edit", s(&f.raw), "--set", "exposure+=0.25", "-o", s(&f.path("p.jpg")), "--size", "160"]);
     assert_eq!(v["recipe"]["exposure"], 0.75);
     assert!(f.path("p.jpg").exists());
     assert_eq!(ok(&["render", s(&f.raw)])["recipe"]["exposure"], 0.75);

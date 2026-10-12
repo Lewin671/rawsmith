@@ -107,7 +107,11 @@ fn denoise(image: &mut Image, strength: f32) {
     }
     let encoded: Vec<[f32; 3]> = image.data.par_iter().map(|p| p.map(|v| v.max(0.0).sqrt())).collect();
     let (w, h) = (image.width, image.height);
-    let plane = |f: &(dyn Fn(&[f32; 3]) -> f32 + Sync)| Plane { width: w, height: h, data: encoded.par_iter().map(f).collect() };
+    let plane = |f: &(dyn Fn(&[f32; 3]) -> f32 + Sync)| Plane {
+        width: w,
+        height: h,
+        data: encoded.par_iter().map(f).collect(),
+    };
     let y = plane(&|p| (p[0] + 2.0 * p[1] + p[2]) * 0.25);
     let cr = plane(&|p| p[0] - p[1]);
     let cb = plane(&|p| p[2] - p[1]);
@@ -143,7 +147,11 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
     // What the final picture's long edge will be at full resolution.
     let crop = &params.crop;
     let (cw, ch) = ((crop.right - crop.left) as f32, (crop.bottom - crop.top) as f32);
-    let upright = if matches!(raw.meta.orientation, 6 | 8) { (mosaic.height, mosaic.width) } else { (mosaic.width, mosaic.height) };
+    let upright = if matches!(raw.meta.orientation, 6 | 8) {
+        (mosaic.height, mosaic.width)
+    } else {
+        (mosaic.width, mosaic.height)
+    };
     let full_edge = (upright.0 as f32 * cw).max(upright.1 as f32 * ch);
     // Half-resolution demosaicing is exact (no interpolation) and four times
     // cheaper, so use it whenever the output is small enough.
@@ -177,7 +185,10 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
         let long = image.width.max(image.height);
         if long > edge {
             let k = edge as f32 / long as f32;
-            image = image.resized(((image.width as f32 * k).round() as usize).max(1), ((image.height as f32 * k).round() as usize).max(1));
+            image = image.resized(
+                ((image.width as f32 * k).round() as usize).max(1),
+                ((image.height as f32 * k).round() as usize).max(1),
+            );
             scale *= k;
         }
     }
@@ -207,7 +218,7 @@ fn sharpen(image: &mut Image, amount: f32) {
                 }
             }
             // Never brighter or darker than the neighbours: edges steepen but cannot halo.
-            let slack = 0.04 * (hi - lo);
+            let slack = 0.03 * (hi - lo);
             let target = (y.data[i] + amount * detail).clamp(lo - slack, hi + slack);
             let delta = target - y.data[i];
             *p = [p[0] + delta, p[1] + delta, p[2] + delta];

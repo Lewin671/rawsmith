@@ -1,4 +1,4 @@
-//! Sony ARW reader for uncompressed raw data.
+//! Sony ARW reader for uncompressed and lossy-compressed raw data.
 //!
 //! An ARW is a TIFF container. IFD0 carries camera metadata and a preview
 //! JPEG, its SubIFD holds the sensor mosaic together with the levels, white
@@ -109,6 +109,59 @@ fn metadata(tiff: &Tiff, ifd0: &Ifd) -> Metadata {
     meta
 }
 
+/// Sony's lossy compression stores 11-bit values through a piecewise-linear
+/// curve whose four knee points are in the file. Returns the lookup table
+/// from stored value to linear sensor value.
+fn tone_curve(points: &[i64]) -> Vec<u16> {
+    let mut knees = [0usize, 0, 0, 0, 0, 4095];
+    for (knee, &p) in knees[1..5].iter_mut().zip(points) {
+        *knee = ((p >> 2) & 0xfff) as usize;
+    }
+    let mut curve: Vec<u16> = (0..=0x4000u32).map(|v| v.min(0x3fff) as u16).collect();
+    for i in 0..5 {
+        for j in knees[i] + 1..=knees[i + 1].min(4095) {
+            curve[j] = curve[j - 1].saturating_add(1 << i);
+        }
+    }
+    curve
+}
+
+/// Decodes Sony's lossy "compressed RAW": each row is split into 32-pixel
+/// groups, two interleaved colours of 16 samples each. A 16-byte block holds
+/// one colour's 11-bit maximum and minimum, their positions, and the other
+/// 14 samples as 7-bit offsets from the minimum, scaled to span the range.
+fn decode_compressed(bytes: &[u8], width: usize, curve: &[u16]) -> Vec<u16> {
+    let mut out = vec![0u16; bytes.len()];
+    for (row, packed) in out.chunks_exact_mut(width).zip(bytes.chunks_exact(width)) {
+        for (block, chunk) in packed.as_chunks::<16>().0.iter().enumerate() {
+            let bits = u128::from_le_bytes(*chunk);
+            let field = |at: u32, len: u32| ((bits >> at) & ((1 << len) - 1)) as u32;
+            let (max, min) = (field(0, 11), field(11, 11));
+            let (at_max, at_min) = (field(22, 4), field(26, 4));
+            let mut shift = 0;
+            while shift < 4 && (0x80 << shift) <= max.saturating_sub(min) {
+                shift += 1;
+            }
+            let mut at = 30;
+            // Blocks alternate between the row's two colours.
+            let first = (block / 2) * 32 + block % 2;
+            for i in 0..16 {
+                let value = if i == at_max {
+                    max
+                } else if i == at_min {
+                    min
+                } else {
+                    let v = ((field(at, 7) << shift) + min).min(0x7ff);
+                    at += 7;
+                    v
+                };
+                row[first + i as usize * 2] = curve[(value << 1) as usize];
+            }
+        }
+    }
+    out
+}
+
 /// Finds the largest JPEG stream referenced from the top-level IFD chain.
 fn embedded_jpeg(tiff: &Tiff, first: u32) -> Option<(usize, usize)> {
     let mut best: Option<(usize, usize)> = None;
@@ -121,7 +174,7 @@ fn embedded_jpeg(tiff: &Tiff, first: u32) -> Option<(usize, usize)> {
         if let (Some(offset), Some(len)) = (tiff.int(&ifd, 0x0201), tiff.int(&ifd, 0x0202)) {
             let (offset, len) = (offset as usize, len as usize);
             let valid = offset.checked_add(len).is_some_and(|end| end <= tiff.data.len());
-            if valid && best.map_or(true, |(_, l)| len > l) {
+            if valid && best.is_none_or(|(_, l)| len > l) {
                 best = Some((offset, len));
             }
         }
@@ -144,33 +197,38 @@ pub fn decode(file: &[u8]) -> Result<RawImage> {
         .find(|ifd| tiff.int(ifd, 0x0106) == Some(32803))
         .ok_or_else(|| Error::Format("no raw image data found in this file".into()))?;
 
-    let need = |tag: u16, name: &str| {
-        tiff.int(&raw, tag).ok_or_else(|| Error::Format(format!("raw image is missing {name}")))
-    };
+    let need =
+        |tag: u16, name: &str| tiff.int(&raw, tag).ok_or_else(|| Error::Format(format!("raw image is missing {name}")));
     let width = need(0x0100, "its width")? as usize;
     let height = need(0x0101, "its height")? as usize;
     let compression = need(0x0103, "its compression type")?;
     let bits = need(0x0102, "its bit depth")?;
-    if compression == SONY_RAW_COMPRESSED {
-        return Err(Error::Unsupported(
-            "compressed ARW is not supported yet; shoot or convert to uncompressed RAW".into(),
-        ));
-    }
-    if compression != 1 || !(12..=16).contains(&bits) {
-        return Err(Error::Unsupported(format!(
-            "raw encoding (compression {compression}, {bits} bits) is not supported"
-        )));
-    }
     let samples = width
         .checked_mul(height)
         .filter(|&n| n > 0 && n <= 400_000_000)
         .ok_or_else(|| Error::Format(format!("implausible raw size {width}x{height}")))?;
     let strip = need(0x0111, "its data offset")? as usize;
-    let bytes = strip
-        .checked_add(samples * 2)
-        .and_then(|end| file.get(strip..end))
-        .ok_or_else(|| Error::Format("raw data extends past the end of the file".into()))?;
-    let data: Vec<u16> = bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+    let strip_bytes = |len: usize| {
+        strip
+            .checked_add(len)
+            .and_then(|end| file.get(strip..end))
+            .ok_or_else(|| Error::Format("raw data extends past the end of the file".into()))
+    };
+    let data: Vec<u16> = match compression {
+        1 if (12..=16).contains(&bits) => {
+            strip_bytes(samples * 2)?.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b)).collect()
+        }
+        SONY_RAW_COMPRESSED if width.is_multiple_of(32) => {
+            let curve = tone_curve(&tiff.ints(&raw, 0x7010, 4).unwrap_or_default());
+            decode_compressed(strip_bytes(samples)?, width, &curve)
+        }
+        _ => {
+            return Err(Error::Unsupported(format!(
+                "raw encoding (compression {compression}, {bits} bits, width {width}) is not supported; \
+                 uncompressed and lossy-compressed ARW are"
+            )))
+        }
+    };
 
     let cfa = match tiff.ints(&raw, 0x828e, 4) {
         Some(p) if p.len() == 4 && p.iter().all(|&c| (0..=2).contains(&c)) => {
@@ -199,7 +257,11 @@ pub fn decode(file: &[u8]) -> Result<RawImage> {
             let c = Crop { x: o[0] as usize, y: o[1] as usize, width: s[0] as usize, height: s[1] as usize };
             let fits = c.width > 0 && c.height > 0 && c.x + c.width <= width && c.y + c.height <= height;
             // Keep the Bayer phase: an odd origin would shift the CFA tile.
-            if fits && c.x % 2 == 0 && c.y % 2 == 0 { c } else { full }
+            if fits && c.x.is_multiple_of(2) && c.y.is_multiple_of(2) {
+                c
+            } else {
+                full
+            }
         }
         _ => full,
     };

@@ -77,9 +77,8 @@ impl<'a> Tiff<'a> {
             let kind = self.u16_at(at + 2)?;
             let count = self.u32_at(at + 4)?;
             let Some(size) = type_size(kind) else { continue };
-            let total = size
-                .checked_mul(count as usize)
-                .ok_or_else(|| Error::Format("tag value size overflows".into()))?;
+            let total =
+                size.checked_mul(count as usize).ok_or_else(|| Error::Format("tag value size overflows".into()))?;
             let value_at = if total <= 4 { at + 8 } else { self.u32_at(at + 8)? as usize };
             // A tag whose value lies outside the file is dropped rather than
             // failing the whole parse; required tags are checked by callers.
@@ -125,11 +124,8 @@ impl<'a> Tiff<'a> {
         for i in 0..n {
             let num = self.u32_at(e.offset + i * 8).ok()?;
             let den = self.u32_at(e.offset + i * 8 + 4).ok()?;
-            let (num, den) = if e.kind == 10 {
-                (num as i32 as f64, den as i32 as f64)
-            } else {
-                (num as f64, den as f64)
-            };
+            let (num, den) =
+                if e.kind == 10 { (num as i32 as f64, den as i32 as f64) } else { (num as f64, den as f64) };
             out.push(if den == 0.0 { 0.0 } else { num / den });
         }
         Some(out)

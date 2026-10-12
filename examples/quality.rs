@@ -1,9 +1,11 @@
 //! Ground-truth quality benchmark on synthetic scenes. Needs no photographs:
 //!
-//!     cargo run --release --example quality
+//!     cargo run --release --example quality [-- --check]
 //!
 //! Prints one JSON document. Each section compares the pipeline's algorithm
 //! with a naive baseline against a known correct answer.
+
+#![allow(clippy::needless_range_loop)]
 
 use rawsmith::color::{self, Spaces};
 use rawsmith::demosaic::{self, Mosaic};
@@ -88,7 +90,13 @@ fn bilinear(m: &Mosaic) -> Image {
                     }
                     let (nx, ny) = (nx as usize, ny as usize);
                     let c = m.cfa[(ny & 1) * 2 + (nx & 1)] as usize;
-                    let w = if dx == 0 && dy == 0 { 4.0 } else if dx == 0 || dy == 0 { 2.0 } else { 1.0 };
+                    let w = if dx == 0 && dy == 0 {
+                        4.0
+                    } else if dx == 0 || dy == 0 {
+                        2.0
+                    } else {
+                        1.0
+                    };
                     sum[c] += m.data[ny * m.width + nx] * w;
                     weight[c] += w;
                 }
@@ -106,7 +114,15 @@ fn bilinear(m: &Mosaic) -> Image {
 fn mhc(m: &Mosaic) -> Image {
     let (w, h) = (m.width as i32, m.height as i32);
     let at = |x: i32, y: i32| {
-        let mirror = |i: i32, n: i32| if i < 0 { -i } else if i >= n { 2 * n - 2 - i } else { i };
+        let mirror = |i: i32, n: i32| {
+            if i < 0 {
+                -i
+            } else if i >= n {
+                2 * n - 2 - i
+            } else {
+                i
+            }
+        };
         m.data[(mirror(y, h) * w + mirror(x, w)) as usize]
     };
     let mut out = Image::new(m.width, m.height);
@@ -182,7 +198,11 @@ fn scenes() -> Vec<(&'static str, Image)> {
         .map(|_| {
             let level = 0.08 + rng.next() * 0.7;
             let tint = [0.7 + rng.next() * 0.6, 0.7 + rng.next() * 0.6, 0.7 + rng.next() * 0.6];
-            ([rng.next() * w as f32, rng.next() * h as f32], 6.0 + rng.next() * 40.0, tint.map(|t| (level * t).min(1.0)))
+            (
+                [rng.next() * w as f32, rng.next() * h as f32],
+                6.0 + rng.next() * 40.0,
+                tint.map(|t| (level * t).min(1.0)),
+            )
         })
         .collect();
     for y in 0..h {
@@ -216,7 +236,12 @@ fn scenes() -> Vec<(&'static str, Image)> {
         for x in 0..w {
             let (fx, fy) = (x as f32, y as f32);
             // Octaves from 64 px features down to 1.5 px.
-            let level: f32 = (0..6).map(|o| (noise(fx / 64.0 * 1.9f32.powi(o as i32), fy / 64.0 * 1.9f32.powi(o as i32), o) - 0.5) * 0.75f32.powi(o as i32)).sum();
+            let level: f32 = (0..6)
+                .map(|o| {
+                    (noise(fx / 64.0 * 1.9f32.powi(o as i32), fy / 64.0 * 1.9f32.powi(o as i32), o) - 0.5)
+                        * 0.75f32.powi(o as i32)
+                })
+                .sum();
             let level = (0.35 + 0.45 * level).clamp(0.02, 0.95);
             let warm = noise(fx / 90.0, fy / 90.0, 6) - 0.5;
             texture.data[y * w + x] = [level * (1.0 + 0.4 * warm), level, level * (1.0 - 0.4 * warm)];
@@ -301,7 +326,12 @@ fn colour_section() -> Value {
     let patches: Vec<[f32; 3]> = {
         let mut rng = Rng(42);
         let mut list = vec![[0.18; 3], [0.02; 3], [0.6; 3]];
-        list.extend((0..21).map(|_| color::apply(&spaces.srgb_to_work, [rng.next() * 0.6 + 0.02, rng.next() * 0.6 + 0.02, rng.next() * 0.6 + 0.02])));
+        list.extend((0..21).map(|_| {
+            color::apply(
+                &spaces.srgb_to_work,
+                [rng.next() * 0.6 + 0.02, rng.next() * 0.6 + 0.02, rng.next() * 0.6 + 0.02],
+            )
+        }));
         list
     };
     let (cell, columns) = (32, 6);
@@ -375,11 +405,21 @@ fn denoise_section() -> Value {
         c.map(|v| (v * 0.3 + (v * 0.3).sqrt() * 0.02 * noise[y * w + x]).max(0.0))
     });
     let raw = arw::decode(&file.to_bytes()).unwrap();
-    let render = |denoise: f64| pipeline::scene(&raw, &Params { denoise, lens_corrections: false, ..Params::default() }, Size::default()).unwrap().image;
+    let render = |denoise: f64| {
+        pipeline::scene(&raw, &Params { denoise, lens_corrections: false, ..Params::default() }, Size::default())
+            .unwrap()
+            .image
+    };
     let (noisy, smooth) = (render(0.0), render(40.0));
     // Chroma noise in a flat area, and the width of the edge between the halves.
     let chroma_noise = |image: &Image| {
-        let values: Vec<f32> = (40..h - 40).flat_map(|y| (40..w / 2 - 40).map(move |x| (x, y))).map(|(x, y)| { let p = image.at(x, y); p[0] - p[1] }).collect();
+        let values: Vec<f32> = (40..h - 40)
+            .flat_map(|y| (40..w / 2 - 40).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let p = image.at(x, y);
+                p[0] - p[1]
+            })
+            .collect();
         let mean = values.iter().sum::<f32>() / values.len() as f32;
         (values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32).sqrt()
     };
@@ -399,6 +439,34 @@ fn round(v: f64, places: i32) -> f64 {
     (v * k).round() / k
 }
 
+/// Minimum quality the pipeline must keep. `--check` fails when a change
+/// regresses below any of these.
+fn failures(report: &Value) -> Vec<String> {
+    let number = |path: &str| path.split('.').fold(report, |v, key| &v[key]).as_f64().unwrap_or(f64::NAN);
+    let floor = |path: &str, min: f64| {
+        (number(path).is_nan() || number(path) < min).then(|| format!("{path} = {} is below {min}", number(path)))
+    };
+    let ceiling = |path: &str, max: f64| {
+        (number(path).is_nan() || number(path) > max).then(|| format!("{path} = {} is above {max}", number(path)))
+    };
+    [
+        floor("demosaic.mean_psnr_gain_db.over_bilinear", 4.0),
+        floor("demosaic.mean_psnr_gain_db.over_malvar_he_cutler", 1.0),
+        ceiling("highlight_reconstruction.mean_relative_error.rawsmith", 0.03),
+        ceiling("colour_accuracy.mean_delta_e", 0.5),
+        ceiling("colour_accuracy.max_delta_e", 1.0),
+        ceiling("tone_and_sharpening.sharpen_overshoot_pct_of_step", 2.0),
+        floor("tone_and_sharpening.sharpen_edge_slope_gain", 1.02),
+        floor("noise_reduction.chroma_noise_reduction_pct", 25.0),
+        floor("noise_reduction.edge_contrast_kept_pct", 95.0),
+        (report["tone_and_sharpening"]["tone_curve_monotone"] != true)
+            .then(|| "tone curve is not monotone".to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
 fn main() {
     let report = json!({
         "rawsmith": env!("CARGO_PKG_VERSION"),
@@ -409,4 +477,13 @@ fn main() {
         "noise_reduction": denoise_section(),
     });
     println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    if std::env::args().any(|a| a == "--check") {
+        let failed = failures(&report);
+        for failure in &failed {
+            eprintln!("quality regression: {failure}");
+        }
+        if !failed.is_empty() {
+            std::process::exit(1);
+        }
+    }
 }

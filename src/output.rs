@@ -50,7 +50,8 @@ fn to_rgb16_be(image: &Image) -> Vec<u8> {
 pub fn write(path: &Path, image: &Image, quality: u8) -> Result<()> {
     let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let (w, h) = (image.width, image.height);
-    let failed = |e: &dyn std::fmt::Display| Error::Io(std::io::Error::other(format!("cannot write {}: {e}", path.display())));
+    let failed =
+        |e: &dyn std::fmt::Display| Error::Io(std::io::Error::other(format!("cannot write {}: {e}", path.display())));
     match extension.as_str() {
         "jpg" | "jpeg" => {
             if w > u16::MAX as usize || h > u16::MAX as usize {
@@ -58,12 +59,11 @@ pub fn write(path: &Path, image: &Image, quality: u8) -> Result<()> {
             }
             let mut encoder = jpeg_encoder::Encoder::new_file(path, quality.clamp(1, 100)).map_err(|e| failed(&e))?;
             // Full chroma resolution at high quality, as cameras and editors do.
-            let sampling = if quality >= 90 { jpeg_encoder::SamplingFactor::F_1_1 } else { jpeg_encoder::SamplingFactor::F_2_2 };
+            let sampling =
+                if quality >= 90 { jpeg_encoder::SamplingFactor::F_1_1 } else { jpeg_encoder::SamplingFactor::F_2_2 };
             encoder.set_sampling_factor(sampling);
             encoder.set_optimized_huffman_tables(true);
-            encoder
-                .encode(&to_rgb8(image), w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
-                .map_err(|e| failed(&e))
+            encoder.encode(&to_rgb8(image), w as u16, h as u16, jpeg_encoder::ColorType::Rgb).map_err(|e| failed(&e))
         }
         "png" => {
             let file = std::io::BufWriter::new(std::fs::File::create(path).map_err(|e| failed(&e))?);

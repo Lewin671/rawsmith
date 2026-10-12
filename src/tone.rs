@@ -55,7 +55,11 @@ pub fn base_layer(log_luma: &Plane) -> Plane {
 /// Smooth one-sided ramp: 0 for `d <= 0`, approaching `d - knee` for large `d`.
 #[inline]
 fn ramp(d: f32, knee: f32) -> f32 {
-    if d <= 0.0 { 0.0 } else { d * d / (d + knee) }
+    if d <= 0.0 {
+        0.0
+    } else {
+        d * d / (d + knee)
+    }
 }
 
 pub struct Local {
@@ -136,7 +140,8 @@ pub fn dehaze(image: &mut Image, strength: f32) {
     // Transmission: how much of the scene (rather than airlight) each pixel shows.
     let normalised = Plane::from_fn(&small, |p| (p[0] / air[0]).min(p[1] / air[1]).min(p[2] / air[2]));
     let rough = erode(&normalised, radius);
-    let rough = Plane { width: sw, height: sh, data: rough.data.iter().map(|d| 1.0 - 0.9 * strength * d.min(1.0)).collect() };
+    let rough =
+        Plane { width: sw, height: sh, data: rough.data.iter().map(|d| 1.0 - 0.9 * strength * d.min(1.0)).collect() };
     let guide = Plane::from_fn(&small, |p| luma(p).max(0.0).sqrt());
     let transmission = crate::image::guided_filter(&guide, &rough, radius * 4, 1e-3);
 

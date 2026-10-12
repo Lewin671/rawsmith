@@ -126,7 +126,11 @@ pub fn image_stats(image: &Image, spaces: &Spaces) -> ImageStats {
         } else {
             [0.0, 0.0]
         },
-        hues_pct: HSL_BANDS.iter().zip(hues).map(|(name, v)| (name.to_string(), round((v / hue_total * 100.0) as f32))).collect(),
+        hues_pct: HSL_BANDS
+            .iter()
+            .zip(hues)
+            .map(|(name, v)| (name.to_string(), round((v / hue_total * 100.0) as f32)))
+            .collect(),
     }
 }
 

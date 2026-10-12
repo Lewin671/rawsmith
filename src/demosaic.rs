@@ -68,7 +68,13 @@ pub fn half(m: &Mosaic) -> Image {
 #[inline]
 fn mirror(i: isize, n: usize) -> usize {
     let n = n as isize;
-    (if i < 0 { -i } else if i >= n { 2 * n - 2 - i } else { i }) as usize
+    (if i < 0 {
+        -i
+    } else if i >= n {
+        2 * n - 2 - i
+    } else {
+        i
+    }) as usize
 }
 
 /// Full-resolution demosaic: edge-directed green interpolation with Laplacian
@@ -124,7 +130,8 @@ pub fn full(m: &Mosaic) -> Image {
                 rgb[vertical] = g + (diff(xi, yi - 1) + diff(xi, yi + 1)) * 0.5;
             } else {
                 rgb[own] = m.data[y * w + x];
-                let diagonal = diff(xi - 1, yi - 1) + diff(xi + 1, yi - 1) + diff(xi - 1, yi + 1) + diff(xi + 1, yi + 1);
+                let diagonal =
+                    diff(xi - 1, yi - 1) + diff(xi + 1, yi - 1) + diff(xi - 1, yi + 1) + diff(xi + 1, yi + 1);
                 rgb[2 - own] = g + diagonal * 0.25;
             }
             *p = rgb;
@@ -146,11 +153,8 @@ const CLIP_MARGIN: f32 = 0.98;
 pub fn reconstruct_highlights(image: &mut Image, clip: [f32; 3]) -> f32 {
     let level = [clip[0] * CLIP_MARGIN, clip[1] * CLIP_MARGIN, clip[2] * CLIP_MARGIN];
     let (w, h) = (image.width, image.height);
-    let clipped: Vec<u8> = image
-        .data
-        .par_iter()
-        .map(|p| (0..3).fold(0u8, |mask, c| mask | (((p[c] >= level[c]) as u8) << c)))
-        .collect();
+    let clipped: Vec<u8> =
+        image.data.par_iter().map(|p| (0..3).fold(0u8, |mask, c| mask | (((p[c] >= level[c]) as u8) << c))).collect();
     let count = clipped.par_iter().filter(|&&m| m != 0).count();
     if count == 0 {
         return 0.0;
@@ -191,7 +195,13 @@ pub fn reconstruct_highlights(image: &mut Image, clip: [f32; 3]) -> f32 {
         })
         .reduce(
             || [(0.0, 0); 3],
-            |a, b| [(a[0].0 + b[0].0, a[0].1 + b[0].1), (a[1].0 + b[1].0, a[1].1 + b[1].1), (a[2].0 + b[2].0, a[2].1 + b[2].1)],
+            |a, b| {
+                [
+                    (a[0].0 + b[0].0, a[0].1 + b[0].1),
+                    (a[1].0 + b[1].0, a[1].1 + b[1].1),
+                    (a[2].0 + b[2].0, a[2].1 + b[2].1),
+                ]
+            },
         );
     let offset: Vec<f32> = sums.iter().map(|&(s, n)| if n > 100 { (s / n as f64) as f32 } else { 0.0 }).collect();
 

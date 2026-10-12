@@ -99,9 +99,8 @@ impl Image {
                     let (a, b) = (i as f64 * scale, (i + 1) as f64 * scale);
                     let first = a.floor() as usize;
                     let last = ((b.ceil() as usize).max(first + 1)).min(from);
-                    let weights = (first..last)
-                        .map(|s| ((b.min((s + 1) as f64) - a.max(s as f64)) / scale) as f32)
-                        .collect();
+                    let weights =
+                        (first..last).map(|s| ((b.min((s + 1) as f64) - a.max(s as f64)) / scale) as f32).collect();
                     (first, weights)
                 })
                 .collect()
@@ -166,7 +165,8 @@ impl Plane {
     }
 
     pub fn resized(&self, width: usize, height: usize) -> Plane {
-        let rgb = Image { width: self.width, height: self.height, data: self.data.iter().map(|&v| [v, 0.0, 0.0]).collect() };
+        let rgb =
+            Image { width: self.width, height: self.height, data: self.data.iter().map(|&v| [v, 0.0, 0.0]).collect() };
         let out = rgb.resized(width, height);
         Plane { width, height, data: out.data.iter().map(|p| p[0]).collect() }
     }

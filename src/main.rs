@@ -46,8 +46,8 @@ struct Source {
     /// Recipe file [default: <raw>.rawsmith.json next to the RAW]
     #[arg(long)]
     recipe: Option<PathBuf>,
-    /// Parameter assignment such as exposure=0.5 or hsl.blue.saturation=-20 (repeatable).
-    /// A value written with an explicit sign (+0.3, -10) is added to the current value.
+    /// Parameter assignment (repeatable): exposure=0.5 or hsl.blue.saturation=-20 sets a
+    /// value, exposure+=0.3 or contrast-=10 changes the current one
     #[arg(long = "set", value_name = "PATH=VALUE", allow_hyphen_values = true)]
     set: Vec<String>,
 }
@@ -130,14 +130,17 @@ fn save_recipe(path: &Path, params: &Params) -> Result<()> {
 }
 
 fn read_raw(path: &Path) -> Result<arw::RawImage> {
-    let file = std::fs::read(path).map_err(|e| Error::Io(std::io::Error::new(e.kind(), format!("cannot read {}: {e}", path.display()))))?;
+    let file = std::fs::read(path)
+        .map_err(|e| Error::Io(std::io::Error::new(e.kind(), format!("cannot read {}: {e}", path.display()))))?;
     arw::decode(&file)
 }
 
 fn parse_region(text: &str) -> Result<[f32; 4]> {
     let parts: Vec<f32> = text.split(',').filter_map(|v| v.trim().parse().ok()).collect();
     match parts[..] {
-        [x0, y0, x1, y1] if 0.0 <= x0 && x0 < x1 && x1 <= 1.0 && 0.0 <= y0 && y0 < y1 && y1 <= 1.0 => Ok([x0, y0, x1, y1]),
+        [x0, y0, x1, y1] if 0.0 <= x0 && x0 < x1 && x1 <= 1.0 && 0.0 <= y0 && y0 < y1 && y1 <= 1.0 => {
+            Ok([x0, y0, x1, y1])
+        }
         _ => Err(Error::Params("--region takes x0,y0,x1,y1 with 0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1".into())),
     }
 }
@@ -195,13 +198,13 @@ fn run(cli: Cli) -> Result<Value> {
         }
         Command::Schema => Ok(params::schema()),
         Command::Render(Render { source, target }) => {
-            let params = load_recipe(&recipe_path(&source))?.with_assignments(&source.set, true)?;
+            let params = load_recipe(&recipe_path(&source))?.with_assignments(&source.set)?;
             render(&source.raw, &params, &target)
         }
         Command::Edit(Edit { source, target, reset }) => {
             let path = recipe_path(&source);
             let base = if reset { Params::default() } else { load_recipe(&path)? };
-            let params = base.with_assignments(&source.set, true)?;
+            let params = base.with_assignments(&source.set)?;
             // Render first: a recipe that cannot be rendered is not saved.
             let mut report = if target.output.is_some() {
                 render(&source.raw, &params, &target)?
@@ -217,7 +220,7 @@ fn run(cli: Cli) -> Result<Value> {
             // White balance, crop and other non-tone settings of an existing recipe are kept.
             let base = load_recipe(&path)?;
             let proposal = rawsmith::auto::auto(&read_raw(&source.raw)?, &base)?;
-            let params = proposal.params.with_assignments(&source.set, true)?;
+            let params = proposal.params.with_assignments(&source.set)?;
             let mut report = if target.output.is_some() {
                 render(&source.raw, &params, &target)?
             } else {
@@ -231,7 +234,8 @@ fn run(cli: Cli) -> Result<Value> {
         Command::ExtractJpeg { raw: path, output } => {
             let file = std::fs::read(&path)?;
             let raw = arw::decode(&file)?;
-            let (offset, len) = raw.embedded_jpeg.ok_or_else(|| Error::Unsupported("this file has no embedded JPEG".into()))?;
+            let (offset, len) =
+                raw.embedded_jpeg.ok_or_else(|| Error::Unsupported("this file has no embedded JPEG".into()))?;
             std::fs::write(&output, &file[offset..offset + len])?;
             Ok(json!({"output": output, "bytes": len}))
         }

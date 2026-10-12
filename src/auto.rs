@@ -87,7 +87,8 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
     };
     let scene = pipeline::scene(raw, &params, Size { max_edge: Some(ANALYSIS_EDGE) })?;
     let spaces = Spaces::new();
-    let look = |p: &Params| measure(&pipeline::finish(&scene.image, &Params { sharpen: 0.0, ..p.clone() }, &spaces), &spaces);
+    let look =
+        |p: &Params| measure(&pipeline::finish(&scene.image, &Params { sharpen: 0.0, ..p.clone() }, &spaces), &spaces);
     let mut notes = Vec::new();
     let neutral = look(&params);
 
@@ -105,7 +106,11 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
             // Too bright if the highlights pass the target, the midtones wash
             // out, or new clipping appears beyond what the sensor already lost.
             let over = m.p90 > bright_target || m.p50 > 68.0 || m.clipped > scene.sensor_clipped_pct as f32 + 0.5;
-            if over { hi = mid } else { lo = mid }
+            if over {
+                hi = mid
+            } else {
+                lo = mid
+            }
         }
         params.exposure = round_to(lo, 0.05);
     };

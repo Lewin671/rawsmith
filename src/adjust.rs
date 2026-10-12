@@ -85,7 +85,11 @@ impl ColorOps {
     }
 
     pub fn is_identity(&self) -> bool {
-        self.vibrance == 0.0 && self.saturation == 0.0 && self.bands.is_none() && self.shadows.is_none() && self.highlights.is_none()
+        self.vibrance == 0.0
+            && self.saturation == 0.0
+            && self.bands.is_none()
+            && self.shadows.is_none()
+            && self.highlights.is_none()
     }
 
     #[inline]

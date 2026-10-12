@@ -6,11 +6,8 @@
 
 pub type Mat3 = [[f32; 3]; 3];
 
-pub const REC2020_TO_XYZ: Mat3 = [
-    [0.636_958, 0.144_616_9, 0.168_881],
-    [0.262_700_2, 0.677_998_1, 0.059_301_7],
-    [0.0, 0.028_072_7, 1.060_985_1],
-];
+pub const REC2020_TO_XYZ: Mat3 =
+    [[0.636_958, 0.144_616_9, 0.168_881], [0.262_700_2, 0.677_998_1, 0.059_301_7], [0.0, 0.028_072_7, 1.060_985_1]];
 
 pub const SRGB_TO_XYZ: Mat3 = [
     [0.412_456_4, 0.357_576_1, 0.180_437_5],
@@ -64,9 +61,7 @@ pub fn invert(m: &Mat3) -> Mat3 {
 /// Matrices that map CIE XYZ (D65) to camera RGB, per camera model. These
 /// are sensor characterisation data; a model missing here cannot be rendered
 /// with correct colour.
-const CAMERAS: &[(&str, [i32; 9])] = &[
-    ("ILCE-7M4", [7460, -2365, -588, -5687, 13442, 2474, -624, 1156, 6584]),
-];
+const CAMERAS: &[(&str, [i32; 9])] = &[("ILCE-7M4", [7460, -2365, -588, -5687, 13442, 2474, -624, 1156, 6584])];
 
 pub fn camera_matrix(model: &str) -> Option<Mat3> {
     let (_, m) = CAMERAS.iter().find(|(name, _)| *name == model)?;
@@ -93,10 +88,10 @@ pub fn camera_to_working(xyz_to_cam: &Mat3) -> Mat3 {
 /// CIE 1960 uv chromaticity of a black body at `kelvin` (Krystek 1985).
 fn planck_uv(kelvin: f64) -> (f64, f64) {
     let t = kelvin;
-    let u = (0.860117757 + 1.54118254e-4 * t + 1.28641212e-7 * t * t)
-        / (1.0 + 8.42420235e-4 * t + 7.08145163e-7 * t * t);
-    let v = (0.317398726 + 4.22806245e-5 * t + 4.20481691e-8 * t * t)
-        / (1.0 - 2.89741816e-5 * t + 1.61456053e-7 * t * t);
+    let u =
+        (0.860117757 + 1.54118254e-4 * t + 1.28641212e-7 * t * t) / (1.0 + 8.42420235e-4 * t + 7.08145163e-7 * t * t);
+    let v =
+        (0.317398726 + 4.22806245e-5 * t + 4.20481691e-8 * t * t) / (1.0 - 2.89741816e-5 * t + 1.61456053e-7 * t * t);
     (u, v)
 }
 
@@ -109,7 +104,11 @@ fn planck_normal(kelvin: f64) -> (f64, f64) {
     let (du, dv) = (u1 - u0, v1 - v0);
     let len = (du * du + dv * dv).sqrt();
     let (nu, nv) = (-dv / len, du / len);
-    if nv < 0.0 { (-nu, -nv) } else { (nu, nv) }
+    if nv < 0.0 {
+        (-nu, -nv)
+    } else {
+        (nu, nv)
+    }
 }
 
 pub const MIN_KELVIN: f64 = 2000.0;
@@ -150,7 +149,11 @@ pub fn temperature_from_wb(xyz_to_cam: &Mat3, wb: [f32; 3]) -> (f64, f64) {
     let rising = along(lo) < along(hi);
     for _ in 0..50 {
         let mid = 0.5 * (lo + hi);
-        if (along(mid) < 0.0) == rising { lo = mid } else { hi = mid }
+        if (along(mid) < 0.0) == rising {
+            lo = mid
+        } else {
+            hi = mid
+        }
     }
     let kelvin = 0.5 * (lo + hi);
     let (pu, pv) = planck_uv(kelvin);
@@ -222,7 +225,11 @@ impl Spaces {
         let at = |k: f32| apply(&self.work_to_srgb, self.from_oklab([lightness, lab[1] * k, lab[2] * k]));
         for _ in 0..12 {
             let mid = 0.5 * (lo + hi);
-            if inside(at(mid)) { lo = mid } else { hi = mid }
+            if inside(at(mid)) {
+                lo = mid
+            } else {
+                hi = mid
+            }
         }
         at(lo).map(|v| v.clamp(0.0, 1.0))
     }
@@ -236,12 +243,20 @@ impl Default for Spaces {
 
 #[inline]
 pub fn srgb_encode(v: f32) -> f32 {
-    if v <= 0.003_130_8 { 12.92 * v } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+    if v <= 0.003_130_8 {
+        12.92 * v
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 #[inline]
 pub fn srgb_decode(v: f32) -> f32 {
-    if v <= 0.040_45 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    if v <= 0.040_45 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 #[cfg(test)]
