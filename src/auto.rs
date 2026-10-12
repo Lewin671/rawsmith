@@ -25,7 +25,7 @@ struct Measure {
     /// Mean chroma x 100 of the whole picture and of its brightest fifth.
     chroma: f32,
     chroma_bright: f32,
-    /// Percent of pixels with a channel at display white.
+    /// Percent of pixels blown to display white.
     clipped: f32,
 }
 
@@ -52,7 +52,7 @@ fn measure(image: &Image, spaces: &Spaces) -> Measure {
         spread: (samples.iter().map(|s| (s.0 - mean).powi(2)).sum::<f32>() / n as f32).sqrt(),
         chroma: mean_chroma(&samples),
         chroma_bright: mean_chroma(&samples[n * 4 / 5..]),
-        clipped: image.data.iter().filter(|p| p.iter().any(|&v| v >= 0.998)).count() as f32 * 100.0 / n as f32,
+        clipped: image.data.iter().filter(|p| p.iter().all(|&v| v >= 0.998)).count() as f32 * 100.0 / n as f32,
     }
 }
 
@@ -74,7 +74,8 @@ pub struct Auto {
 /// Proposes settings for `raw`. White balance, geometry and lens settings of
 /// `base` are kept; tone and colour settings are replaced.
 pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
-    let defaults = Params::default();
+    // More noise reduction as the sensor gain rises.
+    let iso = raw.meta.iso.unwrap_or(100).max(50) as f32;
     let mut params = Params {
         temperature: base.temperature,
         tint: base.tint,
@@ -82,8 +83,8 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
         rotate: base.rotate,
         crop: base.crop,
         sharpen: base.sharpen,
-        denoise: base.denoise,
-        ..defaults
+        denoise: round_to((10.0 + 10.0 * (iso / 100.0).log2()).clamp(10.0, 60.0), 5.0),
+        ..Params::default()
     };
     let scene = pipeline::scene(raw, &params, Size { max_edge: Some(ANALYSIS_EDGE) })?;
     let spaces = Spaces::new();
@@ -92,69 +93,99 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
     let mut notes = Vec::new();
     let neutral = look(&params);
 
-    // Exposure: bring the bright part of the picture to a target lightness.
-    // Neutral highlights (snow, fog, cloud) should be nearly white; colourful
-    // ones (sunset sky) need to stay darker to hold their colour.
-    let colourful = smoothstep(5.0, 14.0, neutral.chroma_bright);
-    let bright_target = 88.0 - 14.0 * colourful;
-    let expose = |params: &mut Params| {
-        let (mut lo, mut hi) = (-1.0f32, 2.0f32);
-        for _ in 0..7 {
-            let mid = 0.5 * (lo + hi);
-            params.exposure = mid as f64;
-            let m = look(params);
-            // Too bright if the highlights pass the target, the midtones wash
-            // out, or new clipping appears beyond what the sensor already lost.
-            let over = m.p90 > bright_target || m.p50 > 68.0 || m.clipped > scene.sensor_clipped_pct as f32 + 0.5;
-            if over {
-                hi = mid
-            } else {
-                lo = mid
-            }
-        }
-        params.exposure = round_to(lo, 0.05);
-    };
-    expose(&mut params);
-    let exposed = look(&params);
+    // Scene character. High-key: bright and nearly colourless (snow, fog),
+    // meant to stay bright. Colourful highlights (a sunset sky) must stay
+    // darker than neutral ones to hold their colour.
+    let high_key = (1.0 - smoothstep(1.3, 2.2, neutral.chroma)) * smoothstep(45.0, 56.0, neutral.p50);
+    let colourful = smoothstep(2.5, 6.0, neutral.chroma_bright);
+
     notes.push(format!(
-        "exposure {:+.2} EV: brightest tenth was at lightness {:.0}, target {:.0} ({} highlights)",
-        params.exposure,
-        neutral.p90,
-        bright_target,
-        if colourful > 0.5 { "colourful" } else { "neutral" }
+        "measured at default settings: lightness p10 {:.0}, median {:.0}, p90 {:.0}, p99 {:.0}; colourfulness {:.1} overall, {:.1} in bright areas",
+        neutral.p10, neutral.p50, neutral.p90, neutral.p99, neutral.chroma, neutral.chroma_bright
     ));
 
-    // Local tone: open deep shadows and hold bright areas when the scene's
-    // range is wider than the display's.
-    let shadows = ((22.0 - exposed.p10) * 2.5).clamp(0.0, 45.0);
-    let highlights = -((exposed.p99 - 90.0) * 5.0).clamp(0.0, 40.0) - 20.0 * colourful;
-    if shadows >= 5.0 || highlights <= -5.0 {
-        params.shadows = round_to(shadows, 5.0);
-        params.highlights = round_to(highlights, 5.0);
-        expose(&mut params);
+    // Local tone first: a scene wider than the display needs its ends
+    // brought in before one exposure can suit both.
+    params.shadows = round_to((40.0 - neutral.p10).clamp(0.0, 35.0) * (1.0 - high_key), 5.0);
+    params.highlights =
+        round_to((-((neutral.p90 - 75.0) * 1.5).clamp(0.0, 30.0) - 10.0 * colourful) * (1.0 - high_key), 5.0);
+    if params.shadows != 0.0 || params.highlights != 0.0 {
         notes.push(format!(
-            "shadows {:+.0}, highlights {:+.0}: darkest tenth at lightness {:.0}, brightest hundredth at {:.0}; exposure re-set to {:+.2}",
-            params.shadows, params.highlights, exposed.p10, exposed.p99, params.exposure
+            "shadows {:+.0}, highlights {:+.0}: darkest tenth of the picture was at lightness {:.0}, brightest tenth at {:.0}",
+            params.shadows, params.highlights, neutral.p10, neutral.p90
         ));
     }
 
-    // Global contrast and black point for flat scenes.
-    let toned = look(&params);
-    if toned.spread < 17.0 {
-        params.contrast = round_to(((17.0 - toned.spread) * 4.0).clamp(0.0, 30.0), 5.0);
+    // Exposure: as bright as possible without passing any limit.
+    // Ordinary scenes keep roughly the brightness the photographer metered
+    // (dark ones are opened by `shadows` instead); high-key ones go bright.
+    let mid_limit = (neutral.p50 + 2.0).max(47.0) * (1.0 - high_key) + 78.0 * high_key;
+    let bright_limit = 90.0 - 14.0 * colourful;
+    let limits = |m: &Measure| {
+        [
+            (m.p50 > mid_limit, "midtones"),
+            (m.p90 > bright_limit, "bright areas"),
+            (m.p99 > 97.0, "the brightest tones"),
+            (m.clipped > scene.sensor_clipped_pct as f32 + 0.3, "blown highlights"),
+        ]
+    };
+    // The camera's metering is a strong prior: stay within a stop of it,
+    // a little more for high-key scenes that meters underexpose.
+    let (mut lo, mut hi) = (-1.0f32, 0.8 + 0.7 * high_key);
+    let mut bound = "the adjustment range";
+    for _ in 0..7 {
+        let mid = 0.5 * (lo + hi);
+        params.exposure = mid as f64;
+        match limits(&look(&params)).iter().find(|(over, _)| *over) {
+            Some((_, name)) => {
+                hi = mid;
+                bound = name;
+            }
+            None => lo = mid,
+        }
     }
+    params.exposure = round_to(lo, 0.05);
+    notes.push(format!(
+        "exposure {:+.2} EV, limited by {bound}: median lightness was {:.0} (limit {:.0}), brightest tenth {:.0} (limit {:.0}); scene read as {}",
+        params.exposure,
+        neutral.p50,
+        mid_limit,
+        neutral.p90,
+        bright_limit,
+        if high_key > 0.5 {
+            "high-key (snow or fog)"
+        } else if colourful > 0.5 {
+            "having colourful highlights"
+        } else {
+            "ordinary"
+        }
+    ));
+
+    // Haze lifts the darkest tones well above black. High-key scenes are
+    // exempt: fog is the subject there.
+    let exposed = look(&params);
+    params.dehaze = round_to(30.0 * smoothstep(10.0, 24.0, exposed.p1) * (1.0 - high_key), 5.0);
+    if params.dehaze != 0.0 {
+        notes.push(format!(
+            "dehaze {:+.0}: the darkest tones sat at lightness {:.0}, which suggests haze",
+            params.dehaze, exposed.p1
+        ));
+    }
+
+    // Global contrast, black point and, for high-key scenes, white point.
+    let toned = look(&params);
+    params.contrast = round_to((10.0 + (17.0 - toned.spread) * 3.0).clamp(5.0, 30.0), 5.0);
     if toned.p1 > 8.0 {
         params.blacks = round_to(-((toned.p1 - 8.0) * 2.5).clamp(0.0, 25.0), 5.0);
     }
-    if params.contrast != 0.0 || params.blacks != 0.0 {
-        notes.push(format!(
-            "contrast {:+.0}, blacks {:+.0}: lightness spread was {:.0} (flat below 17), darkest tones at {:.0}",
-            params.contrast, params.blacks, toned.spread, toned.p1
-        ));
-    }
+    params.whites = round_to(((92.0 - toned.p99) * 4.0).clamp(0.0, 40.0) * high_key, 5.0);
+    notes.push(format!(
+        "contrast {:+.0}, blacks {:+.0}, whites {:+.0}: lightness spread was {:.0}, darkest tones at {:.0}, brightest at {:.0}",
+        params.contrast, params.blacks, params.whites, toned.spread, toned.p1, toned.p99
+    ));
 
     // Colour: lift muted scenes more than already vivid ones.
-    params.vibrance = round_to(25.0 - 15.0 * smoothstep(6.0, 16.0, toned.chroma), 5.0);
+    params.vibrance = round_to(30.0 - 15.0 * smoothstep(4.0, 9.0, toned.chroma), 5.0);
     params.clarity = 10.0;
     notes.push(format!("vibrance {:+.0}, clarity +10: mean colourfulness was {:.0}", params.vibrance, toned.chroma));
     Ok(Auto { params, notes })

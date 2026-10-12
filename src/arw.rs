@@ -280,3 +280,43 @@ pub fn decode(file: &[u8]) -> Result<RawImage> {
         embedded_jpeg: embedded_jpeg(&tiff, first),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compressed_block_decodes_extremes_and_scaled_offsets() {
+        // One colour's block: max 1000 at position 3, min 200 at position 0,
+        // and fourteen 7-bit offsets 1..=14. The range 800 needs a shift of 3.
+        let mut bits: u128 = 1000 | (200 << 11) | (3 << 22);
+        for k in 0..14u128 {
+            bits |= (k + 1) << (30 + 7 * k);
+        }
+        let mut row = vec![0u8; 32];
+        row[..16].copy_from_slice(&bits.to_le_bytes());
+        row[16..].copy_from_slice(&bits.to_le_bytes());
+        let identity: Vec<u16> = (0..=0x4000).collect();
+        let out = decode_compressed(&row, 32, &identity);
+        // Stored values are 11-bit; the curve is indexed at twice the value.
+        let expected = |i: usize| match i {
+            0 => 200,
+            3 => 1000,
+            1 | 2 => 200 + (i << 3),
+            _ => 200 + ((i - 1) << 3),
+        };
+        for i in 0..16 {
+            assert_eq!(out[i * 2] as usize, expected(i) * 2, "first colour, sample {i}");
+            assert_eq!(out[i * 2 + 1] as usize, expected(i) * 2, "second colour, sample {i}");
+        }
+    }
+
+    #[test]
+    fn tone_curve_is_monotone_and_compresses_highlights() {
+        let curve = tone_curve(&[8000, 10400, 12900, 14100]);
+        assert!(curve.windows(2).take(4095).all(|w| w[1] >= w[0]));
+        // Below the first knee the curve is the identity; above, steps widen.
+        assert_eq!(curve[1000], 1000);
+        assert!(curve[4000] - curve[3999] > 1);
+    }
+}

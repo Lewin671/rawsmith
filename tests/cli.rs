@@ -116,6 +116,15 @@ fn edits_change_the_picture_in_the_expected_direction() {
     assert!(tone(&render(&["shadows=80"]), "p5") > tone(&base, "p5"));
     assert!(tone(&render(&["highlights=-80"]), "p95") < tone(&base, "p95"));
     assert!(tone(&render(&["blacks=-60"]), "p5") < tone(&base, "p5"));
+    assert!(tone(&render(&["whites=60"]), "p75") > tone(&base, "p75") + 2.0);
+    assert!(tone(&render(&["whites=-60"]), "p75") < tone(&base, "p75") - 2.0);
+    // A graduated filter darkens the side it starts from and leaves the far side alone.
+    let zone = |v: &Value, row: usize, column: usize| v["zones"][row][column].as_f64().unwrap();
+    let graded = render(&[r#"gradients=[{"from":[0,0.5],"to":[0.5,0.5],"exposure":-1.5}]"#]);
+    assert!(zone(&graded, 1, 0) < zone(&base, 1, 0) - 3.0, "{graded}");
+    assert!((zone(&graded, 1, 2) - zone(&base, 1, 2)).abs() < 0.5);
+    let corners = render(&["vignette=80"]);
+    assert!(zone(&corners, 0, 0) > zone(&base, 0, 0) && (zone(&corners, 1, 1) - zone(&base, 1, 1)).abs() < 1.5);
     let chroma = |v: &Value| v["chroma_mean"].as_f64().unwrap();
     assert!(chroma(&render(&["saturation=50"])) > chroma(&base));
     assert!(chroma(&render(&["saturation=-100"])) < 0.5);

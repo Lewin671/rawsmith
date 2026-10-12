@@ -113,8 +113,8 @@ fn planck_normal(kelvin: f64) -> (f64, f64) {
 
 pub const MIN_KELVIN: f64 = 2000.0;
 pub const MAX_KELVIN: f64 = 15000.0;
-/// Distance from the locus, in uv units, of one tint step. Positive tint is
-/// magenta, as in common raw developers.
+/// Distance from the locus, in uv units, of one tint step. Positive tint
+/// renders the picture more magenta, as in common raw developers.
 const TINT_STEP: f64 = 1.0 / 3000.0;
 
 /// White balance multipliers (G = 1) that neutralise an illuminant of the
@@ -123,7 +123,9 @@ pub fn wb_from_temperature(xyz_to_cam: &Mat3, kelvin: f64, tint: f64) -> [f32; 3
     let kelvin = kelvin.clamp(MIN_KELVIN, MAX_KELVIN);
     let (u, v) = planck_uv(kelvin);
     let (nu, nv) = planck_normal(kelvin);
-    let (u, v) = (u - nu * tint * TINT_STEP, v - nv * tint * TINT_STEP);
+    // A greener light source needs a magenta correction, so positive tint
+    // moves the assumed illuminant to the green side of the locus.
+    let (u, v) = (u + nu * tint * TINT_STEP, v + nv * tint * TINT_STEP);
     let denom = 2.0 * u - 8.0 * v + 4.0;
     let (x, y) = (3.0 * u / denom, 2.0 * v / denom);
     let xyz = [(x / y) as f32, 1.0, ((1.0 - x - y) / y) as f32];
@@ -158,7 +160,7 @@ pub fn temperature_from_wb(xyz_to_cam: &Mat3, wb: [f32; 3]) -> (f64, f64) {
     let kelvin = 0.5 * (lo + hi);
     let (pu, pv) = planck_uv(kelvin);
     let (nu, nv) = planck_normal(kelvin);
-    let tint = -((u - pu) * nu + (v - pv) * nv) / TINT_STEP;
+    let tint = ((u - pu) * nu + (v - pv) * nv) / TINT_STEP;
     (kelvin, tint)
 }
 
@@ -282,6 +284,9 @@ mod tests {
         // Warmer light needs less red gain and more blue gain.
         let tungsten = wb_from_temperature(&cam, 3000.0, 0.0);
         assert!(tungsten[0] < wb[0] && tungsten[2] > wb[2]);
+        // Positive tint renders more magenta: less green relative to red and blue.
+        let magenta = wb_from_temperature(&cam, 5500.0, 40.0);
+        assert!(magenta[0] > wb[0] && magenta[2] > wb[2]);
     }
 
     #[test]

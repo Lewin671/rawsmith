@@ -103,6 +103,8 @@ def cmd_render(args):
     if not names:
         die(f"no .ARW files in {args.raws}")
     sips = shutil.which("sips")
+    # sips renders RAW into Display P3; convert so every variant is plain sRGB.
+    srgb = ["-m", "/System/Library/ColorSync/Profiles/sRGB Profile.icc"]
     images = os.path.join(work, "images")
     os.makedirs(images, exist_ok=True)
     manifest = {"edge": EDGE, "photos": {}}
@@ -142,9 +144,9 @@ def cmd_render(args):
             embedded = os.path.join(work, "embedded.jpg")
             rawsmith(exe, "extract-jpeg", raw, "-o", embedded)
             rotate = [] if upright else ["-r", {8: "270", 6: "90", 3: "180"}[info["camera"]["orientation"]]]
-            subprocess.run([sips, *rotate, "-Z", str(EDGE), "-s", "formatOptions", "92", embedded, "--out", out("camera")], capture_output=True, check=True)
+            subprocess.run([sips, *rotate, *srgb, "-Z", str(EDGE), "-s", "formatOptions", "92", embedded, "--out", out("camera")], capture_output=True, check=True)
             started = time.time()
-            subprocess.run([sips, "-s", "format", "jpeg", "-s", "formatOptions", "92", "-Z", str(EDGE), raw, "--out", out("system")], capture_output=True, check=True)
+            subprocess.run([sips, *srgb, "-s", "format", "jpeg", "-s", "formatOptions", "92", "-Z", str(EDGE), raw, "--out", out("system")], capture_output=True, check=True)
             entry["seconds"]["system"] = round(time.time() - started, 3)
             entry["variants"]["camera"] = entry["variants"]["system"] = None
             os.remove(embedded)

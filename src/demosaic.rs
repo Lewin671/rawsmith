@@ -28,12 +28,27 @@ pub fn prepare(raw: &RawImage, wb: [f32; 3]) -> Mosaic {
     let crop = raw.crop;
     let mut data = vec![0.0f32; crop.width * crop.height];
     let scale: Vec<f32> = (0..4).map(|i| wb[raw.cfa[i] as usize] / (raw.white - raw.black[i]).max(1.0)).collect();
+    // A stuck photosite stands far outside all four of its same-colour
+    // neighbours; real detail, blurred by the lens, never does.
+    let spike = 0.004 * (raw.white - raw.black[0]).max(1.0);
     data.par_chunks_mut(crop.width).enumerate().for_each(|(y, row)| {
         let sy = y + crop.y;
-        let src = &raw.data[sy * raw.width + crop.x..sy * raw.width + crop.x + crop.width];
-        for (x, (out, &v)) in row.iter_mut().zip(src).enumerate() {
-            let cell = (sy & 1) * 2 + ((x + crop.x) & 1);
-            *out = (v as f32 - raw.black[cell]) * scale[cell];
+        let at = |x: usize, y: usize| raw.data[y * raw.width + x] as f32;
+        for (x, out) in row.iter_mut().enumerate() {
+            let sx = x + crop.x;
+            let cell = (sy & 1) * 2 + (sx & 1);
+            let mut v = at(sx, sy);
+            if sx >= 2 && sy >= 2 && sx + 2 < raw.width && sy + 2 < raw.height {
+                let around = [at(sx - 2, sy), at(sx + 2, sy), at(sx, sy - 2), at(sx, sy + 2)];
+                let (lo, hi) = around.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &n| (lo.min(n), hi.max(n)));
+                let (black, range) = (raw.black[cell], (hi - lo).max(spike));
+                if v - black > 2.0 * (hi - black) + spike && v > hi + 4.0 * range {
+                    v = hi;
+                } else if v - black < 0.5 * (lo - black) - spike && v < lo - 4.0 * range {
+                    v = lo;
+                }
+            }
+            *out = (v - raw.black[cell]) * scale[cell];
         }
     });
     // The crop origin is even, so the CFA tile is unchanged.
@@ -224,4 +239,45 @@ pub fn reconstruct_highlights(image: &mut Image, clip: [f32; 3]) -> f32 {
         }
     });
     count as f32 / (w * h) as f32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arw;
+    use crate::synthetic::Synthetic;
+
+    #[test]
+    fn stuck_photosites_are_repaired_and_real_detail_is_kept() {
+        let (w, h) = (64, 48);
+        let mut data = vec![600u16; w * h];
+        data[20 * w + 30] = 9000; // hot
+        data[10 * w + 11] = 0; // dead (below black)
+                               // A genuine bright feature spans neighbouring photosites.
+        for y in 30..35 {
+            for x in 40..45 {
+                data[y * w + x] = 7000;
+            }
+        }
+        let raw = arw::decode(&Synthetic::new(w, h, data).to_bytes()).unwrap();
+        let m = prepare(&raw, [1.0; 3]);
+        let level = (600.0 - 512.0) / (16383.0 - 512.0);
+        assert!((m.data[20 * w + 30] - level).abs() < 1e-5, "hot photosite kept: {}", m.data[20 * w + 30]);
+        assert!((m.data[10 * w + 11] - level).abs() < 1e-5, "dead photosite kept");
+        assert!(m.data[32 * w + 42] > 0.3 && m.data[30 * w + 40] > 0.3, "real detail was removed");
+    }
+
+    #[test]
+    fn flat_colour_survives_demosaicing_exactly() {
+        let truth = [0.3f32, 0.5, 0.2];
+        let data = (0..32 * 32).map(|i| truth[[0, 1, 1, 2][((i / 32) & 1) * 2 + (i & 1)]]).collect();
+        let m = Mosaic { width: 32, height: 32, data, cfa: [0, 1, 1, 2], clip: [f32::MAX; 3] };
+        for image in [full(&m), half(&m)] {
+            for p in &image.data {
+                for c in 0..3 {
+                    assert!((p[c] - truth[c]).abs() < 1e-5);
+                }
+            }
+        }
+    }
 }

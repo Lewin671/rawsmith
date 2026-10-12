@@ -69,6 +69,20 @@ impl Default for Crop {
     }
 }
 
+/// A graduated filter: a local adjustment at full strength at (and beyond)
+/// `from`, fading smoothly to nothing at `to`. Points are `[x, y]` fractions
+/// of the final picture, origin at the top left.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Gradient {
+    pub from: [f64; 2],
+    pub to: [f64; 2],
+    #[serde(default)]
+    pub exposure: f64,
+    #[serde(default)]
+    pub saturation: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Params {
@@ -87,6 +101,8 @@ pub struct Params {
     pub hsl: Hsl,
     pub grade: Grade,
     pub curve: Vec<[f64; 2]>,
+    pub gradients: Vec<Gradient>,
+    pub vignette: f64,
     pub sharpen: f64,
     pub denoise: f64,
     pub lens_corrections: bool,
@@ -112,8 +128,10 @@ impl Default for Params {
             hsl: Hsl::default(),
             grade: Grade::default(),
             curve: Vec::new(),
+            gradients: Vec::new(),
+            vignette: 0.0,
             sharpen: 40.0,
-            denoise: 20.0,
+            denoise: 10.0,
             lens_corrections: true,
             rotate: 0.0,
             crop: Crop::default(),
@@ -167,7 +185,7 @@ pub fn fields() -> Vec<Field> {
             "whites",
             -100.0,
             100.0,
-            "White point; positive pushes the brightest tones to pure white sooner, negative holds them back.",
+            "White point; positive stretches bright tones up towards pure white (snow, fog, clouds), negative pulls them down.",
         ),
         field("blacks", -100.0, 100.0, "Black point; negative deepens the darkest tones, positive lifts them."),
         field("clarity", -100.0, 100.0, "Mid-scale local contrast; positive adds punch, negative softens."),
@@ -189,6 +207,7 @@ pub fn fields() -> Vec<Field> {
             100.0,
             "Shifts the shadow/highlight split of the colour grade; positive favours highlights.",
         ),
+        field("vignette", -100.0, 100.0, "Brightens (positive) or darkens (negative) the corners, on top of the lens correction."),
         field("sharpen", 0.0, 100.0, "Output sharpening amount."),
         field("denoise", 0.0, 100.0, "Noise reduction strength (chroma first, luminance at higher values)."),
         field(
@@ -263,9 +282,25 @@ impl Params {
         if !self.curve.is_empty() {
             let ordered = self.curve.windows(2).all(|w| w[1][0] > w[0][0]);
             let in_range = self.curve.iter().flatten().all(|v| (0.0..=1.0).contains(v));
-            if self.curve.len() < 2 || !ordered || !in_range {
+            if !ordered || !in_range {
                 return Err(Error::Params(
-                    "curve needs at least two [input, output] points in 0..1 with strictly increasing inputs".into(),
+                    "curve needs [input, output] points in 0..1 with strictly increasing inputs".into(),
+                ));
+            }
+        }
+        if self.gradients.len() > 4 {
+            return Err(Error::Params("at most 4 gradients are supported".into()));
+        }
+        for g in &self.gradients {
+            let points_ok = g.from.iter().chain(&g.to).all(|v| (0.0..=1.0).contains(v));
+            let length = ((g.to[0] - g.from[0]).powi(2) + (g.to[1] - g.from[1]).powi(2)).sqrt();
+            if !points_ok
+                || length < 0.02
+                || !(-3.0..=3.0).contains(&g.exposure)
+                || !(-100.0..=100.0).contains(&g.saturation)
+            {
+                return Err(Error::Params(
+                    "each gradient needs from/to points in 0..1 at least 0.02 apart, exposure in -3..3 and saturation in -100..100".into(),
                 ));
             }
         }
@@ -305,7 +340,8 @@ impl Params {
             }
             if step != 0.0 {
                 match (slot.as_f64(), new.as_f64()) {
-                    (Some(old), Some(delta)) => new = json!(old + step * delta),
+                    // Round away binary-fraction noise such as 0.7000000000000001.
+                    (Some(old), Some(delta)) => new = json!(((old + step * delta) * 1e6).round() / 1e6),
                     _ => {
                         return Err(Error::Params(format!(
                             "'{assignment}': += and -= need a numeric parameter that currently has a value"
@@ -353,7 +389,8 @@ pub fn schema() -> Value {
     json!({
         "parameters": numeric,
         "other": [
-            {"path": "curve", "default": [], "description": "Optional tone curve applied after tone mapping: [[input, output], ...] points in 0..1 on display brightness, strictly increasing inputs. Empty means none."},
+            {"path": "curve", "default": [], "description": "Optional tone curve applied after tone mapping: [[input, output], ...] points in 0..1 on display brightness, strictly increasing inputs, joined smoothly. [0,0] and [1,1] are implied when not given. Points pull their whole neighbourhood, so pin the tones you want unchanged, e.g. lift only shadows with [[0.15,0.2],[0.4,0.4]]. Empty means none."},
+            {"path": "gradients", "default": [], "description": "Up to 4 graduated filters, e.g. [{\"from\":[0.5,0],\"to\":[0.5,0.55],\"exposure\":-0.7,\"saturation\":15}] darkens and enriches a sky: full effect at and beyond `from`, fading to none at `to`; points are [x, y] fractions of the final picture from the top left. exposure is in stops (-3..3), saturation -100..100."},
             {"path": "lens_corrections", "default": true, "description": "Apply the camera's embedded distortion, vignetting and chromatic aberration corrections."},
         ],
         "hsl_bands": HSL_BANDS,
@@ -394,6 +431,9 @@ mod tests {
         let p = set(&p, &["exposure+=0.25", "hsl.blue.saturation-=5", "temperature=null"]).unwrap();
         assert_eq!((p.exposure, p.hsl.blue.saturation, p.temperature), (0.75, -15.0, None));
         assert_eq!(p.to_sparse()["exposure"], json!(0.75));
+        assert_eq!(set(&d, &["exposure+=0.1", "exposure+=0.2", "exposure-=0.6"]).unwrap().exposure, -0.3);
+        let g = set(&d, &[r#"gradients=[{"from":[0.5,0],"to":[0.5,0.5],"exposure":-0.7}]"#]).unwrap();
+        assert_eq!((g.gradients.len(), g.gradients[0].exposure, g.gradients[0].saturation), (1, -0.7, 0.0));
         for bad in [
             "exposure=9",
             "nope=1",

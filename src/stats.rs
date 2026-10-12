@@ -30,8 +30,12 @@ pub struct ImageStats {
     pub width: usize,
     pub height: usize,
     pub tones: Tones,
-    /// Percent of pixels with a channel at pure white / all channels at pure black.
+    /// Percent of pixels blown to pure white (every channel at maximum).
     pub clipped_highlights_pct: f64,
+    /// Percent of pixels with at least one channel at maximum: includes vivid
+    /// colours at the edge of what the output can show, such as a sunset sky.
+    pub channel_clipped_pct: f64,
+    /// Percent of pixels at pure black.
     pub crushed_shadows_pct: f64,
     /// Share of pixels (percent) in 10 equal lightness bins from black to white.
     pub histogram: Vec<f64>,
@@ -63,14 +67,15 @@ pub fn image_stats(image: &Image, spaces: &Spaces) -> ImageStats {
     let step = ((image.width * image.height) as f32 / 400_000.0).sqrt().ceil().max(1.0) as usize;
     let mut lightness = Vec::new();
     let mut chroma = Vec::new();
-    let (mut clipped, mut crushed) = (0usize, 0usize);
+    let (mut clipped, mut channel_clipped, mut crushed) = (0usize, 0usize, 0usize);
     let mut zones = [[(0.0f64, 0usize); 3]; 3];
     let mut cast = (0.0f64, 0.0f64, 0usize);
     let mut hues = [0.0f64; 8];
     for y in (0..image.height).step_by(step) {
         for x in (0..image.width).step_by(step) {
             let p = image.at(x, y);
-            clipped += p.iter().any(|&v| v >= 0.998) as usize;
+            clipped += p.iter().all(|&v| v >= 0.998) as usize;
+            channel_clipped += p.iter().any(|&v| v >= 0.998) as usize;
             crushed += p.iter().all(|&v| v <= 0.008) as usize;
             let lab = spaces.to_oklab(apply(&spaces.srgb_to_work, p.map(srgb_decode)));
             let c = (lab[1] * lab[1] + lab[2] * lab[2]).sqrt();
@@ -116,6 +121,7 @@ pub fn image_stats(image: &Image, spaces: &Spaces) -> ImageStats {
             spread: round(spread),
         },
         clipped_highlights_pct: round2(clipped as f32 * 100.0 / n as f32),
+        channel_clipped_pct: round2(channel_clipped as f32 * 100.0 / n as f32),
         crushed_shadows_pct: round2(crushed as f32 * 100.0 / n as f32),
         histogram: histogram.into_iter().map(round).collect(),
         zones: zones.map(|row| row.map(|(sum, count)| round((sum / count.max(1) as f64) as f32))),

@@ -79,12 +79,13 @@ pub fn local_tone(image: &mut Image, local: &Local) {
     let log_luma = Plane::from_fn(image, |p| luma(p).max(1e-6).log2());
     let base = base_layer(&log_luma);
     let pivot = GREY.log2();
-    // Full strength changes a region's distance from middle grey by 60%.
-    let (kh, ks, kc) = (0.6 * local.highlights, 0.6 * local.shadows, 0.6 * local.clarity);
+    // At full strength a region two stops from middle grey moves by about
+    // 1.5 stops, and local detail contrast doubles (or vanishes).
+    let (kh, ks, kc) = (local.highlights, local.shadows, local.clarity);
     image.data.par_iter_mut().enumerate().for_each(|(i, p)| {
         let d = base.data[i] - pivot;
         let detail = log_luma.data[i] - base.data[i];
-        let stops = kh * ramp(d, 1.0) + ks * ramp(-d, 1.0) + kc * detail;
+        let stops = kh * ramp(d, 0.7) + ks * ramp(-d, 0.7) + kc * detail;
         let gain = stops.exp2();
         *p = [p[0] * gain, p[1] * gain, p[2] * gain];
     });
@@ -146,15 +147,22 @@ pub fn dehaze(image: &mut Image, strength: f32) {
     let transmission = crate::image::guided_filter(&guide, &rough, radius * 4, 1e-3);
 
     let (fx, fy) = (sw as f32 / w as f32, sh as f32 / h as f32);
+    let mean_luma =
+        |image: &Image| image.data.par_iter().map(|p| luma(*p).max(1e-5).ln()).sum::<f32>() / image.data.len() as f32;
+    let before = mean_luma(image);
     image.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         let sy = (y as f32 + 0.5) * fy - 0.5;
         for (x, p) in row.iter_mut().enumerate() {
-            let t = transmission.sample((x as f32 + 0.5) * fx - 0.5, sy).clamp(0.2, 1.0);
+            let t = transmission.sample((x as f32 + 0.5) * fx - 0.5, sy).clamp(0.3, 1.0);
             for c in 0..3 {
                 p[c] = ((p[c] - air[c]) / t + air[c]).max(0.0);
             }
         }
     });
+    // Subtracting the veil darkens the picture; restore its overall
+    // (geometric mean) brightness so dehaze changes contrast, not exposure.
+    let gain = (before - mean_luma(image)).exp().clamp(1.0, 2.0);
+    image.map(|p| p.map(|v| v * gain));
 }
 
 /// The filmic curve: a log-logistic sigmoid that maps scene-linear values to
@@ -197,6 +205,14 @@ impl Filmic {
 /// Monotone cubic (Fritsch-Carlson) interpolation through control points, as
 /// a lookup table over 0..1.
 pub fn curve_lut(points: &[[f64; 2]], size: usize) -> Vec<f32> {
+    // The ends of the range stay put unless the caller moves them.
+    let mut points = points.to_vec();
+    if points.first().is_none_or(|p| p[0] > 0.0) {
+        points.insert(0, [0.0, 0.0]);
+    }
+    if points.last().is_some_and(|p| p[0] < 1.0) {
+        points.push([1.0, 1.0]);
+    }
     let n = points.len();
     let xs: Vec<f64> = points.iter().map(|p| p[0]).collect();
     let ys: Vec<f64> = points.iter().map(|p| p[1]).collect();
@@ -270,6 +286,10 @@ mod tests {
         assert!((lut_eval(&lut, 0.25) - 0.4).abs() < 1e-3);
         assert!((lut_eval(&lut, 0.75) - 0.8).abs() < 1e-3);
         assert!(lut.windows(2).all(|w| w[1] >= w[0]));
+        // Missing end points are implied, not clamped to the nearest point.
+        let lifted = curve_lut(&[[0.15, 0.22], [0.5, 0.5]], 1025);
+        assert!(lut_eval(&lifted, 0.0) < 1e-4 && (lut_eval(&lifted, 1.0) - 1.0).abs() < 1e-4);
+        assert!((lut_eval(&lifted, 0.75) - 0.75).abs() < 0.03);
         let identity = curve_lut(&[[0.0, 0.0], [1.0, 1.0]], 257);
         assert!((lut_eval(&identity, 0.3) - 0.3).abs() < 1e-4);
     }

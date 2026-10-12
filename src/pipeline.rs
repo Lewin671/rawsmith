@@ -233,6 +233,40 @@ pub fn finish(scene: &Image, params: &Params, spaces: &Spaces) -> Image {
     let gain = (params.exposure as f32 + base).exp2();
     image.map(|p| [p[0] * gain, p[1] * gain, p[2] * gain]);
 
+    if !params.gradients.is_empty() {
+        let (w, h) = ((image.width.max(2) - 1) as f32, (image.height.max(2) - 1) as f32);
+        let gradients: Vec<_> = params
+            .gradients
+            .iter()
+            .map(|g| {
+                let from = [g.from[0] as f32 * w, g.from[1] as f32 * h];
+                let axis = [g.to[0] as f32 * w - from[0], g.to[1] as f32 * h - from[1]];
+                let scale = 1.0 / (axis[0] * axis[0] + axis[1] * axis[1]).max(1e-6);
+                (from, [axis[0] * scale, axis[1] * scale], g.exposure as f32, g.saturation as f32 / 100.0)
+            })
+            .collect();
+        image.map_xy(|x, y, mut p| {
+            for (from, axis, exposure, saturation) in &gradients {
+                // Position along the gradient: 0 at `from`, 1 at `to`.
+                let t = ((x as f32 - from[0]) * axis[0] + (y as f32 - from[1]) * axis[1]).clamp(0.0, 1.0);
+                let weight = 1.0 - t * t * (3.0 - 2.0 * t);
+                let gain = (exposure * weight).exp2();
+                let grey = color::luma(p);
+                let chroma = (1.0 + saturation * weight).max(0.0);
+                p = p.map(|v| (grey + (v - grey) * chroma) * gain);
+            }
+            p
+        });
+    }
+    if params.vignette != 0.0 {
+        // Up to one stop at the corners, growing with the square of the radius.
+        let (cx, cy) = ((image.width as f32 - 1.0) * 0.5, (image.height as f32 - 1.0) * 0.5);
+        let (stops, norm) = (params.vignette as f32 / 100.0, 1.0 / (cx * cx + cy * cy).max(1.0));
+        image.map_xy(|x, y, p| {
+            let r2 = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)) * norm;
+            p.map(|v| v * (stops * r2).exp2())
+        });
+    }
     tone::dehaze(&mut image, params.dehaze as f32 / 100.0);
     tone::local_tone(
         &mut image,
@@ -243,22 +277,30 @@ pub fn finish(scene: &Image, params: &Params, spaces: &Spaces) -> Image {
         },
     );
 
-    // Sensor saturation sits at 2^BASE_EXPOSURE; by default it just reaches white.
-    let white = (base + crate::tune("white", 0.0)).exp2() * (-params.whites as f32 / 100.0 * 1.5).exp2();
-    let filmic = Filmic::new(params.contrast as f32, white);
+    // Sensor saturation sits at 2^BASE_EXPOSURE and just reaches display white.
+    let filmic = Filmic::new(params.contrast as f32, (base + crate::tune("white", 0.0)).exp2());
+    // Black and white points on encoded display values: `whites` moves the
+    // value that maps to pure white, `blacks` the one that maps to black.
     let black = -params.blacks as f32 / 100.0 * 0.08;
+    let white_point = 1.0 - params.whites as f32 / 100.0 * 0.25;
     let curve = (!params.curve.is_empty()).then(|| tone::curve_lut(&params.curve, 1025));
+    let scene_white = base.exp2();
     let ops = ColorOps::new(params, spaces);
-    let ratio_mix = crate::tune("mix", 0.3);
+    // Shadows and midtones keep their hue and saturation under the curve;
+    // highlights take the curve per channel, which rolls bright colours off
+    // towards yellow and white the way film and cameras do.
+    let ratio_strength = crate::tune("mix", 0.5);
     image.map(|p| {
         let per_channel = p.map(|v| filmic.eval(v));
         let y = color::luma(p).max(1e-6);
         let k = filmic.eval(y) / y;
+        let t = ((y - tone::GREY) / (0.6 * scene_white - tone::GREY)).clamp(0.0, 1.0);
+        let ratio_mix = ratio_strength * (1.0 - t * t * (3.0 - 2.0 * t));
         let mut p = [0, 1, 2].map(|c| per_channel[c] + (p[c].max(0.0) * k - per_channel[c]) * ratio_mix);
-        if black != 0.0 || curve.is_some() {
+        if black != 0.0 || white_point != 1.0 || curve.is_some() {
             p = p.map(|v| {
                 let mut e = srgb_encode(v);
-                e = ((e - black) / (1.0 - black)).clamp(0.0, 1.0);
+                e = ((e - black) / (white_point - black)).clamp(0.0, 1.0);
                 if let Some(lut) = &curve {
                     e = tone::lut_eval(lut, e);
                 }

@@ -46,15 +46,22 @@ preview, **looking at it**, and repeating. Every command prints JSON.
 
 6. **Check detail at 100%** before delivering —
    `rawsmith render photo.ARW --region 0.4,0.4,0.6,0.6 -o detail.jpg`
-   Look for noise in lifted shadows, harsh sharpening, halos on edges.
+   `--region` is `left,top,right,bottom` as fractions of the finished
+   (upright, cropped) picture, rendered at full resolution, so it takes a
+   few seconds. Look for noise in lifted shadows, harsh sharpening, halos
+   on edges. A 100% crop of a dark area looks darker than it did in the
+   small preview; that is perception, not a different rendering.
 
 7. **Export** — `rawsmith render photo.ARW -o final.jpg` (full resolution;
    `.png` gives 16-bit). Report what you changed and why, in plain words.
 
 `rawsmith schema` lists every parameter with range and meaning. Use
 `rawsmith render ... --set k=v` to try something without saving it, and
-`rawsmith edit ... --reset` to start over. `--recipe FILE` keeps several
-versions of one photo.
+`rawsmith edit ... --reset` to start over.
+
+The recipe lives next to the RAW by default. To keep it elsewhere, or to
+keep several versions of one photo, pass the same `--recipe FILE` to every
+`auto`, `edit` and `render` call for that version.
 
 ## Parameters that matter most
 
@@ -62,32 +69,75 @@ versions of one photo.
 |---|---|
 | Overall brightness | `exposure` (stops) |
 | Colour cast, warmth | `temperature` (K, higher = warmer), `tint` (+ magenta, − green) |
-| Blown-looking sky, harsh snow | `highlights` negative, `whites` negative |
+| Bright sky or snow too harsh | `highlights` negative |
 | Dark foreground, silhouettes with lost detail | `shadows` positive |
+| Dull greyish snow, fog or cloud | `whites` positive (stretches bright tones up to white), `exposure` |
 | Flat, low-contrast | `contrast`, `blacks` negative, `clarity` |
-| Haze in distant landscape | `dehaze` (10–40; more looks artificial) |
-| Dull colour | `vibrance` first, `saturation` sparingly |
+| Haze in distant landscape | `dehaze` (10–40; more looks artificial and reveals sensor dust) |
+| Dull colour | `vibrance` first, `saturation` sparingly; nearly colourless scenes (snow, fog) only respond to `saturation` |
 | One colour wrong (sky too cyan, foliage too yellow) | `hsl.<band>.hue / saturation / luminance`, bands: red orange yellow green aqua blue purple magenta |
+| Only the sky, or only the foreground | `gradients` (see below) |
+| Dark or bright corners | `vignette` (+ brightens corners) |
 | Mood | `grade.shadows` / `grade.highlights` (hue 0–360, saturation), `curve` |
-| Horizon, framing | `rotate` (degrees), `crop.left/top/right/bottom` (0–1) |
+| Horizon, framing | `rotate` (degrees), `crop.left/top/right/bottom` |
 
 Sliders run −100…100 with 0 meaning "no change", like other raw developers.
+
+**Crop** values are edge positions, not amounts: `crop.top=0.1` removes
+the top tenth, `crop.bottom=0.9` removes the bottom tenth. Cropping
+changes the aspect ratio unless you move opposite edges to match;
+`--size` is always the long edge. After cropping, check that nothing
+important is cut at the new edges.
+
+**Gradients** are graduated filters for what global sliders cannot
+separate — a sky that should be darker and richer, a foreground that
+should be brighter. Full effect at `from`, fading to none at `to`:
+
+```sh
+# darken and enrich the sky: full effect at the top edge, gone by mid-frame
+rawsmith edit photo.ARW --set 'gradients=[{"from":[0.5,0],"to":[0.5,0.5],"exposure":-0.6,"saturation":15}]'
+# brighten the foreground from the bottom up, in addition
+rawsmith edit photo.ARW --set 'gradients=[{"from":[0.5,0],"to":[0.5,0.5],"exposure":-0.6},{"from":[0.5,1],"to":[0.5,0.6],"exposure":0.5}]'
+```
+
+Setting `gradients` replaces the whole list. Place `to` where the effect
+should end (usually the horizon).
+
+**Curve** points are `[input, output]` on display brightness, joined
+smoothly; `[0,0]` and `[1,1]` are implied. A point moves its whole
+neighbourhood, so pin what should stay: `--set 'curve=[[0.15,0.2],[0.4,0.4]]'`
+lifts only the shadows. Prefer `shadows` / `highlights`; use a curve for
+what they cannot do.
+
+`+=` and `-=` need a parameter that has a number; `temperature` and
+`tint` start as "as shot", so set them to a value first (the as-shot
+values are in every render's `white_balance`).
 
 ## Reading the stats
 
 - `tones.p50` is the median lightness (0–100). Typical daylight scenes sit
   around 45–60; snow and fog higher; dusk lower. It is a description, not
   a target: a sunset silhouette is supposed to be dark.
-- `clipped_highlights_pct` above ~1% on a scene without the sun or lamps in
-  frame means lost highlight detail: lower `exposure`, `highlights` or
-  `whites`. `sensor_clipped_pct` is what the camera already lost; no
-  setting brings that back.
+- `clipped_highlights_pct` is the share of the picture blown to pure
+  white. Above ~1% on a scene without the sun or lamps in frame means
+  lost highlight detail: lower `exposure`, `highlights` or `whites`.
+  `sensor_clipped_pct` is what the camera already lost; no setting brings
+  that back. `channel_clipped_pct` also counts vivid colours at the limit
+  of the output (a saturated sunset sky); high values there mean colour is
+  at its ceiling, so adding saturation will only flatten it.
+- `tones.spread` is global contrast (below ~15 is flat); `chroma_mean` is
+  colourfulness averaged over the frame (snow and fog about 1, hazy
+  landscapes 2–3, colourful scenes 4–8, vivid above 10).
 - `crushed_shadows_pct` above a few percent: raise `shadows` or `blacks`.
 - `zones` is a 3×3 lightness grid (top row first): a quick check of sky
   versus foreground balance.
-- `neutral_cast` far from `[0, 0]` suggests a colour cast in greys
-  (a: green− / magenta+, b: blue− / yellow+). Snow in shade is legitimately
-  a little blue; do not neutralise mood away.
+- `neutral_cast` away from `[0, 0]` suggests a colour cast in greys
+  (a: green− / magenta+, b: blue− / yellow+); beyond about ±1 is visible.
+  Snow in shade is legitimately a little blue; do not neutralise mood
+  away. It reads `[0, 0]` when the picture has no near-grey areas at all,
+  so a frame that is uniformly blue or orange shows up in `hues_pct`
+  (one band above ~85%) rather than here. To find a neutral setting, try
+  values with `render --set tint=...` and watch `neutral_cast`.
 - `hues_pct` shows which colour bands are present — adjust only those.
 
 ## Judgement
@@ -101,6 +151,13 @@ Sliders run −100…100 with 0 meaning "no change", like other raw developers.
   cast. Sunsets want their warmth; do not "correct" it.
 - Lifting shadows reveals noise. After a strong lift check a dark region
   at 100% and raise `denoise` if needed.
+- Snow and fog: auto aims high already, but grey snow is the classic
+  failure. Bright snow sits around lightness 85–93 at `tones.p95`; use
+  `exposure` and `whites` to get there while texture remains.
+- `dehaze` also darkens deep shadows a little and deepens the colour of
+  the haze itself; pair it with `shadows` if the foreground sinks.
+- Warming the white balance mutes blue skies; a little
+  `hsl.blue.saturation` brings them back.
 - People: keep skin natural — go easy on `clarity`, `dehaze`, `saturation`.
 - When unsure between two versions, choose the more natural one.
 
@@ -112,5 +169,7 @@ each file, then review the previews and refine only those that need it.
 ## Limits
 
 Sony ARW (uncompressed and lossy-compressed) from supported cameras only;
-`inspect` reports an `unsupported` error otherwise. Adjustments are global;
-there are no brushes or masks. Output is sRGB.
+`inspect` reports an `unsupported` error otherwise. Local adjustments are
+limited to graduated filters: no brushes, subject masks, or spot and dust
+removal. If you see sensor dust, a stray object or a hot pixel, tell the
+user; cropping is the only workaround. Output is sRGB.
