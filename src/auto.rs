@@ -14,6 +14,15 @@ use crate::pipeline::{self, Size};
 /// Long edge of the analysis image.
 const ANALYSIS_EDGE: usize = 640;
 
+// In sqrt sensor-green light, 0.25 separates a near-white tile from a
+// neighbour below about 0.55. This also catches a one-pixel dark line that
+// covers only one of the tile's two greens, while rejecting sky gradients.
+const FRINGE_EDGE: f32 = 0.25;
+// One tile in 200 must border both sensor loss and a strong edge. This
+// coverage gate rejects isolated hot sites; it is a heuristic, not a
+// calibrated probability of optical fringing.
+const FRINGE_EDGE_PCT: f32 = 0.5;
+
 struct Measure {
     /// Oklab lightness x 100 at percentiles.
     p1: f32,
@@ -106,6 +115,7 @@ struct Sensor {
     any_pct: f32,
     all_pct: f32,
     lost_bright: f32,
+    fringe_edge_pct: f32,
     noise: Option<f32>,
 }
 
@@ -118,24 +128,44 @@ fn sensor(raw: &RawImage, params: &Params) -> Sensor {
         ((raw.data[y * raw.width + x] as f32 - raw.black[cell]) / (raw.white - raw.black[cell]).max(1.0))
             .clamp(0.0, 1.0)
     };
+    let tile = |sx: usize, sy: usize| {
+        let cells = [
+            value(sx, sy),
+            value((sx + 1).min(crop.x + crop.width - 1), sy),
+            value(sx, (sy + 1).min(crop.y + crop.height - 1)),
+            value((sx + 1).min(crop.x + crop.width - 1), (sy + 1).min(crop.y + crop.height - 1)),
+        ];
+        // Same 2% near-saturation margin as mosaic reconstruction.
+        let clipped = cells.iter().filter(|&&v| v >= 0.98).count();
+        // Green is the exposure reference, before WB makes other channels brighter.
+        let green = (0..4).filter(|&i| raw.cfa[i] == 1).map(|i| cells[i]).sum::<f32>() * 0.5;
+        [green, f32::from(clipped > 0), f32::from(clipped == 4)]
+    };
     let mut tiles = Image::new(w, h);
+    let mut edges = Image::new(w, h);
     for y in 0..h {
         for x in 0..w {
             let (sx, sy) = (crop.x + x * step, crop.y + y * step);
-            let cells = [
-                value(sx, sy),
-                value((sx + 1).min(crop.x + crop.width - 1), sy),
-                value(sx, (sy + 1).min(crop.y + crop.height - 1)),
-                value((sx + 1).min(crop.x + crop.width - 1), (sy + 1).min(crop.y + crop.height - 1)),
-            ];
-            // Same 2% near-saturation margin as mosaic reconstruction.
-            let clipped = cells.iter().filter(|&&v| v >= 0.98).count();
-            // Green is the exposure reference, before WB makes other channels brighter.
-            let green = (0..4).filter(|&i| raw.cfa[i] == 1).map(|i| cells[i]).sum::<f32>() * 0.5;
-            tiles.data[y * w + x] = [green, f32::from(clipped > 0), f32::from(clipped == 4)];
+            let p = tile(sx, sy);
+            tiles.data[y * w + x] = p;
+            // Inspect native neighbours, not distant stratified samples:
+            // resizing the loss map first would erase thin branches/rime.
+            let risk = [(0, -2), (0, 2), (-2, 0), (2, 0)].into_iter().any(|(dx, dy)| {
+                let (Some(nx), Some(ny)) = (sx.checked_add_signed(dx), sy.checked_add_signed(dy)) else {
+                    return false;
+                };
+                if nx < crop.x || ny < crop.y || nx >= crop.x + crop.width || ny >= crop.y + crop.height {
+                    return false;
+                }
+                let q = tile(nx, ny);
+                (p[1] > 0.0 || q[1] > 0.0) && (p[0].sqrt() - q[0].sqrt()).abs() >= FRINGE_EDGE
+            });
+            edges.data[y * w + x][0] = f32::from(risk);
         }
     }
     let framed = pipeline::framed(tiles, raw.meta.orientation, params);
+    let edges = pipeline::framed(edges, raw.meta.orientation, params);
+    let fringe_edge_pct = edges.data.iter().map(|p| p[0]).sum::<f32>() / edges.data.len() as f32 * 100.0;
     let mut tiles = framed.data;
     tiles.sort_by(|a, b| a[0].total_cmp(&b[0]));
     let n = tiles.len() as f32;
@@ -176,6 +206,7 @@ fn sensor(raw: &RawImage, params: &Params) -> Sensor {
         any_pct: tiles.iter().map(|p| p[1]).sum::<f32>() / n * 100.0,
         all_pct: tiles.iter().map(|p| p[2]).sum::<f32>() / n * 100.0,
         lost_bright,
+        fringe_edge_pct,
         noise: (residuals.len() >= 16).then(|| residuals[residuals.len() / 4]),
     }
 }
@@ -234,6 +265,15 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
         ..Params::default()
     };
     let sensor = sensor(raw, &params);
+    let defringe_reason = if base.defringe > 0.0 {
+        "kept non-zero base recipe strength"
+    } else if sensor.fringe_edge_pct > FRINGE_EDGE_PCT {
+        // Mid-range suppression, with no global purple desaturation.
+        params.defringe = 50.0;
+        "enabled moderate suppression for clipped fine-edge risk"
+    } else {
+        "kept base recipe strength; insufficient clipped-edge coverage"
+    };
     let iso = raw.meta.iso.unwrap_or(100).max(50) as f32;
     let prior = (10.0 + 10.0 * (iso / 100.0).log2()).clamp(10.0, 85.0);
     // Retain a small ISO prior because the quietest patches can miss noise
@@ -254,6 +294,10 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
         "measured at default settings: lightness p10 {:.0}, median {:.0}, p90 {:.0}, p99 {:.0}; chroma {:.1} overall, {:.1} in bright areas; saturation C/L p90 {:.3}; channels near clipping {:.2}%",
         neutral.p10, neutral.p50, neutral.p90, neutral.p99, neutral.chroma, neutral.chroma_bright, neutral.saturation_p90, neutral.channel_near
     )];
+    notes.push(format!(
+        "defringe {:.0}: sensor-loss edges {:.2}% of framed native tile samples (any-site loss >= 98%, neighbouring sqrt-green difference >= {FRINGE_EDGE:.2}); threshold > {FRINGE_EDGE_PCT:.2}%; {defringe_reason}; risk proxy, not proof of purple fringing",
+        params.defringe, sensor.fringe_edge_pct
+    ));
     // Broad bright neutrals PLUS a meaningful tonal range. Middle-grey
     // flat water/walls cannot establish snow/fog merely by lacking colour.
     // Completely lost whites are not evidence for a diffuse white subject.
@@ -305,7 +349,19 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
         ]
     };
     let lost_median = sensor.all_pct >= 50.0;
-    let max_exposure = if lost_median { 0.0 } else { 0.5 + 0.7 * high_key };
+    // A feasible foreground floor must also fit on the 0.05 EV recipe grid.
+    let max_exposure = ((if lost_median { 0.0 } else { 0.5 + 0.7 * high_key }) * 20.0).floor() / 20.0;
+    let proposed_highlights = params.highlights;
+    params.exposure = max_exposure as f64;
+    while look(&params).p50 < floor_light && params.highlights < 0.0 {
+        params.highlights = (params.highlights + 5.0).min(0.0);
+    }
+    if params.highlights != proposed_highlights {
+        notes.push(format!(
+            "initial highlight compression {proposed_highlights:+.0} -> {:+.0}: weakened to keep median >= {floor_light:.1} within the exposure ceiling {max_exposure:+.2} EV",
+            params.highlights
+        ));
+    }
     let (mut lo, mut hi) = (if lost_median { 0.0 } else { floor_ev }, max_exposure);
     let searches = if lost_median { 0 } else { 7 };
     let mut bound = "the adjustment range";
@@ -326,7 +382,9 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
             hi = params.exposure as f32;
         }
     }
-    let cost_floor = hi.max(floor_ev).min(0.0);
+    // Compression can require a positive floor even for a bright scene.
+    // Highlight targets yield to this floor when the two cannot coexist.
+    let cost_floor = hi.max(floor_ev);
     (lo, hi) = (cost_floor, max_exposure);
     for _ in 0..searches {
         let mid = 0.5 * (lo + hi);
@@ -365,14 +423,14 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
         exposed = m;
     }
     notes.push(format!(
-        "highlight refinement {initial_highlights:+.0} -> {:+.0}: trial local compression when exposure cannot darken the foreground further; median must remain >= {floor_light:.0}",
+        "highlight refinement {initial_highlights:+.0} -> {:+.0}: trial local compression when exposure cannot darken the foreground further; median must remain >= {floor_light:.1}",
         params.highlights
     ));
     if limits(&exposed).iter().any(|(over, _)| *over) {
         bound = "foreground/local-compression bounds; highlight target remains unresolved";
     }
     notes.push(format!(
-        "exposure {:+.2} EV, limited by {bound}; foreground bound {cost_floor:+.2} EV / median >= {floor_light:.0}; resulting median {:.0}, p90 {:.0}, p99 {:.0}; saturated highlights cannot regain texture",
+        "exposure {:+.2} EV, limited by {bound}; foreground bound {cost_floor:+.2} EV / median >= {floor_light:.1}; resulting median {:.1}, p90 {:.0}, p99 {:.0}; saturated highlights cannot regain texture",
         params.exposure, exposed.p50, exposed.p90, exposed.p99
     ));
 
@@ -400,33 +458,47 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
         }
         params.whites -= 5.0;
     }
+    // Add controls separately so a failed trial backs off its responsible
+    // control, including negative black-point shifts. Neither clipping nor
+    // the foreground floor may be undone by later tone adjustments.
+    let additions = (params.dehaze, params.contrast, params.blacks, params.whites);
+    (params.dehaze, params.contrast, params.blacks, params.whites) = (0.0, 0.0, 0.0, 0.0);
+    let safe_tone = |m: &Measure| {
+        m.p50 >= floor_light
+            && m.channel_clipped <= exposed.channel_clipped + 0.05
+            && m.clipped <= exposed.clipped + 0.2
+    };
+    for (control, mut value) in
+        [("dehaze", additions.0), ("contrast", additions.1), ("blacks", additions.2), ("whites", additions.3)]
+    {
+        while value != 0.0 {
+            let mut trial = params.clone();
+            match control {
+                "dehaze" => trial.dehaze = value,
+                "contrast" => trial.contrast = value,
+                "blacks" => trial.blacks = value,
+                "whites" => trial.whites = value,
+                _ => unreachable!(),
+            }
+            let m = look(&trial);
+            if safe_tone(&m) && (control != "whites" || m.p99 <= 96.0) {
+                params = trial;
+                break;
+            }
+            value -= value.signum() * 5.0;
+        }
+    }
+    let coloured = look(&params);
+    if additions != (params.dehaze, params.contrast, params.blacks, params.whites) {
+        notes.push(format!(
+            "tone headroom/foreground guard: dehaze {:.0}->{:.0}, contrast {:.0}->{:.0}, blacks {:.0}->{:.0}, whites {:.0}->{:.0}; each control must keep median >= {floor_light:.1}, channel clipping growth <= 0.05 percentage points and pure-white growth <= 0.2; resulting median {:.1}",
+            additions.0, params.dehaze, additions.1, params.contrast, additions.2, params.blacks, additions.3, params.whites, coloured.p50
+        ));
+    }
     notes.push(format!(
         "contrast {:+.0}, blacks {:+.0}, whites {:+.0}: spread {:.0}, p1 {:.0}, p99 {:.0}; retain soft scenes, backlit foreground and highlight room",
         params.contrast, params.blacks, params.whites, toned.spread, toned.p1, toned.p99
     ));
-
-    // Later tone controls must not undo the headroom established above.
-    // Back off positive additions, rather than darkening the whole frame.
-    let additions = (params.dehaze, params.contrast, params.whites);
-    let mut coloured = look(&params);
-    while coloured.channel_clipped > exposed.channel_clipped + 0.05 || coloured.clipped > exposed.clipped + 0.2 {
-        if params.whites > 0.0 {
-            params.whites -= 5.0;
-        } else if params.dehaze > 0.0 {
-            params.dehaze -= 5.0;
-        } else if params.contrast > 0.0 {
-            params.contrast -= 5.0;
-        } else {
-            break;
-        }
-        coloured = look(&params);
-    }
-    if additions != (params.dehaze, params.contrast, params.whites) {
-        notes.push(format!(
-            "tone headroom guard: dehaze {:.0}->{:.0}, contrast {:.0}->{:.0}, whites {:.0}->{:.0}; positive tone additions may not grow channel clipping by more than 0.05 percentage points or pure white by 0.2",
-            additions.0, params.dehaze, additions.1, params.contrast, additions.2, params.whites
-        ));
-    }
     let colour_budget = 20.0
         * smoothstep(1.2, 2.5, coloured.chroma)
         * (1.0 - smoothstep(0.07, 0.16, coloured.saturation_p90))
@@ -434,7 +506,10 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
     params.vibrance = round_to(colour_budget, 5.0);
     while params.vibrance > 0.0 {
         let m = look(&params);
-        if m.channel_clipped <= coloured.channel_clipped + 0.05 && m.channel_near <= coloured.channel_near + 0.2 {
+        if m.p50 >= floor_light
+            && m.channel_clipped <= coloured.channel_clipped + 0.05
+            && m.channel_near <= coloured.channel_near + 0.2
+        {
             break;
         }
         params.vibrance -= 5.0;
@@ -443,7 +518,7 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
     // statistics. Leave clarity for a deliberate visual edit.
     params.clarity = 0.0;
     notes.push(format!(
-        "vibrance {:+.0}, clarity 0: saturation C/L p90 {:.3}, channels near clipping {:.2}%, clipped {:.2}%; colour trials limited to +0.05 percentage points clipping / +0.2 near clipping; no reliable evidence for extra local contrast",
+        "vibrance {:+.0}, clarity 0: saturation C/L p90 {:.3}, channels near clipping {:.2}%, clipped {:.2}%; colour trials keep median >= {floor_light:.1} and are limited to +0.05 percentage points clipping / +0.2 near clipping; no reliable evidence for extra local contrast",
         params.vibrance, coloured.saturation_p90, coloured.channel_near, coloured.channel_clipped
     ));
     let [a, b] = toned.cast;
@@ -464,6 +539,118 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
 mod tests {
     use super::*;
     use crate::{arw, synthetic::Synthetic};
+
+    fn grey(level: f32) -> [f32; 3] {
+        [level / (2600.0 / 1024.0), level, level / (1600.0 / 1024.0)]
+    }
+
+    fn analysis(raw: &RawImage, params: &Params) -> (Measure, Measure, Measure) {
+        let scene = pipeline::scene(raw, params, Size { max_edge: Some(ANALYSIS_EDGE) }).unwrap();
+        let spaces = Spaces::new();
+        let look = |p: &Params| {
+            measure(&pipeline::finish(&scene.image, &Params { sharpen: 0.0, ..p.clone() }, &spaces), &spaces)
+        };
+        (
+            look(&Params::default()),
+            look(&Params { dehaze: 0.0, contrast: 0.0, blacks: 0.0, whites: 0.0, vibrance: 0.0, ..params.clone() }),
+            look(params),
+        )
+    }
+
+    #[test]
+    fn recoverable_bright_neutrals_keep_positive_foreground_floor() {
+        let raw =
+            arw::decode(&Synthetic::from_camera_rgb(128, 96, |_, y| grey(if y < 24 { 0.9 } else { 0.35 })).to_bytes())
+                .unwrap();
+        assert_eq!(sensor(&raw, &Params::default()).any_pct, 0.0);
+        let result = auto(&raw, &Params::default()).unwrap();
+        let (neutral, exposed, finished) = analysis(&raw, &result.params);
+        let floor = neutral.p50 - 4.0;
+        assert!(exposed.p50 >= floor, "initial compression discarded the floor: {} < {floor}", exposed.p50);
+        assert!(finished.p50 >= floor);
+        assert!(result.params.exposure > 0.0, "highlight compression needs a positive exposure floor");
+        assert!(result.notes.iter().any(|n| n.contains("target remains unresolved")));
+        result.params.validate().unwrap();
+    }
+
+    #[test]
+    fn later_tone_trials_keep_foreground_floor() {
+        let raw =
+            arw::decode(&Synthetic::from_camera_rgb(128, 96, |_, y| grey(if y < 24 { 0.9 } else { 0.055 })).to_bytes())
+                .unwrap();
+        let result = auto(&raw, &Params::default()).unwrap();
+        let (neutral, exposed, finished) = analysis(&raw, &result.params);
+        let floor = neutral.p50 - 4.0;
+        assert!(exposed.p50 >= floor, "exposure stage must already satisfy the floor");
+        assert!(finished.p50 >= floor, "later controls buried the foreground: {} < {floor}", finished.p50);
+        assert!(result.params.contrast < 10.0, "back off the contrast that darkens this foreground");
+        result.params.validate().unwrap();
+    }
+
+    #[test]
+    fn clipped_sky_with_thin_dark_lines_enables_defringe() {
+        // One-pixel branches across a sensor-lost sky, with a dark foreground.
+        for sky in [[1.0; 3], [1.0, 0.8, 0.5]] {
+            let raw = arw::decode(
+                &Synthetic::from_camera_rgb(128, 96, |x, y| if y >= 40 || x % 16 < 1 { grey(0.02) } else { sky })
+                    .to_bytes(),
+            )
+            .unwrap();
+            let result = auto(&raw, &Params::default()).unwrap();
+            assert_eq!(result.params.defringe, 50.0);
+            assert!(result.notes.iter().any(|n| n.contains("defringe 50") && n.contains("sensor-loss edges")));
+            result.params.validate().unwrap();
+            for threads in [1, 3] {
+                let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+                let repeated = pool.install(|| auto(&raw, &Params::default()).unwrap());
+                assert_eq!(repeated.params, result.params);
+                assert_eq!(repeated.notes, result.notes);
+            }
+            for defringe in [5.0, 65.0, 100.0] {
+                let base = Params { defringe, ..Params::default() };
+                assert_eq!(auto(&raw, &base).unwrap().params.defringe, defringe);
+            }
+            let mut foreground = Params::default();
+            foreground.crop.top = 0.5;
+            assert_eq!(auto(&raw, &foreground).unwrap().params.defringe, 0.0);
+        }
+    }
+
+    #[test]
+    fn flat_sensor_loss_without_edges_does_not_enable_defringe() {
+        let raw = arw::decode(&Synthetic::from_camera_rgb(128, 96, |_, _| [1.0; 3]).to_bytes()).unwrap();
+        assert_eq!(sensor(&raw, &Params::default()).fringe_edge_pct, 0.0);
+        assert_eq!(auto(&raw, &Params::default()).unwrap().params.defringe, 0.0);
+        let isolated = arw::decode(
+            &Synthetic::from_camera_rgb(128, 96, |x, y| {
+                if (64..66).contains(&x) && (48..50).contains(&y) {
+                    [1.0; 3]
+                } else {
+                    grey(0.02)
+                }
+            })
+            .to_bytes(),
+        )
+        .unwrap();
+        let evidence = sensor(&isolated, &Params::default());
+        assert!(evidence.fringe_edge_pct > 0.0 && evidence.fringe_edge_pct < FRINGE_EDGE_PCT);
+        assert_eq!(auto(&isolated, &Params::default()).unwrap().params.defringe, 0.0);
+    }
+
+    #[test]
+    fn purple_objects_without_sensor_loss_leave_defringe_unchanged() {
+        let raw = arw::decode(
+            &Synthetic::from_camera_rgb(128, 96, |x, _| if x % 16 < 4 { [0.3, 0.015, 0.24] } else { grey(0.2) })
+                .to_bytes(),
+        )
+        .unwrap();
+        assert_eq!(sensor(&raw, &Params::default()).any_pct, 0.0);
+        assert_eq!(auto(&raw, &Params::default()).unwrap().params.defringe, 0.0);
+        for defringe in [5.0, 65.0, 100.0] {
+            let base = Params { defringe, ..Params::default() };
+            assert_eq!(auto(&raw, &base).unwrap().params.defringe, defringe);
+        }
+    }
 
     #[test]
     fn sensor_distinguishes_partial_loss_and_respects_framing() {

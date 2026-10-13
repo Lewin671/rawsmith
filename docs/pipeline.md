@@ -216,7 +216,15 @@ can legitimately differ from statistics of its resized version.
 ## Automatic starting point — `auto.rs`
 
 `rawsmith auto` keeps white balance, lens settings, framing, sharpening and
-additional defringe strength from its base recipe, and replaces global tone, colour and denoise values.
+non-zero additional defringe strength from its base recipe, and replaces global tone, colour and denoise values.
+When more than 0.5% of framed native tile samples border sensor loss
+(any photosite at 98%) and a strong edge (neighbouring square-root green
+difference at least 0.25), a zero base defringe becomes 50; the one-in-200
+coverage gate rejects isolated loss, while the edge threshold separates
+near-white green from neighbours below roughly 0.55 of sensor range,
+including a one-pixel dark line covering one of a tile's two greens.
+This is a heuristic fringe-risk proxy, not detection of purple objects,
+and `decisions` reports its coverage, threshold and chosen strength.
 It evaluates ordinary recipe settings on a 640 px scene. `decisions`
 reports the evidence, confidence, bounds and settings, including decisions
 to leave an adjustment at zero. There are no new recipe parameters.
@@ -274,7 +282,9 @@ The measurements and policy are:
   Regardless of highlight limits, the median may not fall more than four
   lightness points below the metered default. The additional negative EV
   bound moves from −0.8 towards −0.25 as backlight and sensor loss become
-  certain. Seven bisections find the foreground floor, seven search for
+  certain. The foreground floor can require positive exposure after initial
+  compression; compression is weakened if that floor cannot fit within the
+  exposure ceiling. Seven bisections find the foreground floor, seven search for
   exposure. Pure-white clipping growth is limited to 0.2 percentage
   points where feasible; any-channel output clipping is also bounded by
   sampled any-site sensor loss +0.2 points. This permits irretrievable
@@ -304,13 +314,13 @@ The measurements and policy are:
   ambiguous fog; trial renders reduce them in steps of five if L99
   exceeds 96 or pure-white clipping grows by more than 0.2 points. This
   leaves bright snow room rather than forcing black/white endpoints.
-- **Final tone headroom:** dehaze, contrast and white-point additions are
-  checked together against the exposure/local-highlight rendering. Whites,
-  then dehaze, then contrast are reduced in steps of five if they grow
-  any-channel clipping by more than 0.05 percentage points or pure white
-  by 0.2 points. Thus later additions cannot quietly undo highlight
-  protection. This guard does not promise to remove clipping already
-  present at the foreground/local-compression bounds.
+- **Final tone headroom:** dehaze, contrast, blacks and whites are trialled
+  individually in that order against the exposure/local-highlight rendering,
+  keeping the same median floor and limiting any-channel clipping growth to
+  0.05 percentage points and pure white to 0.2 points.
+  A failed trial backs off only that control towards zero in steps of five,
+  including negative black-point shifts, and reports the accepted settings.
+  This guard does not remove clipping already present at the foreground/local-compression bounds.
 - **Colour:** the upper tenth of relative Oklab chroma C/L (excluding
   L <= 20) detects vivid subjects even among grey or dark surroundings.
   A boost of at most +20 fades from C/L 0.07 to 0.16 and as pixels with

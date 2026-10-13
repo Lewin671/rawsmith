@@ -40,6 +40,15 @@ photos.
    (`photo.ARW.rawsmith.json`) and explains each decision. Auto proposes a
    measured starting point. Read its evidence and bounds;
    ambiguous scenes and local lighting still need visual editing.
+   Its median floor allows positive exposure after highlight compression;
+   compression yields if necessary, and later tone trials back off the
+   control that breaches the floor or clipping bounds.
+   Auto sets a zero base `defringe` to 50 when more than 0.5% of framed
+   native tile samples border sensor loss (any photosite at 98%) and a
+   strong edge (square-root green difference >= 0.25), a one-in-200
+   coverage gate against isolated loss.
+   Read the reported risk evidence; non-zero base defringe is always kept,
+   and purple colour without sensor loss does not enable it.
 
 3. **Look** at `preview.jpg` (open the file — numbers alone are not enough)
    and read `stats` in the output. Decide what the picture needs. Name the
