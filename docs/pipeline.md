@@ -16,10 +16,13 @@ directories and extracts the sensor mosaic plus what is needed to interpret
 it: black and white levels, the camera's white balance, the active area, the
 Bayer layout, orientation, and the lens-correction tables the camera stored.
 
-Two encodings are supported: uncompressed 14-bit, and Sony's lossy
+Three Bayer encodings are supported: uncompressed 14-bit, Sony's lossy
 compression (11-bit values through a tone curve, 7-bit deltas in 16-sample
-blocks). Decoded samples are verified to be identical to LibRaw's on real
-files (see [benchmark.md](benchmark.md)). LibRaw is only a test reference;
+blocks), and lossless Huffman JPEG tiles (T.81 process 14). The latter
+reassembles four 14-bit JPEG components into each 512×512 Bayer tile;
+full-frame L and APS-C M are verified. Reduced-size YCbCr M/S modes remain
+unsupported; see [formats.md](formats.md). Decoded samples are verified to
+be identical to LibRaw's on real files (see [benchmark.md](benchmark.md)). LibRaw is only a test reference;
 rawsmith does not link or call it.
 
 ## 2. White balance and demosaic — `demosaic.rs`

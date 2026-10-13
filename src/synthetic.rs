@@ -1,4 +1,4 @@
-//! Builds small, valid uncompressed ARW files from pixel data. Tests and the
+//! Builds small, valid uncompressed and lossless Bayer ARW files from pixel data. Tests and the
 //! public benchmark use these, so neither needs real photographs.
 
 /// Description of a synthetic RAW file.
@@ -51,6 +51,95 @@ impl Synthetic {
             }
         }
         Synthetic::new(width, height, data)
+    }
+
+    /// Encodes four Bayer planes in tiled SOF3 JPEG, as Sony's lossless
+    /// Bayer files do. Fixed five-bit Huffman codes deliberately differ from
+    /// the camera's optimized tables; tests cover the format, not a fixture.
+    pub fn to_lossless_bytes(&self, tile_width: usize, tile_height: usize, predictor: u8) -> Vec<u8> {
+        assert!(tile_width > 0 && tile_height > 0 && tile_width.is_multiple_of(2) && tile_height.is_multiple_of(2));
+        assert!((1..=7).contains(&predictor));
+        let mut out = self.to_bytes();
+        let (tiff, first) = crate::tiff::Tiff::new(&out).unwrap();
+        let ifd0 = tiff.ifd(first).unwrap();
+        let old = tiff.ifd(tiff.int(&ifd0, 0x014a).unwrap() as u32).unwrap();
+        let pointer = ifd0.entries[&0x014a].offset;
+        let mut entries: Vec<(u16, u16, u32, [u8; 4])> = old
+            .entries
+            .iter()
+            .filter(|(&tag, _)| tag != 0x0111 && tag != 0x0117)
+            .map(|(&tag, e)| {
+                let size = match e.kind {
+                    1 => 1,
+                    4 => 4,
+                    _ => 2,
+                };
+                let value = if e.count as usize * size <= 4 {
+                    out[e.offset..e.offset + 4].try_into().unwrap()
+                } else {
+                    (e.offset as u32).to_le_bytes()
+                };
+                (tag, e.kind, e.count, value)
+            })
+            .collect();
+        for e in &mut entries {
+            if e.0 == 0x0103 {
+                e.3 = 7u32.to_le_bytes();
+            }
+        }
+        let cols = self.width.div_ceil(tile_width);
+        let rows = self.height.div_ceil(tile_height);
+        let count = cols * rows;
+        let ifd_at = out.len();
+        let arrays_at = ifd_at + 2 + (entries.len() + 4) * 12 + 4;
+        let pixels_at = arrays_at + count * 8;
+        let mut payload = Vec::new();
+        let mut offsets = Vec::new();
+        let mut sizes = Vec::new();
+        for row in 0..rows {
+            for col in 0..cols {
+                let mut planes = Vec::new();
+                for y in 0..tile_height / 2 {
+                    for x in 0..tile_width / 2 {
+                        for c in 0..4 {
+                            let sx = col * tile_width + x * 2 + c % 2;
+                            let sy = row * tile_height + y * 2 + c / 2;
+                            planes.push(if sx < self.width && sy < self.height {
+                                self.data[sy * self.width + sx]
+                            } else {
+                                0
+                            });
+                        }
+                    }
+                }
+                let jpeg = lossless_jpeg(&planes, tile_width / 2, tile_height / 2, 14, predictor, 0);
+                offsets.push((pixels_at + payload.len()) as u32);
+                sizes.push(jpeg.len() as u32);
+                payload.extend(jpeg);
+            }
+        }
+        let array_value =
+            |at: usize, values: &[u32]| if values.len() == 1 { values[0] } else { at as u32 }.to_le_bytes();
+        entries.extend([
+            (0x0142, 4, 1, (tile_width as u32).to_le_bytes()),
+            (0x0143, 4, 1, (tile_height as u32).to_le_bytes()),
+            (0x0144, 4, count as u32, array_value(arrays_at, &offsets)),
+            (0x0145, 4, count as u32, array_value(arrays_at + count * 4, &sizes)),
+        ]);
+        out[pointer..pointer + 4].copy_from_slice(&(ifd_at as u32).to_le_bytes());
+        out.extend((entries.len() as u16).to_le_bytes());
+        for (tag, kind, count, value) in entries {
+            out.extend(tag.to_le_bytes());
+            out.extend(kind.to_le_bytes());
+            out.extend(count.to_le_bytes());
+            out.extend(value);
+        }
+        out.extend(0u32.to_le_bytes());
+        for value in offsets.iter().chain(&sizes) {
+            out.extend(value.to_le_bytes());
+        }
+        out.extend(payload);
+        out
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -151,11 +240,168 @@ impl Synthetic {
     }
 }
 
+/// A small independent encoder for the T.81 prediction/difference rules.
+pub(crate) fn lossless_jpeg(
+    data: &[u16],
+    width: usize,
+    height: usize,
+    precision: u8,
+    predictor: u8,
+    transform: u8,
+) -> Vec<u8> {
+    let mut out = vec![0xff, 0xd8];
+    let segment = |out: &mut Vec<u8>, marker: u8, data: &[u8]| {
+        out.extend([0xff, marker]);
+        out.extend(((data.len() + 2) as u16).to_be_bytes());
+        out.extend(data);
+    };
+    let mut frame = vec![precision];
+    frame.extend((height as u16).to_be_bytes());
+    frame.extend((width as u16).to_be_bytes());
+    frame.push(4);
+    for c in 1..=4 {
+        frame.extend([c, 0x11, 0]);
+    }
+    segment(&mut out, 0xc3, &frame);
+    let mut table = vec![0; 17];
+    table[5] = 17;
+    table.extend(0..=16);
+    segment(&mut out, 0xc4, &table);
+    segment(&mut out, 0xda, &[4, 1, 0, 2, 0, 3, 0, 4, 0, predictor, 0, transform]);
+    let (mut byte, mut used) = (0u8, 0u8);
+    let write = |out: &mut Vec<u8>, byte: &mut u8, used: &mut u8, value: u32, count: u8| {
+        for shift in (0..count).rev() {
+            *byte = (*byte << 1) | ((value >> shift) & 1) as u8;
+            *used += 1;
+            if *used == 8 {
+                out.push(*byte);
+                if *byte == 0xff {
+                    out.push(0);
+                }
+                *byte = 0;
+                *used = 0;
+            }
+        }
+    };
+    for y in 0..height {
+        for x in 0..width {
+            for c in 0..4 {
+                let at = (y * width + x) * 4 + c;
+                let sample = |i: usize| i32::from(data[i] >> transform);
+                let prediction = if x == 0 && y == 0 {
+                    1 << (precision - transform - 1)
+                } else if y == 0 {
+                    sample(at - 4)
+                } else if x == 0 {
+                    sample(at - width * 4)
+                } else {
+                    let (a, b, c) = (sample(at - 4), sample(at - width * 4), sample(at - width * 4 - 4));
+                    match predictor {
+                        1 => a,
+                        2 => b,
+                        3 => c,
+                        4 => a + b - c,
+                        5 => a + ((b - c) >> 1),
+                        6 => b + ((a - c) >> 1),
+                        7 => (a + b) >> 1,
+                        _ => unreachable!(),
+                    }
+                };
+                let difference = (sample(at) - prediction) as i16 as i32;
+                let category =
+                    if difference == -32768 { 16 } else { (32 - difference.unsigned_abs().leading_zeros()) as u8 };
+                write(&mut out, &mut byte, &mut used, category as u32, 5);
+                if category > 0 && category < 16 {
+                    let value = if difference < 0 { difference + (1 << category) - 1 } else { difference };
+                    write(&mut out, &mut byte, &mut used, value as u32, category);
+                }
+            }
+        }
+    }
+    if used != 0 {
+        let padding = 8 - used;
+        write(&mut out, &mut byte, &mut used, (1 << padding) - 1, padding);
+    }
+    out.extend([0xff, 0xd9]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::arw;
     use crate::tiff::Tiff;
+
+    #[test]
+    fn lossless_bayer_round_trip_all_predictors_and_partial_edge_tiles() {
+        for (width, height, tw, th) in [(64, 48, 32, 16), (66, 50, 32, 32), (16, 16, 16, 16)] {
+            let data = (0..width * height).map(|i| ((i * 7919 + i / width * 137) % 16384) as u16).collect();
+            let file = Synthetic::new(width, height, data);
+            for predictor in 1..=7 {
+                let raw = arw::decode(&file.to_lossless_bytes(tw, th, predictor)).unwrap();
+                assert_eq!(raw.data, file.data, "predictor {predictor}");
+                assert_eq!(raw.black, [512.0; 4]);
+                assert_eq!(raw.white, 16383.0);
+                assert_eq!(raw.wb, [2600.0 / 1024.0, 1.0, 1600.0 / 1024.0]);
+                assert_eq!((raw.crop.x, raw.crop.y, raw.crop.width, raw.crop.height), (0, 0, width, height));
+                assert_eq!(serde_json::to_value(raw.compression).unwrap(), "lossless-compressed");
+            }
+        }
+    }
+
+    #[test]
+    fn lossless_bad_tiff_arrays_and_dimensions_fail_cleanly() {
+        let original = Synthetic::new(64, 48, vec![512; 64 * 48]).to_lossless_bytes(32, 16, 1);
+        let (tiff, first) = Tiff::new(&original).unwrap();
+        let ifd0 = tiff.ifd(first).unwrap();
+        let raw_at = tiff.int(&ifd0, 0x014a).unwrap() as usize;
+        let raw = tiff.ifd(raw_at as u32).unwrap();
+        let patch = |tag: u16, value: u32| {
+            let mut bytes = original.clone();
+            let at = raw.entries[&tag].offset;
+            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            bytes
+        };
+        for bytes in [
+            patch(0x0144, u32::MAX),
+            patch(0x0145, u32::MAX),
+            patch(0x0142, 0),
+            patch(0x0143, 513),
+            patch(0x0100, 65535),
+            patch(0x0101, 65535),
+        ] {
+            let error = arw::decode(&bytes).err().expect("malformed tile accepted");
+            assert!(matches!(error, crate::error::Error::Format(_) | crate::error::Error::Unsupported(_)));
+        }
+        // Aliased ranges must not amplify the work done on one JPEG payload.
+        let mut aliased = original.clone();
+        let at = raw.entries[&0x0144].offset;
+        let first_offset = aliased[at..at + 4].to_vec();
+        aliased[at + 4..at + 8].copy_from_slice(&first_offset);
+        assert!(arw::decode(&aliased).is_err());
+        // A tiny advertised tile must not create millions of table allocations.
+        let mut excessive = patch(0x0142, 2);
+        let at = raw.entries[&0x0100].offset;
+        excessive[at..at + 2].copy_from_slice(&8192u16.to_le_bytes());
+        assert!(arw::decode(&excessive).is_err());
+        // Counts must be exact, never silently truncated by TIFF's limited reads.
+        for tag in [0x0144, 0x0145] {
+            let mut bytes = original.clone();
+            let index = (0..raw.entries.len())
+                .find(|&i| {
+                    u16::from_le_bytes(bytes[raw_at + 2 + i * 12..raw_at + 4 + i * 12].try_into().unwrap()) == tag
+                })
+                .unwrap();
+            let at = raw_at + 6 + index * 12;
+            bytes[at..at + 4].copy_from_slice(&1u32.to_le_bytes());
+            assert!(arw::decode(&bytes).is_err());
+        }
+        for len in 0..original.len() {
+            assert!(arw::decode(&original[..len]).is_err(), "accepted prefix {len}");
+        }
+        // Single-channel lossless output must never accept a YCbCr frame.
+        assert!(matches!(arw::decode(&patch(0x0106, 6)), Err(crate::error::Error::Unsupported(_))));
+    }
 
     #[test]
     fn preview_colour_tags_follow_the_raw_exif_chain() {

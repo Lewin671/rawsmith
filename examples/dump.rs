@@ -1,5 +1,5 @@
 //! Development aid: writes a RAW file's decoded sensor samples to stdout as
-//! a one-line header followed by little-endian u16 values, so they can be
+//! a one-line JSON header followed by little-endian u16 values, so they can be
 //! compared with another decoder.
 use std::io::Write;
 
@@ -13,8 +13,17 @@ fn main() {
         }
     };
     let mut out = std::io::stdout().lock();
-    writeln!(out, "{} {} {} {} {:.4} {:.4}", raw.width, raw.height, raw.black[0], raw.white, raw.wb[0], raw.wb[2])
-        .unwrap();
+    writeln!(
+        out,
+        "{}",
+        serde_json::json!({
+            "width": raw.width, "height": raw.height, "black": raw.black,
+            "white": raw.white, "wb": raw.wb, "crop": raw.crop,
+            "cfa": raw.cfa, "compression": raw.compression,
+            "orientation": raw.meta.orientation,
+        })
+    )
+    .unwrap();
     let bytes: Vec<u8> = raw.data.iter().flat_map(|v| v.to_le_bytes()).collect();
     out.write_all(&bytes).unwrap();
 }
