@@ -54,31 +54,47 @@ pub fn correct(image: &Image, tables: &LensTables) -> Option<Image> {
     let (cx, cy) = ((w as f32 - 1.0) * 0.5, (h as f32 - 1.0) * 0.5);
     let half_diagonal = (cx * cx + cy * cy).sqrt();
 
-    // Source radius scale per channel: distortion, times the red/blue
-    // magnification error for chromatic aberration.
-    let scale = |ca: Option<&Vec<i16>>, fill: f32| {
-        Radial(
-            tables
-                .distortion
-                .iter()
-                .enumerate()
-                .map(|(i, &d)| {
-                    let ca = ca.map_or(0.0, |t| t[i] as f32 / (1u32 << 21) as f32);
-                    (1.0 + d as f32 / 16384.0) * (1.0 + ca) / fill
-                })
-                .collect(),
-        )
-    };
-    // Zoom so the corrected picture exactly fills the frame: the frame edge
-    // point that reaches furthest out in the source lands on the source edge.
-    let edge_radius = cx.min(cy) / half_diagonal;
-    let green = scale(None, 1.0);
-    let fill = (0..=64).map(|i| green.at(edge_radius + (1.0 - edge_radius) * i as f32 / 64.0)).fold(f32::MIN, f32::max);
-    let scales = [scale(Some(&tables.ca_red), fill), scale(None, fill), scale(Some(&tables.ca_blue), fill)];
-    // Real lenses stay within a few tens of percent of 1.
-    if !scales.iter().all(|s| s.0.iter().all(|v| (0.25..=4.0).contains(v))) {
+    let n = tables.distortion.len();
+    if w < 2
+        || h < 2
+        || n < 2
+        || [tables.ca_red.len(), tables.ca_blue.len(), tables.vignetting.len()].iter().any(|&len| len != n)
+    {
         return None;
     }
+    let distortion = Radial(tables.distortion.iter().map(|&v| 1.0 + v as f32 / 16384.0).collect());
+    let ca = [&tables.ca_red, &tables.ca_blue].map(|t| Radial(t.iter().map(|&v| 1.0 + v as f32 / 2097152.0).collect()));
+    if !distortion.0.iter().all(|v| (0.25..=4.0).contains(v)) {
+        return None;
+    }
+    // Inverse mapping, following Sony's embedded-table convention: positive
+    // CA samples farther from the centre. Interpolate distortion and CA
+    // separately; interpolation does not commute with their multiplication.
+    // Fill zoom is applied to coordinates BEFORE looking up their radius.
+    let edge_radius = cx.min(cy) / half_diagonal;
+    let max_edge_scale = |fill: f32| {
+        let (start, end) = (edge_radius / fill, 1.0 / fill);
+        // A linear spline's maximum occurs at an endpoint or a knot; check
+        // those exactly, including nonmonotonic distortion tables.
+        let mut largest = distortion.at(start).max(distortion.at(end));
+        for (i, &value) in distortion.0.iter().enumerate() {
+            let knot = (i as f32 + 0.5) / (n - 1) as f32;
+            if (start..=end).contains(&knot) {
+                largest = largest.max(value);
+            }
+        }
+        largest / fill
+    };
+    let (mut lo, mut hi) = (0.25, 4.0);
+    for _ in 0..32 {
+        let mid = (lo + hi) * 0.5;
+        if max_edge_scale(mid) > 1.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let fill = hi;
     // Light falloff the lens caused, as a gain that undoes it.
     let gain = Radial(tables.vignetting.iter().map(|&v| ((v as f32 / 8192.0 - 1.0).exp2() - 0.5).exp2()).collect());
 
@@ -87,12 +103,17 @@ pub fn correct(image: &Image, tables: &LensTables) -> Option<Image> {
         let dy = y as f32 - cy;
         for (x, p) in row.iter_mut().enumerate() {
             let dx = x as f32 - cx;
-            let r = (dx * dx + dy * dy).sqrt() / half_diagonal;
+            let r = (dx * dx + dy * dy).sqrt() / half_diagonal / fill;
+            let d = distortion.at(r) / fill;
             for c in 0..3 {
-                let s = scales[c].at(r);
+                let s = d * match c {
+                    0 => ca[0].at(r),
+                    2 => ca[1].at(r),
+                    _ => 1.0,
+                };
                 let (sx, sy) = (cx + dx * s, cy + dy * s);
                 // Vignetting is a property of where the light landed on the sensor.
-                let source_r = r * s;
+                let source_r = r * fill * s;
                 p[c] = cubic(image, c, sx, sy).max(0.0) * gain.at(source_r);
             }
         }
@@ -103,6 +124,76 @@ pub fn correct(image: &Image, tables: &LensTables) -> Option<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zoomed_radius_and_independent_tables_match_the_inverse_mapping() {
+        let (w, h) = (401, 301);
+        let mut image = Image::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                image.data[y * w + x] = [x as f32 / w as f32; 3];
+            }
+        }
+        let tables = LensTables {
+            distortion: vec![0, 1600, 3200, 4800],
+            ca_red: vec![0, 8000, 16000, 24000],
+            ca_blue: vec![0, -4000, -8000, -12000],
+            vignetting: vec![0; 4],
+        };
+        let out = correct(&image, &tables).unwrap();
+        // Increasing distortion: the corner sets fill. Its unzoomed radius
+        // is 1/fill and its source radius is exactly one.
+        let (mut lo, mut hi) = (1.0f32, 2.0f32);
+        let radial = |values: &[i16], r: f32, divisor: f32| {
+            let p = (r * 3.0 - 0.5).clamp(0.0, 3.0);
+            let i = (p as usize).min(2);
+            1.0 + (values[i] as f32 + (values[i + 1] - values[i]) as f32 * (p - i as f32)) / divisor
+        };
+        for _ in 0..32 {
+            let mid = (lo + hi) * 0.5;
+            if radial(&tables.distortion, 1.0 / mid, 16384.0) > mid {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let fill = hi;
+        for (x, y) in [(340, 120), (290, 240), (80, 70)] {
+            let (dx, dy) = (x as f32 - 200.0, y as f32 - 150.0);
+            let r = (dx * dx + dy * dy).sqrt() / 250.0 / fill;
+            for c in 0..3 {
+                let ca = match c {
+                    0 => radial(&tables.ca_red, r, 2097152.0),
+                    2 => radial(&tables.ca_blue, r, 2097152.0),
+                    _ => 1.0,
+                };
+                let sx = 200.0 + dx * radial(&tables.distortion, r, 16384.0) * ca / fill;
+                assert!((out.at(x, y)[c] - sx / w as f32).abs() < 2e-6, "channel {c}, ({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn fill_checks_interior_knots_and_malformed_tables_are_refused() {
+        let mut image = Image::new(501, 401);
+        for y in 0..401 {
+            for x in 0..501 {
+                image.data[y * 501 + x] = [x as f32; 3];
+            }
+        }
+        let tables = LensTables {
+            distortion: vec![0, 0, 1600, 0],
+            ca_red: vec![0; 4],
+            ca_blue: vec![0; 4],
+            vignetting: vec![0; 4],
+        };
+        let out = correct(&image, &tables).unwrap();
+        // The interior peak, not the corner or side midpoint, determines fill.
+        let fill = 1.0 + 1600.0 / 16384.0;
+        assert!((out.at(270, 200)[1] - (250.0 + 20.0 / fill)).abs() < 1e-4);
+        let bad = LensTables { ca_red: vec![0; 3], ..tables };
+        assert!(correct(&image, &bad).is_none());
+    }
 
     #[test]
     fn neutral_tables_leave_the_image_unchanged() {

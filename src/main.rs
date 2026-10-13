@@ -32,6 +32,9 @@ enum Command {
     /// List every recipe parameter with its range, default and meaning
     Schema,
     /// Render a picture from a RAW file and its recipe, and report statistics of the result
+    #[command(
+        after_help = "Neutral thin-edge false-colour protection runs automatically in demosaicing. Use --set defringe=VALUE (0..100, default 0) for additional purple/blue edge suppression; 0 disables only this additional filter. Check full-resolution --region detail and genuinely purple subjects before saving the setting with edit. This cannot restore clipped detail or missing edge shape."
+    )]
     Render(Render),
     /// Change recipe parameters, save the recipe, and optionally render a preview
     Edit(Edit),

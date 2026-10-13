@@ -1,0 +1,40 @@
+use rawsmith::arw::{self, LensTables};
+use rawsmith::params::Params;
+use rawsmith::pipeline::{self, Size};
+use rawsmith::synthetic::Synthetic;
+use rayon::ThreadPoolBuilder;
+
+#[test]
+fn lens_correction_and_defringe_run_before_crops_at_full_and_half_size() {
+    let mut synthetic = Synthetic::from_camera_rgb(320, 240, |x, y| {
+        let d = (y as f32 - 0.7 * x as f32 - 20.0) / 1.22;
+        let v = 0.8 - 0.75 * (-0.5 * d * d).exp();
+        [v, v, v]
+    });
+    synthetic.wb_levels = [1024; 4];
+    let mut raw = arw::decode(&synthetic.to_bytes()).unwrap();
+    raw.lens = Some(LensTables {
+        distortion: vec![0; 16],
+        ca_red: vec![4000; 16],
+        ca_blue: vec![-3000; 16],
+        vignetting: vec![0; 16],
+    });
+    let pools: Vec<_> = [1, 3, 8].map(|n| ThreadPoolBuilder::new().num_threads(n).build().unwrap()).into();
+    for half in [false, true] {
+        let size = Size { max_edge: half.then_some(160) };
+        let params = Params { denoise: 0.0, defringe: 100.0, ..Params::default() };
+        let full = pools[0].install(|| pipeline::scene(&raw, &params, size).unwrap().image);
+        let off = pipeline::scene(&raw, &Params { lens_corrections: false, ..params.clone() }, size).unwrap().image;
+        assert!(full.data != off.data, "lens tables must be applied in the half={half} path");
+        let cropped_params =
+            Params { crop: rawsmith::params::Crop { left: 0.1, top: 0.1, right: 0.9, bottom: 0.9 }, ..params };
+        // 128 selects half demosaic for the crop too, with no subsequent resize.
+        let size = Size { max_edge: half.then_some(128) };
+        let expected = full.crop(full.width / 10, full.height / 10, full.width * 8 / 10, full.height * 8 / 10);
+        for pool in &pools {
+            let got = pool.install(|| pipeline::scene(&raw, &cropped_params, size).unwrap().image);
+            assert_eq!((got.width, got.height), (expected.width, expected.height));
+            assert!(got.data == expected.data, "crop and Rayon scheduling must not change correction");
+        }
+    }
+}

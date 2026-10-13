@@ -56,8 +56,14 @@ sidecar means the default recipe. `--size` must be at least 1 pixel and
 white balance (`temperature`, `tint`), tone (`exposure`, `contrast`,
 `highlights`, `shadows`, `whites`, `blacks`, `clarity`, `dehaze`, `curve`),
 colour (`vibrance`, `saturation`, eight `hsl` bands, shadow/highlight
-`grade`), detail (`sharpen`, `denoise`), local adjustments (`vignette`,
+`grade`), detail (`sharpen`, `denoise`, `defringe`), local adjustments (`vignette`,
 `gradients`), and geometry (`rotate`, `crop`, `lens_corrections`).
+
+Neutral thin-edge false-colour protection is automatic in demosaicing and
+requires no recipe setting. `defringe` (0–100, default 0) adds stronger
+purple/blue fringe suppression after colour conversion. Setting it to 0
+turns off only the additional filter; it does not turn off the demosaic fix.
+Inspect full-resolution colour detail before saving additional suppression.
 
 `--set path=value` sets a value; `path+=value` and `path-=value` adjust
 an existing numeric value. `render --set` tries changes without saving the

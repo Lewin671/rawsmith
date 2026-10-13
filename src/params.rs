@@ -105,6 +105,7 @@ pub struct Params {
     pub vignette: f64,
     pub sharpen: f64,
     pub denoise: f64,
+    pub defringe: f64,
     pub lens_corrections: bool,
     pub rotate: f64,
     pub crop: Crop,
@@ -132,6 +133,7 @@ impl Default for Params {
             vignette: 0.0,
             sharpen: 40.0,
             denoise: 10.0,
+            defringe: 0.0,
             lens_corrections: true,
             rotate: 0.0,
             crop: Crop::default(),
@@ -209,6 +211,7 @@ pub fn fields() -> Vec<Field> {
         ),
         field("vignette", -100.0, 100.0, "Brightens (positive) or darkens (negative) the corners, on top of the lens correction."),
         field("sharpen", 0.0, 100.0, "Output sharpening amount."),
+        field("defringe", 0.0, 100.0, "Additional suppression of thin purple/blue chroma outliers at strong luminance edges, on top of automatic neutral-edge demosaic protection; 0 disables only the additional filter. Preserves broad purple subjects, but may affect genuinely purple detail only a few sensor pixels wide. Check at full resolution."),
         field("denoise", 0.0, 100.0, "Noise reduction strength (chroma first, luminance at higher values)."),
         field(
             "rotate",

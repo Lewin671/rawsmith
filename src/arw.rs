@@ -307,6 +307,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sony_counted_lens_tables_keep_signed_red_and_blue_values() {
+        use crate::tiff::Entry;
+        let mut bytes = vec![b'I', b'I', 42, 0, 0, 0, 0, 0];
+        let mut ifd = Ifd::default();
+        let tables = [
+            (0x7037, vec![4, 0, 10, 20, 30]),
+            (0x7035, vec![8, -128, -256, -512, -1024, 128, 256, 512, 1024]),
+            (0x7032, vec![4, 0, 100, 200, 300]),
+        ];
+        for (tag, values) in tables {
+            let offset = bytes.len();
+            let count = values.len() as u32;
+            for v in values {
+                bytes.extend((v as i16).to_le_bytes());
+            }
+            ifd.entries.insert(tag, Entry { kind: 8, count, offset });
+        }
+        let (tiff, _) = Tiff::new(&bytes).unwrap();
+        let lens = lens_tables(&tiff, &ifd).unwrap();
+        assert_eq!(lens.ca_red, [-128, -256, -512, -1024]);
+        assert_eq!(lens.ca_blue, [128, 256, 512, 1024]);
+        assert_eq!(lens.distortion, [0, 10, 20, 30]);
+        assert_eq!(lens.vignetting, [0, 100, 200, 300]);
+    }
+
+    #[test]
     fn compressed_block_decodes_extremes_and_scaled_offsets() {
         // One colour's block: max 1000 at position 3, min 200 at position 0,
         // and fourteen 7-bit offsets 1..=14. The range 800 needs a shift of 3.

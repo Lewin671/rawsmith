@@ -31,10 +31,26 @@ values, or from `temperature` / `tint` through the camera's colour matrix.
 Full-resolution demosaicing is edge-directed: green is interpolated along
 the direction of least change with a Laplacian correction from the
 co-located colour (Hamilton–Adams, with soft direction weights), then red
-and blue from interpolated colour differences. When the requested output is
-at most half the sensor size, each 2×2 Bayer tile becomes one pixel instead:
-exact, artefact-free and four times cheaper — this is what makes previews
-fast.
+and blue from interpolated colour differences. At thin high-contrast
+structures, a 7×7 binomial low-pass of the measured CFA planes checks for
+neutral colour support (channel differences below 2% of the local level).
+A moderate cast is also supported when its R/G and B/G ratios agree within
+0.025 in all eight neighbouring CFA tiles; a coloured line changes those
+ratios. Only with this support, the measured red/blue photosite and supported
+channel ratio constrain green before false colour propagates through the
+differences. This retains the supported tint rather than desaturating it.
+Measured photosites and clipped green remain available to reconstruction.
+This protection is always on, uses the existing green buffer and has no
+recipe parameter.
+
+When output is at most half the sensor size, each 2×2 Bayer tile becomes
+one pixel. Strong green variation within a tile can also produce false
+colour from different channel sample positions. Neutral tiles use their
+four-photosite mean exposure and supported colour ratios; coloured support
+in neighbouring CFA tiles protects the wings of genuine coloured detail.
+Clipped tiles are excluded. This path adds no frame-sized buffer. Fine
+colour near the Bayer sampling limit remains ambiguous; this is a narrow
+neutral-structure correction, not a general removal of all false colour.
 
 ## 3. Highlight reconstruction — `demosaic.rs`
 
@@ -49,8 +65,13 @@ becomes neutral white.
 
 Sony cameras store per-shot radial tables for distortion, lateral chromatic
 aberration and vignetting. rawsmith applies them in a single cubic
-resampling pass (each colour channel at its own radius) and scales the
-result to fill the frame exactly, matching the camera's own JPEG geometry.
+resampling pass (each colour channel at its own radius). Distortion and CA
+are interpolated separately at the radius after fill zoom. Positive Sony
+CA coefficients sample farther out in the source; red and blue use
+`1 + coefficient / 2^21`. The zoom fills the frame using the green-channel
+geometry. Correction precedes orientation, crop and output resizing in both
+full- and half-resolution paths. It corrects lateral channel displacement,
+not longitudinal CA, blooming or demosaic false colour.
 
 ## 5. Colour — `color.rs`
 
@@ -59,7 +80,24 @@ Rec.2020, with a per-camera matrix. The matrix is sensor characterisation
 data; cameras without one are rejected rather than rendered with wrong
 colour.
 
-## 6. Noise reduction and geometry — `pipeline.rs`
+## 6. Defringe, noise reduction and geometry — `fringe.rs`, `pipeline.rs`
+
+Additional `defringe` (0–100, default 0) reduces thin purple/blue chroma
+outliers after colour conversion, before noise reduction, crop and resize.
+It requires strong luminance contrast and lower chroma support on both sides
+within a square radius of three full-resolution pixels (two half-resolution
+pixels). Supported purple
+surfaces, including their corners, are protected. It changes chroma while
+preserving linear luminance, so it cannot reconstruct missing edge shape or
+highlight detail. The automatic demosaic protection above runs even at `defringe=0`.
+This control adds stronger post-processing for residual fringes; it does
+not disable the demosaic fix. Additional suppression is off by default
+because genuinely purple detail only a few pixels wide can be affected. The full and
+half demosaics sample fine edges differently; inspect a full-resolution region
+before keeping it. Broad purple casts and wide out-of-focus halos are outside
+its scope. Encoding uses 64-row stripes with original halos rather than
+an immutable full frame. At width 7008 and radius 3, the two reusable
+buffers hold at most 6.14 MB (5.85 MiB), independent of frame height.
 
 Chroma noise is smoothed with a guided filter that follows luminance edges,
 in a square-root encoding where sensor noise is roughly uniform; luminance

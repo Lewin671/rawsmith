@@ -179,8 +179,8 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
         (mosaic.width, mosaic.height)
     };
     let full_edge = (upright.0 as f32 * cw).max(upright.1 as f32 * ch);
-    // Half-resolution demosaicing is exact (no interpolation) and four times
-    // cheaper, so use it whenever the output is small enough.
+    // Half-resolution demosaicing samples each CFA tile, with automatic
+    // neutral-edge colour protection, when the output is small enough.
     let half = size.max_edge.is_some_and(|edge| edge as f32 <= full_edge * 0.5);
 
     let mut image = if half { demosaic::half(&mosaic) } else { demosaic::full(&mosaic) };
@@ -195,6 +195,7 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
         }
     }
     image.map(|p| color::apply(&cam_to_work, p));
+    crate::fringe::suppress(&mut image, params.defringe as f32 / 100.0, if half { 2 } else { 3 });
     if !half {
         denoise(&mut image, params.denoise as f32 / 100.0);
     }
