@@ -340,8 +340,17 @@ impl Params {
             }
             if step != 0.0 {
                 match (slot.as_f64(), new.as_f64()) {
-                    // Round away binary-fraction noise such as 0.7000000000000001.
-                    (Some(old), Some(delta)) => new = json!(((old + step * delta) * 1e6).round() / 1e6),
+                    (Some(old), Some(delta)) => {
+                        let sum = old + step * delta;
+                        let scaled = sum * 1e6;
+                        // Non-finite numbers become JSON null, which would silently
+                        // clear optional white balance values instead of rejecting them.
+                        if !sum.is_finite() || !scaled.is_finite() {
+                            return Err(Error::Params(format!("'{assignment}': numeric adjustment overflowed")));
+                        }
+                        // Round away binary-fraction noise such as 0.7000000000000001.
+                        new = json!(scaled.round() / 1e6);
+                    }
                     _ => {
                         return Err(Error::Params(format!(
                             "'{assignment}': += and -= need a numeric parameter that currently has a value"
@@ -448,6 +457,29 @@ mod tests {
         ] {
             assert!(set(&p, &[bad]).is_err(), "{bad} should be rejected");
         }
+    }
+
+    #[test]
+    fn numeric_adjustment_overflow_does_not_clear_white_balance() {
+        let p = Params::from_json(r#"{"temperature":5200,"tint":10}"#).unwrap();
+        for assignment in ["temperature+=1e308", "temperature-=1e308", "tint+=1e308", "tint-=1e308"] {
+            let err = p.with_assignments(&[assignment.into()]).unwrap_err();
+            assert_eq!(err.kind(), "params", "{assignment}");
+        }
+        // Public Params fields can also contain values large enough to overflow addition.
+        let large = Params { temperature: Some(f64::MAX), ..p.clone() };
+        assert_eq!(large.with_assignments(&["temperature+=1e308".into()]).unwrap_err().kind(), "params");
+
+        let adjusted = p
+            .with_assignments(&[
+                "temperature+=100".into(),
+                "temperature-=50".into(),
+                "tint+=0.1".into(),
+                "tint+=0.2".into(),
+                "tint-=0.6".into(),
+            ])
+            .unwrap();
+        assert_eq!((adjusted.temperature, adjusted.tint), (Some(5250.0), Some(9.7)));
     }
 
     #[test]
