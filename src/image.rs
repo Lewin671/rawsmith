@@ -288,7 +288,7 @@ impl Plane {
 /// One level of the undecimated B3-spline wavelet transform: a 1-4-6-4-1
 /// smoothing with `step - 1` holes between taps, mirrored at the borders.
 fn atrous_smooth(input: &Plane, step: usize) -> Plane {
-    const KERNEL: [f32; 5] = [1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0];
+    const K: [f32; 3] = [6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0];
     let (w, h) = (input.width, input.height);
     let mirror = |i: isize, n: usize| {
         if n == 1 {
@@ -298,20 +298,45 @@ fn atrous_smooth(input: &Plane, step: usize) -> Plane {
         let i = i.rem_euclid(period);
         (if i >= n as isize { period - i } else { i }) as usize
     };
+    let tap = |row: &[f32], x: usize| {
+        let at = |offset: isize| row[mirror(x as isize + offset * step as isize, w)];
+        K[0] * row[x] + K[1] * (at(-1) + at(1)) + K[2] * (at(-2) + at(2))
+    };
     let mut rows = Plane::new(w, h);
     rows.data.par_chunks_mut(w).zip(input.data.par_chunks(w)).for_each(|(out, row)| {
-        for (x, v) in out.iter_mut().enumerate() {
-            *v = (0..5).map(|k| KERNEL[k] * row[mirror(x as isize + (k as isize - 2) * step as isize, w)]).sum();
+        // Only the margins need mirrored indices; the interior is a plain
+        // five-tap sum over fixed offsets.
+        let margin = (2 * step).min(w);
+        if w > 2 * margin {
+            let interior = w - 2 * margin;
+            let (far_left, left, centre, right, far_right) = (
+                &row[..interior],
+                &row[step..step + interior],
+                &row[margin..margin + interior],
+                &row[margin + step..margin + step + interior],
+                &row[2 * margin..],
+            );
+            for (i, v) in out[margin..w - margin].iter_mut().enumerate() {
+                *v = K[0] * centre[i] + K[1] * (left[i] + right[i]) + K[2] * (far_left[i] + far_right[i]);
+            }
+            for x in (0..margin).chain(w - margin..w) {
+                out[x] = tap(row, x);
+            }
+        } else {
+            for (x, v) in out.iter_mut().enumerate() {
+                *v = tap(row, x);
+            }
         }
     });
     let mut out = Plane::new(w, h);
     out.data.par_chunks_mut(w).enumerate().for_each(|(y, out)| {
-        let taps: [&[f32]; 5] = std::array::from_fn(|k| {
-            let row = mirror(y as isize + (k as isize - 2) * step as isize, h);
-            &rows.data[row * w..(row + 1) * w]
-        });
+        let row = |offset: isize| {
+            let y = mirror(y as isize + offset * step as isize, h);
+            &rows.data[y * w..(y + 1) * w]
+        };
+        let (far_up, up, centre, down, far_down) = (row(-2), row(-1), row(0), row(1), row(2));
         for (x, v) in out.iter_mut().enumerate() {
-            *v = (0..5).map(|k| KERNEL[k] * taps[k][x]).sum();
+            *v = K[0] * centre[x] + K[1] * (up[x] + down[x]) + K[2] * (far_up[x] + far_down[x]);
         }
     });
     out
@@ -345,13 +370,16 @@ pub fn wavelet_denoise(input: Plane, sigma: f32, threshold: f32) -> Plane {
         let ceiling = (threshold * WEIGHT[scale]).powi(2) * noise;
         // A difference of two smoothed samples carries sqrt(2) of their noise.
         let slope_noise = std::f32::consts::SQRT_2 * RESIDUAL[scale] * sigma;
-        current.data.par_iter_mut().zip(&smooth.data).for_each(|(c, s)| *c -= *s);
         // Local energy of this band. Where it clearly exceeds the noise there
         // is texture, and the threshold falls to noise^2 / signal (BayesShrink)
         // so low-contrast detail is kept; in flat areas it stays at its
         // ceiling, which also removes the isolated extremes seen as specks.
-        let energy =
-            Plane { width: w, height: h, data: current.data.par_iter().map(|d| d * d).collect() }.box_blur(3 * step);
+        let mut energy = Plane::new(w, h);
+        current.data.par_iter_mut().zip(&smooth.data).zip(&mut energy.data).for_each(|((c, s), e)| {
+            *c -= *s;
+            *e = *c * *c;
+        });
+        let energy = energy.box_blur_owned(3 * step);
         kept.data.par_chunks_mut(w).enumerate().for_each(|(y, out)| {
             let row = |y: usize| &smooth.data[y * w..(y + 1) * w];
             let (here, above, below) = (row(y), row(y.saturating_sub(step)), row((y + step).min(h - 1)));
