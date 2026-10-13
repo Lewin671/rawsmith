@@ -18,9 +18,11 @@ const ANALYSIS_EDGE: usize = 640;
 // neighbour below about 0.55. This also catches a one-pixel dark line that
 // covers only one of the tile's two greens, while rejecting sky gradients.
 const FRINGE_EDGE: f32 = 0.25;
-// One tile in 200 must border both sensor loss and a strong edge. This
-// coverage gate rejects isolated hot sites; it is a heuristic, not a
-// calibrated probability of optical fringing.
+// Count each native 2x2 tile once if any of its four neighbours establishes
+// risk, then divide by the total native tile count, not occupied intervals.
+// Thus > 0.5% still means more than one risky tile per 200 native tiles,
+// independent of sampling step (40,369 of 8,073,600 at 6960x4640). It rejects
+// isolated hot sites; it is a heuristic, not a calibrated fringe probability.
 const FRINGE_EDGE_PCT: f32 = 0.5;
 
 struct Measure {
@@ -128,13 +130,10 @@ fn sensor(raw: &RawImage, params: &Params) -> Sensor {
         ((raw.data[y * raw.width + x] as f32 - raw.black[cell]) / (raw.white - raw.black[cell]).max(1.0))
             .clamp(0.0, 1.0)
     };
-    let tile = |sx: usize, sy: usize| {
-        let cells = [
-            value(sx, sy),
-            value((sx + 1).min(crop.x + crop.width - 1), sy),
-            value(sx, (sy + 1).min(crop.y + crop.height - 1)),
-            value((sx + 1).min(crop.x + crop.width - 1), (sy + 1).min(crop.y + crop.height - 1)),
-        ];
+    let tile = |samples: [u16; 4]| {
+        let cells: [f32; 4] = std::array::from_fn(|i| {
+            ((samples[i] as f32 - raw.black[i]) / (raw.white - raw.black[i]).max(1.0)).clamp(0.0, 1.0)
+        });
         // Same 2% near-saturation margin as mosaic reconstruction.
         let clipped = cells.iter().filter(|&&v| v >= 0.98).count();
         // Green is the exposure reference, before WB makes other channels brighter.
@@ -143,29 +142,61 @@ fn sensor(raw: &RawImage, params: &Params) -> Sensor {
     };
     let mut tiles = Image::new(w, h);
     let mut edges = Image::new(w, h);
-    for y in 0..h {
-        for x in 0..w {
-            let (sx, sy) = (crop.x + x * step, crop.y + y * step);
-            let p = tile(sx, sy);
-            tiles.data[y * w + x] = p;
-            // Inspect native neighbours, not distant stratified samples:
-            // resizing the loss map first would erase thin branches/rime.
-            let risk = [(0, -2), (0, 2), (-2, 0), (2, 0)].into_iter().any(|(dx, dy)| {
-                let (Some(nx), Some(ny)) = (sx.checked_add_signed(dx), sy.checked_add_signed(dy)) else {
-                    return false;
-                };
-                if nx < crop.x || ny < crop.y || nx >= crop.x + crop.width || ny >= crop.y + crop.height {
-                    return false;
-                }
-                let q = tile(nx, ny);
-                (p[1] > 0.0 || q[1] > 0.0) && (p[0].sqrt() - q[0].sqrt()).abs() >= FRINGE_EDGE
-            });
-            edges.data[y * w + x][0] = f32::from(risk);
-        }
+    #[derive(Clone, Copy, Default)]
+    struct EdgeTile {
+        sqrt_green: f32,
+        lost: bool,
+        risk: bool,
     }
+    let borders_loss =
+        |p: EdgeTile, q: EdgeTile| (p.lost || q.lost) && (p.sqrt_green - q.sqrt_green).abs() >= FRINGE_EDGE;
+    let interval = step / 2;
+    let accumulate = |row: &[EdgeTile], y: usize, edges: &mut Image| {
+        for (x, p) in row.iter().enumerate() {
+            let out = &mut edges.data[(y / interval) * w + x / interval];
+            out[0] += f32::from(p.risk);
+            out[1] += 1.0;
+        }
+    };
+    // One pass over the active mosaic, with only two native tile rows and
+    // analysis-sized interval counts. Mark both endpoints of each edge,
+    // including across intervals; flush a row only after seeing its bottom
+    // neighbour. Thin structures cannot fall between stratified samples.
+    let mut previous = vec![EdgeTile::default(); crop.width / 2];
+    let mut current = previous.clone();
+    for y in 0..crop.height / 2 {
+        let sy = crop.y + y * 2;
+        let start = sy * raw.width + crop.x;
+        let top = raw.data[start..start + crop.width].as_chunks::<2>().0;
+        let bottom = raw.data[start + raw.width..start + raw.width + crop.width].as_chunks::<2>().0;
+        for (x, (top, bottom)) in top.iter().zip(bottom).enumerate() {
+            let p = tile([top[0], top[1], bottom[0], bottom[1]]);
+            if y % interval == 0 && x % interval == 0 {
+                tiles.data[(y / interval) * w + x / interval] = p;
+            }
+            current[x] = EdgeTile { sqrt_green: p[0].sqrt(), lost: p[1] > 0.0, risk: false };
+            if x > 0 && borders_loss(current[x], current[x - 1]) {
+                current[x].risk = true;
+                current[x - 1].risk = true;
+            }
+            if y > 0 && borders_loss(current[x], previous[x]) {
+                current[x].risk = true;
+                previous[x].risk = true;
+            }
+        }
+        if y > 0 {
+            accumulate(&previous, y - 1, &mut edges);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    accumulate(&previous, crop.height / 2 - 1, &mut edges);
     let framed = pipeline::framed(tiles, raw.meta.orientation, params);
     let edges = pipeline::framed(edges, raw.meta.orientation, params);
-    let fringe_edge_pct = edges.data.iter().map(|p| p[0]).sum::<f32>() / edges.data.len() as f32 * 100.0;
+    // Frame counts together before dividing, so partial intervals carry
+    // their actual native area and rotation interpolates both consistently.
+    let (risky, total) =
+        edges.data.iter().fold((0.0f64, 0.0f64), |(risk, count), p| (risk + p[0] as f64, count + p[1] as f64));
+    let fringe_edge_pct = (risky / total * 100.0) as f32;
     let mut tiles = framed.data;
     tiles.sort_by(|a, b| a[0].total_cmp(&b[0]));
     let n = tiles.len() as f32;
@@ -295,7 +326,7 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
         neutral.p10, neutral.p50, neutral.p90, neutral.p99, neutral.chroma, neutral.chroma_bright, neutral.saturation_p90, neutral.channel_near
     )];
     notes.push(format!(
-        "defringe {:.0}: sensor-loss edges {:.2}% of framed native tile samples (any-site loss >= 98%, neighbouring sqrt-green difference >= {FRINGE_EDGE:.2}); threshold > {FRINGE_EDGE_PCT:.2}%; {defringe_reason}; risk proxy, not proof of purple fringing",
+        "defringe {:.0}: sensor-loss edges {:.2}% of framed native tiles (all tiles aggregated per sampling interval; any-site loss >= 98%, neighbouring sqrt-green difference >= {FRINGE_EDGE:.2}); threshold > {FRINGE_EDGE_PCT:.2}%; {defringe_reason}; risk proxy, not proof of purple fringing",
         params.defringe, sensor.fringe_edge_pct
     ));
     // Broad bright neutrals PLUS a meaningful tonal range. Middle-grey
@@ -544,6 +575,35 @@ mod tests {
         [level / (2600.0 / 1024.0), level, level / (1600.0 / 1024.0)]
     }
 
+    fn native_flat() -> RawImage {
+        // Real A7 IV active dimensions, with CFA-aligned padding so evidence
+        // must respect the sensor crop rather than the stored mosaic size.
+        let mut raw = arw::decode(&Synthetic::new(16, 16, vec![512; 16 * 16]).to_bytes()).unwrap();
+        raw.width = 7008;
+        raw.height = 4672;
+        raw.crop = arw::Crop { x: 24, y: 16, width: 6960, height: 4640 };
+        raw.data = vec![512; raw.width * raw.height];
+        reset_native_lines(&mut raw, &[], false);
+        raw
+    }
+
+    fn reset_native_lines(raw: &mut RawImage, lines: &[usize], horizontal: bool) {
+        let crop = raw.crop;
+        for (y, row) in raw.data.chunks_mut(raw.width).skip(crop.y).take(crop.height).enumerate() {
+            let row = &mut row[crop.x..crop.x + crop.width];
+            row.fill(raw.white as u16);
+            if horizontal {
+                if lines.contains(&y) {
+                    row.fill(512);
+                }
+            } else {
+                for &x in lines {
+                    row[x] = 512;
+                }
+            }
+        }
+    }
+
     fn analysis(raw: &RawImage, params: &Params) -> (Measure, Measure, Measure) {
         let scene = pipeline::scene(raw, params, Size { max_edge: Some(ANALYSIS_EDGE) }).unwrap();
         let spaces = Spaces::new();
@@ -613,6 +673,58 @@ mod tests {
             let mut foreground = Params::default();
             foreground.crop.top = 0.5;
             assert_eq!(auto(&raw, &foreground).unwrap().params.defringe, 0.0);
+        }
+    }
+
+    #[test]
+    fn native_periodic_edge_coverage_is_independent_of_sampling_phase() {
+        let mut raw = native_flat();
+        let mut interior = Params::default();
+        // Keep complete periods and real neighbours at both frame edges:
+        // otherwise a line on a sensor boundary has only one neighbour.
+        interior.crop.left = 48.0 / raw.crop.width as f64;
+        interior.crop.right = 1.0 - interior.crop.left;
+        for phase in [0, 1, 5, 6, 11, 12, 23, 46, 47] {
+            let lines: Vec<_> = (phase..raw.crop.width).step_by(48).collect();
+            reset_native_lines(&mut raw, &lines, false);
+            // A dark column makes one darker tile and two risky neighbours:
+            // three of each 24 native tiles = 12.5%, not 0% or 25%.
+            assert_eq!(sensor(&raw, &interior).fringe_edge_pct, 12.5, "phase {phase}");
+            let risky_columns = lines.len() * 3 - usize::from(!(2..46).contains(&phase));
+            let expected = (risky_columns as f64 / (raw.crop.width / 2) as f64 * 100.0) as f32;
+            assert_eq!(sensor(&raw, &Params::default()).fringe_edge_pct, expected, "full crop phase {phase}");
+        }
+    }
+
+    #[test]
+    fn native_thin_lines_cross_the_coverage_gate_at_every_phase() {
+        let mut raw = native_flat();
+        // Five separated full-height lines cover 15/3480 native tile
+        // columns (0.431%); six cover 18/3480 (0.517%), bracketing 0.5%.
+        for phase in [0, 1, 6, 11] {
+            let lines: Vec<_> = (0..6).map(|i| 48 + i * 960 + phase).collect();
+            reset_native_lines(&mut raw, &lines[..5], false);
+            let below = sensor(&raw, &Params::default()).fringe_edge_pct;
+            assert_eq!(below, (15.0f64 / 3480.0 * 100.0) as f32, "five lines, phase {phase}");
+            assert!(below < FRINGE_EDGE_PCT);
+            reset_native_lines(&mut raw, &lines, false);
+            let above = sensor(&raw, &Params::default()).fringe_edge_pct;
+            assert_eq!(above, (18.0f64 / 3480.0 * 100.0) as f32, "six lines, phase {phase}");
+            assert!(above > FRINGE_EDGE_PCT);
+            let result = auto(&raw, &Params::default()).unwrap();
+            assert_eq!(result.params.defringe, 50.0, "six lines, phase {phase}");
+            assert!(result.notes.iter().any(|n| n.contains("sensor-loss edges 0.52%")
+                && n.contains("all tiles aggregated")
+                && n.contains("threshold > 0.50%")));
+        }
+        // Exercise vertical adjacency and the last partial sampling row
+        // (4640 % 12 == 8). Its denominator must be actual native tiles.
+        for phase in [0, 1, 6, 11] {
+            let lines: Vec<_> = (0..6).map(|i| 48 + i * 720 + phase).collect();
+            reset_native_lines(&mut raw, &lines, true);
+            let evidence = sensor(&raw, &Params::default());
+            assert_eq!(evidence.fringe_edge_pct, (18.0f64 / 2320.0 * 100.0) as f32, "horizontal phase {phase}");
+            assert!(evidence.fringe_edge_pct > FRINGE_EDGE_PCT);
         }
     }
 
