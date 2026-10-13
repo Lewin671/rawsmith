@@ -67,7 +67,8 @@ honest:
 - **Blind**: file names are random task numbers; the prompt says nothing
   about what is being compared.
 - **Both orders**: every pair is judged twice with A and B swapped. A
-  photo counts as a win only if the verdicts agree; disagreement is a tie.
+  photo counts as a win when the two verdicts net out in its favour;
+  opposite verdicts cancel to a tie.
 - **The photo is the unit**: one outcome per photo per comparison, however
   many times it was judged.
 - **Judge checks**: the judge is also shown identical pairs (should be

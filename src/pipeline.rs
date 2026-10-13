@@ -24,7 +24,8 @@ use crate::{demosaic, lens};
 
 /// Gain, in stops, between sensor-linear data and scene-linear values where
 /// 0.18 is middle grey: the camera's metering leaves this much room for
-/// highlights.
+/// highlights. Fitted so the default rendering is as bright as the camera's
+/// own JPEG.
 pub const BASE_EXPOSURE: f32 = 1.2;
 
 #[derive(Debug, Clone, Serialize)]
@@ -65,7 +66,11 @@ pub fn white_balance(raw: &RawImage, params: &Params) -> Result<(WhiteBalance, [
     let gains = if params.temperature.is_none() && params.tint.is_none() {
         raw.wb
     } else {
-        color::wb_from_temperature(&cam, temperature, tint)
+        color::wb_from_temperature(&cam, temperature, tint).ok_or_else(|| {
+            Error::Params(format!(
+                "temperature {temperature:.0} K with tint {tint:.0} is outside what this camera can render; move tint closer to 0"
+            ))
+        })?
     };
     let info = WhiteBalance {
         temperature: temperature.round(),
@@ -229,7 +234,7 @@ fn sharpen(image: &mut Image, amount: f32) {
 /// Turns a scene-linear image into the final sRGB-encoded picture.
 pub fn finish(scene: &Image, params: &Params, spaces: &Spaces) -> Image {
     let mut image = scene.clone();
-    let base = crate::tune("base", BASE_EXPOSURE);
+    let base = BASE_EXPOSURE;
     let gain = (params.exposure as f32 + base).exp2();
     image.map(|p| [p[0] * gain, p[1] * gain, p[2] * gain]);
 
@@ -278,7 +283,7 @@ pub fn finish(scene: &Image, params: &Params, spaces: &Spaces) -> Image {
     );
 
     // Sensor saturation sits at 2^BASE_EXPOSURE and just reaches display white.
-    let filmic = Filmic::new(params.contrast as f32, (base + crate::tune("white", 0.0)).exp2());
+    let filmic = Filmic::new(params.contrast as f32, base.exp2());
     // Black and white points on encoded display values: `whites` moves the
     // value that maps to pure white, `blacks` the one that maps to black.
     let black = -params.blacks as f32 / 100.0 * 0.08;
@@ -289,7 +294,7 @@ pub fn finish(scene: &Image, params: &Params, spaces: &Spaces) -> Image {
     // Shadows and midtones keep their hue and saturation under the curve;
     // highlights take the curve per channel, which rolls bright colours off
     // towards yellow and white the way film and cameras do.
-    let ratio_strength = crate::tune("mix", 0.5);
+    let ratio_strength = 0.5;
     image.map(|p| {
         let per_channel = p.map(|v| filmic.eval(v));
         let y = color::luma(p).max(1e-6);

@@ -163,7 +163,8 @@ pub fn raw_stats(raw: &RawImage) -> RawStats {
             for cell in 0..4 {
                 let (sx, sy) = (x + cell % 2, y + cell / 2);
                 let tile = (sy & 1) * 2 + (sx & 1);
-                let v = (raw.data[sy * raw.width + sx] as f32 - raw.black[tile]) / (raw.white - raw.black[tile]);
+                let v =
+                    (raw.data[sy * raw.width + sx] as f32 - raw.black[tile]) / (raw.white - raw.black[tile]).max(1.0);
                 let c = raw.cfa[tile] as usize;
                 count[c] += 1;
                 saturated[c] += (v >= 0.98) as usize;

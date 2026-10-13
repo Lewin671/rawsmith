@@ -142,11 +142,23 @@ mod tests {
         for len in (0..bytes.len().min(400)).step_by(7) {
             let _ = arw::decode(&bytes[..len]);
         }
+        // Sizes too small for the Bayer filters are refused, not mis-indexed.
+        for (w, h) in [(1, 1), (2, 2), (9, 9), (14, 40)] {
+            assert!(arw::decode(&Synthetic::new(w, h, vec![600; w * h]).to_bytes()).is_err(), "{w}x{h}");
+        }
         // Flipping header bytes must never panic either.
         for i in 0..300 {
-            let mut broken = bytes.clone();
-            broken[i] ^= 0xff;
-            let _ = arw::decode(&broken);
+            for flip in [0xff, 0x80, 0x01] {
+                let mut broken = bytes.clone();
+                broken[i] ^= flip;
+                // Whatever still decodes must also survive the first pipeline stages.
+                if let Ok(raw) = arw::decode(&broken) {
+                    crate::stats::raw_stats(&raw);
+                    let mosaic = crate::demosaic::prepare(&raw, [2.0, 1.0, 1.5]);
+                    crate::demosaic::half(&mosaic);
+                    crate::demosaic::full(&mosaic);
+                }
+            }
         }
     }
 }

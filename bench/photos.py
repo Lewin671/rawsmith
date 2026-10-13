@@ -33,7 +33,7 @@ import sys
 import time
 
 EDGE = 1400  # long edge of the images the judge sees
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 COMPARISONS = [("neutral", "camera"), ("auto", "camera"), ("auto", "system"), ("auto", "neutral"),
                ("ai", "auto"), ("ai", "camera"), ("ai", "system")]
 # Deliberately bad recipes. A trustworthy judge must prefer the unspoiled picture.
@@ -65,7 +65,8 @@ def die(message):
 
 
 def work_dir(path):
-    path = os.path.abspath(path)
+    # Resolve symlinks first: a link that points into the repository is inside it.
+    path = os.path.realpath(path)
     if os.path.commonpath([path, REPO]) == REPO:
         die("the work directory must be outside the repository, so rendered photos can never be committed")
     os.makedirs(path, exist_ok=True)
@@ -84,6 +85,15 @@ def save(path, value):
     with open(path + ".tmp", "w") as f:
         json.dump(value, f, indent=1)
     os.replace(path + ".tmp", path)
+
+
+def forget_judgements(work):
+    """Verdicts describe specific images in a specific order; once either
+    changes they must not be reused."""
+    for file in os.listdir(work):
+        if file == "tasks.json" or (file.startswith("verdicts-") and file.endswith(".json")):
+            os.remove(os.path.join(work, file))
+    shutil.rmtree(os.path.join(work, "blind"), ignore_errors=True)
 
 
 def rawsmith(exe, *args):
@@ -105,8 +115,10 @@ def cmd_render(args):
     sips = shutil.which("sips")
     # sips renders RAW into Display P3; convert so every variant is plain sRGB.
     srgb = ["-m", "/System/Library/ColorSync/Profiles/sRGB Profile.icc"]
+    forget_judgements(work)
     images = os.path.join(work, "images")
-    os.makedirs(images, exist_ok=True)
+    shutil.rmtree(images, ignore_errors=True)
+    os.makedirs(images)
     manifest = {"edge": EDGE, "photos": {}}
     for index, name in enumerate(names):
         raw = os.path.join(args.raws, name)
@@ -165,8 +177,8 @@ def cmd_pairs(args):
     work = work_dir(args.work)
     manifest = load(os.path.join(work, "manifest.json")) or die("run `render` first")
     rng = random.Random(args.seed)
+    forget_judgements(work)
     blind = os.path.join(work, "blind")
-    shutil.rmtree(blind, ignore_errors=True)
     os.makedirs(blind)
     tasks = []
     def add(photo, kind, first, second):
@@ -211,7 +223,8 @@ def cmd_judge(args):
     tasks = load(os.path.join(work, "tasks.json")) or die("run `pairs` first")
     verdicts_path = os.path.join(work, f"verdicts-{args.name}.json")
     verdicts = load(verdicts_path, {})
-    todo = [t for t in tasks if t["task"] not in verdicts]
+    # A failed attempt (no winner) is not a verdict: try it again.
+    todo = [t for t in tasks if verdicts.get(t["task"], {}).get("winner") is None]
     print(f"{len(todo)} of {len(tasks)} tasks to judge with: {args.judge_cmd}", flush=True)
 
     def judge(task):
@@ -244,41 +257,45 @@ def wilson(wins, n):
 
 def summarise(tasks, verdicts):
     """Aggregates one judge's verdicts. The photo is the unit of analysis: the
-    two orderings of a pair are combined into one outcome per photo."""
+    two orderings of a pair are combined into one outcome per photo, and a
+    pair counts only when both orderings were judged."""
     by_pair = {}
     for task in tasks:
         verdict = verdicts.get(task["task"], {}).get("winner")
-        if verdict is None:
-            continue
-        chosen = "tie" if verdict == "tie" else task[verdict]
+        chosen = None if verdict is None else "tie" if verdict == "tie" else task[verdict]
         by_pair.setdefault((task["kind"], task["photo"], *sorted([task["A"], task["B"]])), []).append((task, chosen, verdict))
     comparisons, controls = {}, {"correct": 0, "total": 0}
-    consistent = total_both = 0
+    consistent = complete = incomplete = 0
     position = {"A": 0, "B": 0, "tie": 0}
     identical = {"tie": 0, "total": 0}
     for (kind, photo, first, second), votes in by_pair.items():
+        if len(votes) != 2 or any(chosen is None for _, chosen, _ in votes):
+            incomplete += 1
+            continue
+        complete += 1
         for _, _, verdict in votes:
             position[verdict] += 1
         if kind == "identical":
-            identical["total"] += len(votes)
+            identical["total"] += 2
             identical["tie"] += sum(1 for _, chosen, _ in votes if chosen == "tie")
             continue
-        if len(votes) == 2:
-            total_both += 1
-            consistent += votes[0][1] == votes[1][1]
-        # +1 / 0 / -1 per ordering for the first-listed variant, averaged.
+        consistent += votes[0][1] == votes[1][1]
         task = votes[0][0]
         if kind == "control":
-            good = "auto"
-            controls["total"] += len(votes)
-            controls["correct"] += sum(1 for _, chosen, _ in votes if chosen == good)
+            controls["total"] += 2
+            controls["correct"] += sum(1 for _, chosen, _ in votes if chosen == "auto")
             continue
         for candidate, reference in COMPARISONS:
             if {candidate, reference} == {task["A"], task["B"]}:
-                score = sum((chosen == candidate) - (chosen == reference) for _, chosen, _ in votes) / len(votes)
+                # +1 / 0 / -1 per ordering for the candidate, averaged.
+                score = sum((chosen == candidate) - (chosen == reference) for _, chosen, _ in votes) / 2
                 comparisons.setdefault(f"{candidate} vs {reference}", []).append(score)
     table = {}
-    for name, scores in comparisons.items():
+    for candidate, reference in COMPARISONS:
+        name = f"{candidate} vs {reference}"
+        scores = comparisons.get(name)
+        if not scores:
+            continue
         wins, losses = sum(s > 0 for s in scores), sum(s < 0 for s in scores)
         decided = wins + losses
         low, high = wilson(wins, decided)
@@ -288,14 +305,17 @@ def summarise(tasks, verdicts):
             "ci95": [round(low, 3), round(high, 3)],
             "mean_score": round(sum(scores) / len(scores), 3),
         }
+    decided_pairs = complete - identical["total"] // 2
     return {
         "comparisons": table,
         "judge_checks": {
             "control_accuracy": round(controls["correct"] / controls["total"], 3) if controls["total"] else None,
             "control_votes": controls["total"],
-            "order_consistency": round(consistent / total_both, 3) if total_both else None,
+            "order_consistency": round(consistent / decided_pairs, 3) if decided_pairs else None,
             "identical_pairs_called_tie": f"{identical['tie']}/{identical['total']}",
             "position_votes": position,
+            "pairs_judged": complete,
+            "pairs_incomplete": incomplete,
         },
     }
 
@@ -319,7 +339,8 @@ def cmd_report(args):
         checks = summary["judge_checks"]
         print(f"\nJudge: {judge}   control accuracy {checks['control_accuracy']} over {checks['control_votes']} votes, "
               f"order consistency {checks['order_consistency']}, identical pairs called tie {checks['identical_pairs_called_tie']}, "
-              f"position votes {checks['position_votes']}")
+              f"position votes {checks['position_votes']}, pairs judged {checks['pairs_judged']}"
+              + (f"  ** {checks['pairs_incomplete']} pairs incomplete and excluded; rerun `judge` **" if checks["pairs_incomplete"] else ""))
         print(f"{'comparison':<20} {'photos':>6} {'wins':>5} {'losses':>6} {'ties':>5} {'win rate':>9}  95% CI")
         for name, row in summary["comparisons"].items():
             rate = "-" if row["win_rate_of_decided"] is None else f"{row['win_rate_of_decided']:.0%}"

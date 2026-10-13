@@ -58,10 +58,11 @@ pub fn write(path: &Path, image: &Image, quality: u8) -> Result<()> {
                 return Err(Error::Params("image is too large for JPEG; use --size or PNG".into()));
             }
             let mut encoder = jpeg_encoder::Encoder::new_file(path, quality.clamp(1, 100)).map_err(|e| failed(&e))?;
-            // Full chroma resolution at high quality, as cameras and editors do.
-            let sampling =
-                if quality >= 90 { jpeg_encoder::SamplingFactor::F_1_1 } else { jpeg_encoder::SamplingFactor::F_2_2 };
-            encoder.set_sampling_factor(sampling);
+            // Always full chroma resolution. Subsampled (4:2:0) files from this
+            // encoder decode correctly in libjpeg and ImageIO, but an image
+            // viewer used by AI assistants showed them scrambled, and a preview
+            // the assistant cannot see correctly defeats the purpose.
+            encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
             encoder.set_optimized_huffman_tables(true);
             encoder.encode(&to_rgb8(image), w as u16, h as u16, jpeg_encoder::ColorType::Rgb).map_err(|e| failed(&e))
         }
@@ -76,5 +77,78 @@ pub fn write(path: &Path, image: &Image, quality: u8) -> Result<()> {
             writer.write_image_data(&to_rgb16_be(image)).map_err(|e| failed(&e))
         }
         _ => Err(Error::Params(format!("unsupported output format '.{extension}'; use .jpg or .png"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A colourful picture with sharp edges and fine texture, sRGB-encoded.
+    fn picture(width: usize, height: usize) -> Image {
+        let mut image = Image::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                let (u, v) = (x as f32 / width as f32, y as f32 / height as f32);
+                let block = if (x / 16 + y / 16) % 2 == 0 { 0.15 } else { 0.0 };
+                let grain = 0.1 * dither(y * width + x);
+                image.data[y * width + x] =
+                    [0.2 + 0.6 * u + grain, 0.7 - 0.5 * v + block + grain, 0.3 + 0.4 * u * v + grain];
+            }
+        }
+        image
+    }
+
+    #[test]
+    fn jpeg_round_trips_at_every_quality_and_odd_sizes() {
+        let dir = std::env::temp_dir().join(format!("rawsmith-jpeg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (width, height) in [(160, 96), (163, 99), (17, 9), (900, 600), (1400, 933)] {
+            let image = picture(width, height);
+            for quality in [40, 75, 85, 89, 90, 95, 100] {
+                let path = dir.join(format!("{width}x{height}-{quality}.jpg"));
+                write(&path, &image, quality).unwrap();
+                let mut decoder = jpeg_decoder::Decoder::new(std::fs::File::open(&path).unwrap());
+                let pixels = decoder.decode().unwrap();
+                let info = decoder.info().unwrap();
+                assert_eq!((info.width as usize, info.height as usize), (width, height));
+                let error: f32 = pixels
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .zip(&image.data)
+                    .map(|(got, want)| (0..3).map(|c| (got[c] as f32 / 255.0 - want[c]).abs()).sum::<f32>() / 3.0)
+                    .sum::<f32>()
+                    / image.data.len() as f32;
+                // Lossy, but the picture must be the same picture.
+                assert!(error < 0.03, "{width}x{height} at quality {quality}: mean error {error}");
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn png_is_16_bit_and_exact() {
+        let path = std::env::temp_dir().join(format!("rawsmith-png-{}.png", std::process::id()));
+        let image = picture(33, 21);
+        write(&path, &image, 90).unwrap();
+        let mut reader = png::Decoder::new(std::fs::File::open(&path).unwrap()).read_info().unwrap();
+        let mut buffer = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buffer).unwrap();
+        assert_eq!((info.width, info.height, info.bit_depth), (33, 21, png::BitDepth::Sixteen));
+        for (got, want) in buffer.as_chunks::<6>().0.iter().zip(&image.data) {
+            for c in 0..3 {
+                let value = u16::from_be_bytes([got[c * 2], got[c * 2 + 1]]) as f32 / 65535.0;
+                assert!((value - want[c]).abs() < 1e-4);
+            }
+        }
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn dither_is_small_and_unbiased() {
+        let values: Vec<f32> = (0..100_000).map(dither).collect();
+        assert!(values.iter().all(|v| v.abs() <= 0.5));
+        assert!((values.iter().sum::<f32>() / values.len() as f32).abs() < 0.01);
     }
 }

@@ -12,6 +12,8 @@ use crate::tiff::{Ifd, Tiff};
 const TAG_SUBIFD: u16 = 0x014a;
 const TAG_EXIF: u16 = 0x8769;
 const SONY_RAW_COMPRESSED: i64 = 32767;
+/// Smallest picture edge the pipeline's neighbourhood filters can handle.
+const MIN_EDGE: usize = 16;
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Metadata {
@@ -135,7 +137,8 @@ fn decode_compressed(bytes: &[u8], width: usize, curve: &[u16]) -> Vec<u16> {
     for (row, packed) in out.chunks_exact_mut(width).zip(bytes.chunks_exact(width)) {
         for (block, chunk) in packed.as_chunks::<16>().0.iter().enumerate() {
             let bits = u128::from_le_bytes(*chunk);
-            let field = |at: u32, len: u32| ((bits >> at) & ((1 << len) - 1)) as u32;
+            // A damaged block can ask for more fields than it holds; those read as zero.
+            let field = |at: u32, len: u32| (bits.checked_shr(at).unwrap_or(0) & ((1 << len) - 1)) as u32;
             let (max, min) = (field(0, 11), field(11, 11));
             let (at_max, at_min) = (field(22, 4), field(26, 4));
             let mut shift = 0;
@@ -203,6 +206,9 @@ pub fn decode(file: &[u8]) -> Result<RawImage> {
     let height = need(0x0101, "its height")? as usize;
     let compression = need(0x0103, "its compression type")?;
     let bits = need(0x0102, "its bit depth")?;
+    if !(8..=16).contains(&bits) {
+        return Err(Error::Unsupported(format!("{bits}-bit raw data is not supported")));
+    }
     let samples = width
         .checked_mul(height)
         .filter(|&n| n > 0 && n <= 400_000_000)
@@ -230,14 +236,16 @@ pub fn decode(file: &[u8]) -> Result<RawImage> {
         }
     };
 
-    let cfa = match tiff.ints(&raw, 0x828e, 4) {
-        Some(p) if p.len() == 4 && p.iter().all(|&c| (0..=2).contains(&c)) => {
-            [p[0] as u8, p[1] as u8, p[2] as u8, p[3] as u8]
-        }
+    // Only true Bayer tiles: green on one diagonal, red and blue on the other.
+    let cfa = match tiff.ints(&raw, 0x828e, 4).as_deref() {
+        Some([0, 1, 1, 2]) => [0, 1, 1, 2],
+        Some([2, 1, 1, 0]) => [2, 1, 1, 0],
+        Some([1, 0, 2, 1]) => [1, 0, 2, 1],
+        Some([1, 2, 0, 1]) => [1, 2, 0, 1],
         _ => return Err(Error::Unsupported("only 2x2 RGB Bayer sensors are supported".into())),
     };
 
-    let white = tiff.int(&raw, 0xc61d).unwrap_or((1 << bits) - 1) as f32;
+    let white = tiff.int(&raw, 0xc61d).filter(|&w| w > 0).unwrap_or((1i64 << bits) - 1) as f32;
     let black = match tiff.ints(&raw, 0x7310, 4) {
         Some(b) if b.len() == 4 => [b[0] as f32, b[1] as f32, b[2] as f32, b[3] as f32],
         _ => [white / 32.0; 4],
@@ -251,20 +259,23 @@ pub fn decode(file: &[u8]) -> Result<RawImage> {
         _ => [2.5, 1.0, 1.6],
     };
 
-    let full = Crop { x: 0, y: 0, width, height };
-    let crop = match (tiff.ints(&raw, 0xc61f, 2), tiff.ints(&raw, 0xc620, 2)) {
-        (Some(o), Some(s)) if o.len() == 2 && s.len() == 2 => {
-            let c = Crop { x: o[0] as usize, y: o[1] as usize, width: s[0] as usize, height: s[1] as usize };
-            let fits = c.width > 0 && c.height > 0 && c.x + c.width <= width && c.y + c.height <= height;
-            // Keep the Bayer phase: an odd origin would shift the CFA tile.
-            if fits && c.x.is_multiple_of(2) && c.y.is_multiple_of(2) {
-                c
+    // The picture area must lie inside the sensor, start on a whole CFA
+    // tile (so the Bayer phase is unchanged) and cover whole tiles.
+    let full = Crop { x: 0, y: 0, width: width & !1, height: height & !1 };
+    let crop = match (tiff.ints(&raw, 0xc61f, 2).as_deref(), tiff.ints(&raw, 0xc620, 2).as_deref()) {
+        (Some(&[x, y]), Some(&[w, h])) => {
+            let inside = x >= 0 && y >= 0 && w > 0 && h > 0 && x + w <= width as i64 && y + h <= height as i64;
+            if inside && x % 2 == 0 && y % 2 == 0 {
+                Crop { x: x as usize, y: y as usize, width: w as usize & !1, height: h as usize & !1 }
             } else {
                 full
             }
         }
         _ => full,
     };
+    if crop.width < MIN_EDGE || crop.height < MIN_EDGE {
+        return Err(Error::Format(format!("raw image of {width}x{height} is too small to develop")));
+    }
 
     Ok(RawImage {
         data,
@@ -309,6 +320,14 @@ mod tests {
             assert_eq!(out[i * 2] as usize, expected(i) * 2, "first colour, sample {i}");
             assert_eq!(out[i * 2 + 1] as usize, expected(i) * 2, "second colour, sample {i}");
         }
+    }
+
+    #[test]
+    fn damaged_compressed_blocks_decode_without_panicking() {
+        let identity: Vec<u16> = (0..=0x4000).collect();
+        // All zero: maximum and minimum share position 0, so fifteen offsets are requested.
+        assert_eq!(decode_compressed(&[0u8; 32], 32, &identity), vec![0u16; 32]);
+        decode_compressed(&[0xffu8; 64], 32, &identity);
     }
 
     #[test]

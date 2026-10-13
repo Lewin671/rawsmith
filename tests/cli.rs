@@ -191,6 +191,15 @@ fn mistakes_produce_json_errors_and_change_nothing() {
         (vec!["render", s(&f.raw), "-o", s(&f.path("x.bmp"))], "params"),
         (vec!["render", s(&f.raw), "-o", s(&f.raw)], "params"),
         (vec!["render", s(&f.raw), "--region", "0.5,0.5,0.2,0.9"], "params"),
+        (vec!["render", s(&f.raw), "--region", "0,0,oops,1,1"], "params"),
+        (vec!["render", s(&f.raw), "--region", "0,0,,1"], "params"),
+        (vec!["render", s(&f.raw), "--size", "abc"], "usage"),
+        (vec!["render"], "usage"),
+        (vec!["frobnicate"], "usage"),
+        (vec!["render", s(&f.raw), "--set", "temperature=2000", "--set", "tint=150"], "params"),
+        (vec!["extract-jpeg", s(&f.raw), "-o", s(&f.raw)], "params"),
+        (vec!["edit", s(&f.raw), "--reset", "--recipe", s(&f.raw)], "params"),
+        (vec!["auto", s(&f.raw), "--recipe", s(&f.raw)], "params"),
         (vec!["inspect", s(&f.path("missing.ARW"))], "io"),
     ] {
         let (success, v) = run(&args);
@@ -199,6 +208,26 @@ fn mistakes_produce_json_errors_and_change_nothing() {
         assert!(v["error"]["message"].as_str().unwrap().len() > 10);
     }
     assert!(!f.recipe().exists(), "a rejected edit must not save a recipe");
+
+    // The RAW is protected under every name it has: symlinks and hard links too.
+    let before = std::fs::read(&f.raw).unwrap();
+    let (hard, soft) = (f.path("hard.png"), f.path("soft.jpg"));
+    std::fs::hard_link(&f.raw, &hard).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&f.raw, &soft).unwrap();
+    for target in [&hard, &soft] {
+        if target.exists() {
+            for args in [
+                vec!["render", s(&f.raw), "-o", s(target)],
+                vec!["edit", s(&f.raw), "--reset", "--recipe", s(target)],
+                vec!["extract-jpeg", s(&f.raw), "-o", s(target)],
+            ] {
+                let (success, v) = run(&args);
+                assert!(!success && v["error"]["kind"] == "params", "{args:?} -> {v}");
+            }
+        }
+    }
+    assert_eq!(std::fs::read(&f.raw).unwrap(), before, "the RAW was modified");
 
     let junk = f.path("junk.ARW");
     std::fs::write(&junk, b"not a raw file at all").unwrap();

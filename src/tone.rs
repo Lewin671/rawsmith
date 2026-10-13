@@ -7,6 +7,10 @@ use rayon::prelude::*;
 use crate::color::luma;
 use crate::image::{Image, Plane};
 
+/// Slope of the filmic curve at `contrast = 0`, fitted so the default
+/// rendering has the tonal range of a typical camera JPEG.
+const BASE_CONTRAST: f32 = 1.6;
+
 /// Scene-linear middle grey.
 pub const GREY: f32 = 0.18;
 
@@ -146,6 +150,7 @@ pub fn dehaze(image: &mut Image, strength: f32) {
     let guide = Plane::from_fn(&small, |p| luma(p).max(0.0).sqrt());
     let transmission = crate::image::guided_filter(&guide, &rough, radius * 4, 1e-3);
 
+    let floor = 1.0 - 0.9 * strength;
     let (fx, fy) = (sw as f32 / w as f32, sh as f32 / h as f32);
     let mean_luma =
         |image: &Image| image.data.par_iter().map(|p| luma(*p).max(1e-5).ln()).sum::<f32>() / image.data.len() as f32;
@@ -153,7 +158,9 @@ pub fn dehaze(image: &mut Image, strength: f32) {
     image.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         let sy = (y as f32 + 0.5) * fy - 0.5;
         for (x, p) in row.iter_mut().enumerate() {
-            let t = transmission.sample((x as f32 + 0.5) * fx - 0.5, sy).clamp(0.3, 1.0);
+            // The edge-aware refinement can undershoot; never remove more of
+            // the veil than the strength allows.
+            let t = transmission.sample((x as f32 + 0.5) * fx - 0.5, sy).clamp(floor, 1.0);
             for c in 0..3 {
                 p[c] = ((p[c] - air[c]) / t + air[c]).max(0.0);
             }
@@ -181,7 +188,7 @@ impl Filmic {
     /// `contrast` is the slider value -100..100; `white` the scene-linear
     /// value that should just reach display white.
     pub fn new(contrast: f32, white: f32) -> Self {
-        let c = crate::tune("contrast", 1.6) * (contrast / 100.0 * 0.5).exp2();
+        let c = BASE_CONTRAST * (contrast / 100.0 * 0.5).exp2();
         let white = white.max(GREY * 2.0);
         // Solve scale * g^c / (g^c + p) = g and scale * w^c / (w^c + p) = 1.
         let (gc, wc) = (GREY.powf(c), white.powf(c));

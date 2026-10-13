@@ -13,3 +13,6 @@
 *.rawsmith.json
 /local/
 .DS_Store
+
+# Documentation pictures: CC0 samples only (see CONTRIBUTING.md)
+!docs/images/*.jpg

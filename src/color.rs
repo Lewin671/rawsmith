@@ -119,7 +119,11 @@ const TINT_STEP: f64 = 1.0 / 3000.0;
 
 /// White balance multipliers (G = 1) that neutralise an illuminant of the
 /// given temperature and tint for a camera.
-pub fn wb_from_temperature(xyz_to_cam: &Mat3, kelvin: f64, tint: f64) -> [f32; 3] {
+///
+/// Returns `None` when the combination describes a light this camera could
+/// not have recorded as neutral (far from the black-body locus the gains
+/// turn negative or absurdly large).
+pub fn wb_from_temperature(xyz_to_cam: &Mat3, kelvin: f64, tint: f64) -> Option<[f32; 3]> {
     let kelvin = kelvin.clamp(MIN_KELVIN, MAX_KELVIN);
     let (u, v) = planck_uv(kelvin);
     let (nu, nv) = planck_normal(kelvin);
@@ -130,7 +134,8 @@ pub fn wb_from_temperature(xyz_to_cam: &Mat3, kelvin: f64, tint: f64) -> [f32; 3
     let (x, y) = (3.0 * u / denom, 2.0 * v / denom);
     let xyz = [(x / y) as f32, 1.0, ((1.0 - x - y) / y) as f32];
     let cam = apply(xyz_to_cam, xyz);
-    [cam[1] / cam[0], 1.0, cam[1] / cam[2]]
+    let gains = [cam[1] / cam[0], 1.0, cam[1] / cam[2]];
+    (cam[1] > 0.0 && gains.iter().all(|g| g.is_finite() && (0.1..=12.0).contains(g))).then_some(gains)
 }
 
 /// Inverse of [`wb_from_temperature`]: the temperature and tint whose
@@ -269,7 +274,7 @@ mod tests {
     fn temperature_round_trips() {
         let cam = camera_matrix("ILCE-7M4").unwrap();
         for (kelvin, tint) in [(2800.0, 0.0), (5500.0, 10.0), (6500.0, -20.0), (9000.0, 35.0)] {
-            let wb = wb_from_temperature(&cam, kelvin, tint);
+            let wb = wb_from_temperature(&cam, kelvin, tint).unwrap();
             let (k, t) = temperature_from_wb(&cam, wb);
             assert!((k - kelvin).abs() < 5.0, "{kelvin} K came back as {k}");
             assert!((t - tint).abs() < 0.5, "tint {tint} came back as {t}");
@@ -279,13 +284,15 @@ mod tests {
     #[test]
     fn daylight_multipliers_are_plausible() {
         let cam = camera_matrix("ILCE-7M4").unwrap();
-        let wb = wb_from_temperature(&cam, 5500.0, 0.0);
+        let wb = wb_from_temperature(&cam, 5500.0, 0.0).unwrap();
         assert!(wb[0] > 1.8 && wb[0] < 3.2 && wb[2] > 1.2 && wb[2] < 2.2, "{wb:?}");
         // Warmer light needs less red gain and more blue gain.
-        let tungsten = wb_from_temperature(&cam, 3000.0, 0.0);
+        let tungsten = wb_from_temperature(&cam, 3000.0, 0.0).unwrap();
         assert!(tungsten[0] < wb[0] && tungsten[2] > wb[2]);
         // Positive tint renders more magenta: less green relative to red and blue.
-        let magenta = wb_from_temperature(&cam, 5500.0, 40.0);
+        let magenta = wb_from_temperature(&cam, 5500.0, 40.0).unwrap();
+        // Impossible lights are refused rather than turned into negative gains.
+        assert!(wb_from_temperature(&cam, 2000.0, 150.0).is_none());
         assert!(magenta[0] > wb[0] && magenta[2] > wb[2]);
     }
 

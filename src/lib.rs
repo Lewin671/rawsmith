@@ -19,12 +19,3 @@ pub mod stats;
 pub mod synthetic;
 pub mod tiff;
 pub mod tone;
-
-/// Development-only override of an internal constant, read from the
-/// `RAWSMITH_TUNE` environment variable (`name=value,name=value`).
-pub fn tune(name: &str, default: f32) -> f32 {
-    std::env::var("RAWSMITH_TUNE")
-        .ok()
-        .and_then(|all| all.split(',').find_map(|kv| kv.strip_prefix(name)?.strip_prefix('=')?.parse().ok()))
-        .unwrap_or(default)
-}

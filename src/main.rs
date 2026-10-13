@@ -96,12 +96,14 @@ struct Auto {
     target: Target,
 }
 
-fn recipe_path(source: &Source) -> PathBuf {
-    source.recipe.clone().unwrap_or_else(|| {
+fn recipe_path(source: &Source) -> Result<PathBuf> {
+    let path = source.recipe.clone().unwrap_or_else(|| {
         let mut name = source.raw.clone().into_os_string();
         name.push(".rawsmith.json");
         PathBuf::from(name)
-    })
+    });
+    protect_raw(&source.raw, &path, "recipe")?;
+    Ok(path)
 }
 
 fn load_recipe(path: &Path) -> Result<Params> {
@@ -136,23 +138,48 @@ fn read_raw(path: &Path) -> Result<arw::RawImage> {
 }
 
 fn parse_region(text: &str) -> Result<[f32; 4]> {
-    let parts: Vec<f32> = text.split(',').filter_map(|v| v.trim().parse().ok()).collect();
-    match parts[..] {
-        [x0, y0, x1, y1] if 0.0 <= x0 && x0 < x1 && x1 <= 1.0 && 0.0 <= y0 && y0 < y1 && y1 <= 1.0 => {
+    let parts: Option<Vec<f32>> = text.split(',').map(|v| v.trim().parse().ok()).collect();
+    match parts.as_deref() {
+        Some(&[x0, y0, x1, y1]) if 0.0 <= x0 && x0 < x1 && x1 <= 1.0 && 0.0 <= y0 && y0 < y1 && y1 <= 1.0 => {
             Ok([x0, y0, x1, y1])
         }
-        _ => Err(Error::Params("--region takes x0,y0,x1,y1 with 0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1".into())),
+        _ => Err(Error::Params(
+            "--region takes four numbers x0,y0,x1,y1 with 0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1".into(),
+        )),
     }
+}
+
+/// Refuses to write `destination` when it is the RAW file itself, by any
+/// name: the same path, a symlink to it, or a hard link sharing its data.
+fn protect_raw(raw: &Path, destination: &Path, what: &str) -> Result<()> {
+    let same_path = match (std::fs::canonicalize(raw), std::fs::canonicalize(destination)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    #[cfg(unix)]
+    let same_file = {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::metadata(raw), std::fs::metadata(destination)) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    };
+    #[cfg(not(unix))]
+    let same_file = false;
+    if same_path || same_file {
+        return Err(Error::Params(format!(
+            "{what} {} is the RAW file itself; the RAW is never written",
+            destination.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Renders `params` and writes the output; returns the JSON report.
 fn render(raw_path: &Path, params: &Params, target: &Target) -> Result<Value> {
     let started = Instant::now();
     if let Some(out) = &target.output {
-        let same = std::fs::canonicalize(out).ok().is_some_and(|o| std::fs::canonicalize(raw_path).ok() == Some(o));
-        if same {
-            return Err(Error::Params("the output would overwrite the RAW file".into()));
-        }
+        protect_raw(raw_path, out, "output")?;
     }
     let region = target.region.as_deref().map(parse_region).transpose()?;
     let raw = read_raw(raw_path)?;
@@ -198,11 +225,11 @@ fn run(cli: Cli) -> Result<Value> {
         }
         Command::Schema => Ok(params::schema()),
         Command::Render(Render { source, target }) => {
-            let params = load_recipe(&recipe_path(&source))?.with_assignments(&source.set)?;
+            let params = load_recipe(&recipe_path(&source)?)?.with_assignments(&source.set)?;
             render(&source.raw, &params, &target)
         }
         Command::Edit(Edit { source, target, reset }) => {
-            let path = recipe_path(&source);
+            let path = recipe_path(&source)?;
             let base = if reset { Params::default() } else { load_recipe(&path)? };
             let params = base.with_assignments(&source.set)?;
             // Render first: a recipe that cannot be rendered is not saved.
@@ -216,7 +243,7 @@ fn run(cli: Cli) -> Result<Value> {
             Ok(report)
         }
         Command::Auto(Auto { source, target }) => {
-            let path = recipe_path(&source);
+            let path = recipe_path(&source)?;
             // White balance, crop and other non-tone settings of an existing recipe are kept.
             let base = load_recipe(&path)?;
             let proposal = rawsmith::auto::auto(&read_raw(&source.raw)?, &base)?;
@@ -232,6 +259,7 @@ fn run(cli: Cli) -> Result<Value> {
             Ok(report)
         }
         Command::ExtractJpeg { raw: path, output } => {
+            protect_raw(&path, &output, "output")?;
             let file = std::fs::read(&path)?;
             let raw = arw::decode(&file)?;
             let (offset, len) =
@@ -242,15 +270,26 @@ fn run(cli: Cli) -> Result<Value> {
     }
 }
 
+fn fail(kind: &str, message: &str) -> ExitCode {
+    eprintln!("{}", json!({"error": {"kind": kind, "message": message}}));
+    ExitCode::FAILURE
+}
+
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        // --help and --version are answers, not mistakes.
+        Err(e) if !e.use_stderr() => {
+            print!("{e}");
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => return fail("usage", e.to_string().trim()),
+    };
+    match run(cli) {
         Ok(value) => {
             println!("{}", serde_json::to_string_pretty(&value).expect("reports always serialise"));
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("{}", json!({"error": {"kind": e.kind(), "message": e.to_string()}}));
-            ExitCode::FAILURE
-        }
+        Err(e) => fail(e.kind(), &e.to_string()),
     }
 }

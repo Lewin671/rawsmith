@@ -323,7 +323,7 @@ impl Params {
             };
             let text = text.trim();
             let mut new: Value = serde_json::from_str(text.trim_start_matches('+')).map_err(|_| {
-                Error::Params(format!("'{text}' is not a JSON value (number, true/false, null or array)"))
+                Error::Params(format!("'{text}' is not valid JSON; use a number, true/false, null, or an array (object keys and strings need double quotes)"))
             })?;
             let keys: Vec<&str> = path.split('.').collect();
             let mut node = &mut root;

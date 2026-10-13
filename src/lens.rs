@@ -71,8 +71,7 @@ pub fn correct(image: &Image, tables: &LensTables) -> Image {
     // point that reaches furthest out in the source lands on the source edge.
     let edge_radius = cx.min(cy) / half_diagonal;
     let green = scale(None, 1.0);
-    let fill = (0..=64).map(|i| green.at(edge_radius + (1.0 - edge_radius) * i as f32 / 64.0)).fold(f32::MIN, f32::max)
-        * crate::tune("lens_fill", 1.0);
+    let fill = (0..=64).map(|i| green.at(edge_radius + (1.0 - edge_radius) * i as f32 / 64.0)).fold(f32::MIN, f32::max);
     let scales = [scale(Some(&tables.ca_red), fill), scale(None, fill), scale(Some(&tables.ca_blue), fill)];
     // Light falloff the lens caused, as a gain that undoes it.
     let gain = Radial(tables.vignetting.iter().map(|&v| ((v as f32 / 8192.0 - 1.0).exp2() - 0.5).exp2()).collect());

@@ -93,6 +93,10 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
     let mut notes = Vec::new();
     let neutral = look(&params);
 
+    if params.denoise > 10.0 {
+        notes.push(format!("denoise {:.0}: the photo was taken at ISO {iso:.0}", params.denoise));
+    }
+
     // Scene character. High-key: bright and nearly colourless (snow, fog),
     // meant to stay bright. Colourful highlights (a sunset sky) must stay
     // darker than neutral ones to hold their colour.
@@ -161,10 +165,12 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
         }
     ));
 
-    // Haze lifts the darkest tones well above black. High-key scenes are
+    // Haze lifts the darkest tones well above black and flattens the whole
+    // picture; either alone is not evidence enough. High-key scenes are
     // exempt: fog is the subject there.
     let exposed = look(&params);
-    params.dehaze = round_to(30.0 * smoothstep(10.0, 24.0, exposed.p1) * (1.0 - high_key), 5.0);
+    let hazy = smoothstep(10.0, 24.0, exposed.p1) * (1.0 - smoothstep(14.0, 18.0, exposed.spread));
+    params.dehaze = round_to(25.0 * hazy * (1.0 - high_key), 5.0);
     if params.dehaze != 0.0 {
         notes.push(format!(
             "dehaze {:+.0}: the darkest tones sat at lightness {:.0}, which suggests haze",
