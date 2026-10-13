@@ -61,9 +61,9 @@ keep a version.
    (`saturated_pct` is data gone for good; no edit brings it back).
 
 2. **See the starting points** —
-   `rawsmith auto photo.ARW -o start.jpg --size 1400` saves a measured
+   `rawsmith auto photo.ARW -o start.jpg --size 1400 --brief` saves a measured
    starting recipe and explains each choice in `decisions`;
-   `rawsmith compare photo.ARW -o cmp.jpg` shows the camera's JPEG (left)
+   `rawsmith compare photo.ARW -o cmp.jpg --size 1400` shows the camera's JPEG (left)
    beside the saved recipe (right), upright and in the same framing.
    Open both images. `auto` aims for a sound, finished-looking base —
    brightness, contrast, colour and noise reduction from what it
@@ -78,7 +78,7 @@ keep a version.
    the picture, and what should be quiet).
 
 4. **Build it in passes** with
-   `rawsmith edit photo.ARW --set key=value ... -o preview.jpg --size 1400`
+   `rawsmith edit photo.ARW --set key=value ... -o preview.jpg --size 1400 --brief`
    (`key=value` sets, `key+=n` / `key-=n` nudges; the recipe is saved and
    a preview rendered). Open every preview.
    - *Composition*: `crop`, `rotate`.
@@ -91,15 +91,16 @@ keep a version.
    Make changes large enough to see. If a preview looks the same as the
    last one, the change was too small to matter.
 
-5. **Compare** — `rawsmith compare photo.ARW -o cmp.jpg` after each real
+5. **Compare** — `rawsmith compare photo.ARW -o cmp.jpg --size 1400` after each real
    step, and against earlier versions kept as separate recipes:
    `rawsmith compare photo.ARW --panel camera --panel recipe:a.json --panel recipe:b.json -o versions.jpg`.
    Panels are unlabelled; the report's `panels` lists them left to right.
+   `--size` bounds each panel's longest edge (default 1400), not the whole row.
    Keep a change only if the picture is better. Apply the test in
    "What finished means" here.
 
 6. **Check at 100%** —
-   `rawsmith render photo.ARW --region 0.4,0.4,0.6,0.6 -o detail.jpg`
+   `rawsmith render photo.ARW --region 0.4,0.4,0.6,0.6 -o detail.jpg --brief`
    (`left,top,right,bottom` as fractions of the finished, cropped
    picture). Look at the subject, the darkest area you lifted, a patch of
    smooth sky, and any hard edge against a bright background. Strong
@@ -108,13 +109,15 @@ keep a version.
    extreme `hsl` luminance, halos, coloured fringes. Back off the setting
    that caused it rather than accepting the artefact.
 
-7. **Export** — `rawsmith render photo.ARW -o final.jpg` (full
+7. **Export** — `rawsmith render photo.ARW -o final.jpg --brief` (full
    resolution, sRGB; `.png` gives 16-bit). Open the exported file. Tell
    the user in two or three plain sentences what you made of the picture
    and why — the intent, not a list of sliders.
 
-`rawsmith render ... --set k=v` tries something without saving it;
-`rawsmith edit ... --reset` starts over; `rawsmith schema` lists every
+**`render --set` is a trial: it never saves the recipe. `edit` saves the
+recipe for the whole picture, even with `--region`; only its output image
+is restricted to the region.** Check `recipe_saved` and the saved-region
+`note` in brief reports. `edit --reset` starts over; `rawsmith schema` lists every
 parameter with its range and meaning. By default the recipe is saved
 next to the RAW as `photo.ARW.rawsmith.json`; pass the same
 `--recipe FILE` to `auto`, `edit` and `render` to keep it elsewhere or to
@@ -168,12 +171,14 @@ none at `to`, positions as fractions of the finished picture:
 rawsmith edit photo.ARW --set 'gradients=[{"from":[0.5,0],"to":[0.5,0.5],"exposure":-0.6,"saturation":15},{"from":[0.5,1],"to":[0.5,0.6],"exposure":0.5}]'
 ```
 
-Setting `gradients` replaces the whole list (up to four), so repeat the
-ones you want to keep. Place them again after changing `crop`. A
+`gradients=[...]` replaces the list (up to four); `gradients+={...}` appends
+one filter; `gradients-=1` removes the second (zero-based current-list index).
+Assignments run in order; a fifth append or invalid index fails without saving.
+Place them again after changing `crop`. A
 gradient also affects trees or buildings that cross it.
 
 **White balance** starts as shot. To nudge it, set a number first (the
-as-shot values are in every report's `white_balance`);
+as-shot values are in rendered reports' `white_balance`);
 `--set temperature=null` returns to as shot.
 
 **Noise and detail.** With `denoise` unset the amount is measured from
@@ -185,6 +190,9 @@ smooth night sky usually needs `denoise` around 75–85; check a patch at
 
 ## Reading the report
 
+Use `--brief` in the loop: output path/bytes, dimensions, tone percentiles,
+clipping, cast, zones, denoise strength and warnings, plus short auto decisions.
+Omit it for full decisions, settings, histogram and hue/chroma statistics.
 Numbers support what you see; they do not replace looking.
 
 - `stats.tones.p50` is median lightness (0–100): a description, not a

@@ -613,6 +613,8 @@ fn comparison_help_describes_panel_and_colour_contract() {
         "single --panel",
         "recipe:FILE",
         "1400",
+        "--size",
+        "each panel's longest edge",
         "crop and rotation",
         "untagged",
         "RAW EXIF",

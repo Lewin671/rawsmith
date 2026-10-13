@@ -281,6 +281,260 @@ fn region_renders_full_resolution_detail() {
 }
 
 #[test]
+fn brief_reports_keep_editing_metrics_without_changing_full_reports_or_pixels() {
+    let f = Fixture::new("brief-metrics");
+    let output = f.path("preview.png");
+    for command in ["render", "edit", "auto"] {
+        // Both auto calls must start from the same base recipe.
+        let _ = std::fs::remove_file(f.recipe());
+        let full = ok(&[command, s(&f.raw), "-o", s(&output), "--size", "160"]);
+        let pixels = std::fs::read(&output).unwrap();
+        let _ = std::fs::remove_file(f.recipe());
+        let brief = ok(&[command, s(&f.raw), "-o", s(&output), "--size", "160", "--brief"]);
+        assert_eq!(std::fs::read(&output).unwrap(), pixels);
+        for key in [
+            "output",
+            "output_color_space",
+            "recipe_file",
+            "region",
+            "sensor_clipped_pct",
+            "sensor_clipped_scope",
+            "white_balance",
+        ] {
+            assert_eq!(brief[key], full[key], "{command}: {key}");
+        }
+        assert_eq!(brief["output_bytes"], pixels.len());
+        assert_eq!(brief["output_replaced"], true);
+        assert_eq!(brief["recipe_saved"], command != "render");
+        assert!(brief["warnings"].is_array());
+        if command != "auto" {
+            assert_eq!(brief["warnings"], serde_json::json!([]));
+        }
+        for key in [
+            "width",
+            "height",
+            "clipped_highlights_pct",
+            "channel_clipped_pct",
+            "crushed_shadows_pct",
+            "neutral_cast",
+            "zones",
+        ] {
+            assert_eq!(brief["stats"][key], full["stats"][key], "{command}: {key}");
+        }
+        for key in ["p1", "p5", "p25", "p50", "p75", "p95", "p99"] {
+            assert_eq!(brief["stats"]["tones"][key], full["stats"]["tones"][key]);
+        }
+        assert_eq!(brief["stats"]["tones"].as_object().unwrap().len(), 7);
+        assert_eq!(brief["noise_reduction"]["strength"], full["noise_reduction"]["strength"]);
+        assert_eq!(brief["noise_reduction"]["source"], full["noise_reduction"]["source"]);
+        for key in ["histogram", "hues_pct", "chroma_mean", "chroma_p95", "channel_clipped_pct_rgb"] {
+            assert!(full["stats"].get(key).is_some());
+            assert!(brief["stats"].get(key).is_none());
+        }
+        assert!(full.get("recipe").is_some());
+        assert!(full.get("output_bytes").is_none());
+        assert!(full.get("recipe_saved").is_none());
+        assert!(brief.get("recipe").is_none());
+        assert!(brief.get("recipe_compatibility").is_none());
+        if command == "auto" {
+            let decisions = brief["decisions"].as_array().unwrap();
+            let originals = full["decisions"].as_array().unwrap();
+            assert_eq!(decisions.len(), originals.len());
+            assert!(decisions.iter().zip(originals).any(|(a, b)| a != b));
+            for (summary, original) in decisions.iter().zip(originals) {
+                let summary = summary.as_str().unwrap();
+                assert!(!summary.contains('\n') && summary.chars().count() <= 170, "{summary}");
+                for qualifier in ["unresolved", "unreachable", "unavailable"] {
+                    if original.as_str().unwrap().contains(qualifier) {
+                        assert!(summary.contains(qualifier), "{summary}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn brief_recipe_only_saves_and_render_trials_are_explicit() {
+    let f = Fixture::new("brief-trial");
+    for command in ["edit", "auto"] {
+        let report = ok(&[command, s(&f.raw), "--set", "denoise=25", "--brief"]);
+        assert_eq!(report["recipe_file"], s(&f.recipe()));
+        assert_eq!(report["recipe_saved"], true);
+        for key in ["output", "output_bytes", "output_replaced", "stats"] {
+            assert_eq!(report[key], Value::Null);
+        }
+        assert_eq!(report["noise_reduction"]["strength"], 25.0);
+    }
+    let before = std::fs::read(f.recipe()).unwrap();
+    let report = ok(&["render", s(&f.raw), "--set", "exposure=1", "--brief"]);
+    assert_eq!(report["recipe_saved"], false);
+    assert!(report["stats"]["tones"]["p50"].is_number());
+    assert_eq!(std::fs::read(f.recipe()).unwrap(), before);
+    std::fs::remove_file(f.recipe()).unwrap();
+    assert_eq!(ok(&["render", s(&f.raw), "--brief"])["recipe_file"], Value::Null);
+    assert!(!f.recipe().exists());
+}
+
+#[test]
+fn brief_preserves_recipe_compatibility_and_unresolved_auto_warnings() {
+    let f = Fixture::new("brief-warnings");
+    std::fs::write(f.recipe(), br#"{"rawsmith":"0.1.0","exposure":0.5}"#).unwrap();
+    let report = ok(&["render", s(&f.raw), "--brief"]);
+    let warning = report["warnings"][0].as_str().unwrap();
+    assert!(warning.contains("0.1.0") && warning.contains("current") && warning.contains("does not pin"));
+    // The ramp's sensor-loss patch triggers an unresolved highlight target,
+    // and its missing camera JPEG exercises the unavailable fallback notice.
+    let full = ok(&["auto", s(&f.raw)]);
+    std::fs::remove_file(f.recipe()).unwrap();
+    let brief = ok(&["auto", s(&f.raw), "--brief"]);
+    let originals = full["decisions"].as_array().unwrap();
+    assert!(originals.iter().any(|note| note.as_str().unwrap().contains("unresolved")), "{full}");
+    assert!(originals.iter().any(|note| note
+        .as_str()
+        .unwrap()
+        .split(';')
+        .skip(1)
+        .any(|clause| clause.contains("unresolved"))));
+    for (original, summary) in originals.iter().zip(brief["decisions"].as_array().unwrap()) {
+        for qualifier in ["unresolved", "unreachable", "unavailable"] {
+            if original.as_str().unwrap().contains(qualifier) {
+                assert!(summary.as_str().unwrap().contains(qualifier));
+                assert!(brief["warnings"].as_array().unwrap().contains(summary));
+            }
+        }
+    }
+}
+
+#[test]
+fn region_edit_reports_saved_whole_picture_settings_in_full_and_brief() {
+    let f = Fixture::new("region-save");
+    let output = f.path("detail.png");
+    for brief in [false, true] {
+        let mut args =
+            vec!["edit", s(&f.raw), "--set", "exposure=0.75", "--region", "0.25,0.25,0.75,0.75", "-o", s(&output)];
+        if brief {
+            args.push("--brief");
+        }
+        let report = ok(&args);
+        assert_eq!(report["recipe_saved"], true);
+        assert_eq!(report["region"], serde_json::json!([0.25, 0.25, 0.75, 0.75]));
+        assert_eq!(report["stats"]["width"], 160);
+        assert_eq!(report["stats"]["height"], 120);
+        let note = report["note"].as_str().unwrap();
+        assert!(
+            note.contains("whole picture")
+                && note.contains("only the requested region")
+                && note.contains("not a trial")
+        );
+        let saved: Value = serde_json::from_slice(&std::fs::read(f.recipe()).unwrap()).unwrap();
+        assert_eq!(saved["exposure"], 0.75);
+        assert!(saved.get("region").is_none());
+        let full = ok(&["render", s(&f.raw)]);
+        assert_eq!(full["recipe"]["exposure"], 0.75);
+        assert_eq!(full["stats"]["width"], 320);
+        assert_eq!(full["stats"]["height"], 240);
+    }
+    let report = ok(&["edit", s(&f.raw), "--region", "0,0,0.5,0.5", "--brief"]);
+    assert_eq!(report["recipe_saved"], true);
+    assert_eq!(report["stats"], Value::Null);
+    assert!(report["note"].as_str().unwrap().contains("no image was written"));
+}
+
+#[test]
+fn gradients_append_remove_in_order_and_render_trials_do_not_save() {
+    let f = Fixture::new("gradient-operations");
+    let first = r#"gradients+={"from":[0.5,0],"to":[0.5,0.5],"exposure":-0.6}"#;
+    let second = r#"gradients+={"from":[0.5,1],"to":[0.5,0.6],"exposure":0.5}"#;
+    ok(&["edit", s(&f.raw), "--set", first]);
+    let report = ok(&["edit", s(&f.raw), "--set", second]);
+    assert_eq!(report["recipe"]["gradients"].as_array().unwrap().len(), 2);
+    assert_eq!(report["recipe"]["gradients"][0]["exposure"], -0.6);
+    assert_eq!(report["recipe"]["gradients"][1]["exposure"], 0.5);
+    let saved = std::fs::read(f.recipe()).unwrap();
+    let trial = ok(&["render", s(&f.raw), "--set", "gradients-=0", "--set", first]);
+    assert_eq!(trial["recipe"]["gradients"][0]["exposure"], 0.5);
+    assert_eq!(trial["recipe"]["gradients"][1]["exposure"], -0.6);
+    assert_eq!(std::fs::read(f.recipe()).unwrap(), saved);
+    let report = ok(&["edit", s(&f.raw), "--set", "gradients-=1", "--set", first, "--set", "gradients-=0"]);
+    assert_eq!(report["recipe"]["gradients"].as_array().unwrap().len(), 1);
+    assert_eq!(report["recipe"]["gradients"][0]["exposure"], -0.6);
+    // Replacement and clearing keep their original meanings.
+    let report = ok(&["edit", s(&f.raw), "--set", "gradients=[]", "--set", second]);
+    assert_eq!(report["recipe"]["gradients"][0]["exposure"], 0.5);
+    let report = ok(&["edit", s(&f.raw), "--set", "gradients-=0"]);
+    assert!(report["recipe"].get("gradients").is_none());
+}
+
+#[test]
+fn invalid_gradient_mutations_preserve_raw_recipe_and_output() {
+    let f = Fixture::new("gradient-errors");
+    let output = f.path("preview.png");
+    let append = r#"gradients+={"from":[0.5,0],"to":[0.5,0.5],"exposure":-0.6}"#;
+    ok(&[
+        "edit",
+        s(&f.raw),
+        "--set",
+        append,
+        "--set",
+        append,
+        "--set",
+        append,
+        "--set",
+        append,
+        "-o",
+        s(&output),
+        "--size",
+        "32",
+    ]);
+    let before: Vec<_> =
+        [&f.raw, &f.recipe(), &output].into_iter().map(|p| (p.clone(), std::fs::read(p).unwrap())).collect();
+    for (assignment, message) in [
+        (append, "at most 4"),
+        ("gradients-=4", "out of range"),
+        ("gradients-=-1", "zero-based non-negative integer"),
+        ("gradients-=1.0", "zero-based non-negative integer"),
+        ("gradients-=1e0", "zero-based non-negative integer"),
+        ("gradients-=+1", "zero-based non-negative integer"),
+        ("gradients-=true", "zero-based non-negative integer"),
+        ("gradients-=null", "zero-based non-negative integer"),
+        ("gradients-=999999999999999999999999999999", "zero-based non-negative integer"),
+        ("gradients+=[]", "one gradient JSON object"),
+        ("gradients+=[[0,0],[0,0.5],0,0]", "one gradient JSON object"),
+        ("gradients+=1", "one gradient JSON object"),
+        ("gradients+={}", "one gradient JSON object"),
+        ("gradients=null", "invalid gradients list"),
+        ("gradients={}", "invalid gradients list"),
+        ("gradients++={}", "gradients+"),
+        ("gradients--=1", "gradients-"),
+        (r#"gradients+={"from":[0,0],"to":[0,0]}"#, "at least 0.02"),
+        (r#"gradients+={"from":[0,0],"to":[0,0.5],"exposure":4}"#, "exposure in -3..3"),
+    ] {
+        for command in ["edit", "render", "auto"] {
+            let mut args = vec![command, s(&f.raw)];
+            // Auto proposes fresh local settings before applying --set.
+            if command == "auto" {
+                for _ in 0..4 {
+                    args.extend(["--set", append]);
+                }
+            }
+            args.extend(["--set", assignment, "--set", "gradients-=0", "-o", s(&output), "--size", "32", "--brief"]);
+            let (success, error) = run(&args);
+            assert!(!success, "{command}: {assignment}");
+            assert_eq!(error["error"]["kind"], "params");
+            assert!(error["error"]["message"].as_str().unwrap().contains(message), "{error}");
+            for (path, bytes) in &before {
+                assert_eq!(std::fs::read(path).unwrap(), *bytes, "{command}: {assignment}: {path:?}");
+            }
+            assert_eq!(std::fs::read_dir(&f.dir).unwrap().count(), before.len());
+        }
+    }
+    ok(&["edit", s(&f.raw), "--set", "gradients=[]"]);
+    let (success, error) = run(&["edit", s(&f.raw), "--set", "gradients-=0"]);
+    assert!(!success && error["error"]["message"].as_str().unwrap().contains("out of range for 0"));
+}
+
+#[test]
 fn geometry_follows_orientation_crop_and_rotation() {
     let f = Fixture::new("geometry");
     let v = ok(&["render", s(&f.raw), "--set", "crop.left=0.5", "--set", "crop.bottom=0.5"]);
@@ -774,6 +1028,18 @@ fn help_explains_overwrites_colour_orientation_and_error_contract() {
         let output = Command::new(env!("CARGO_BIN_EXE_rawsmith")).args(&args).output().unwrap();
         assert!(output.status.success() && output.stderr.is_empty());
         let help = String::from_utf8(output.stdout).unwrap();
+        if matches!(command, Some("render" | "edit" | "auto")) {
+            for text in [
+                "--brief",
+                "gradients+={...}",
+                "gradients-=INDEX",
+                "zero-based",
+                "whole picture",
+                "render --set is a trial",
+            ] {
+                assert!(help.contains(text), "{help}");
+            }
+        }
         if command.is_some() {
             assert!(!help.contains("keep a version") && !help.contains("RAWs"), "{help}");
             assert_eq!(help.matches("output_replaced").count(), 1, "{help}");

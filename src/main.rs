@@ -66,7 +66,8 @@ struct Source {
     recipe: Option<PathBuf>,
     /// Parameter assignment (repeatable): exposure=0.5 or hsl.blue.saturation=-20 sets a
     /// value, exposure+=0.3 or contrast-=10 changes the current one. denoise=null
-    /// measures native noise; an explicit denoise=0..100 is exact.
+    /// measures native noise; an explicit denoise=0..100 is exact. gradients+={...}
+    /// appends one filter (maximum 4); gradients-=INDEX removes a zero-based index.
     #[arg(long = "set", value_name = "PATH=VALUE", allow_hyphen_values = true)]
     set: Vec<String>,
 }
@@ -82,11 +83,16 @@ struct Target {
     /// Render only this part of the picture at full resolution, to check fine
     /// detail: x0,y0,x1,y1 in the rotated/cropped frame. Report echoes region;
     /// sensor_clipped_pct always describes the full sensor active area.
+    /// Edit/auto still save the recipe for the whole picture; render --set is a trial.
     #[arg(long, value_name = "X0,Y0,X1,Y1", conflicts_with = "size")]
     region: Option<String>,
     /// JPEG quality (1..100)
     #[arg(long, default_value_t = 92)]
     quality: u8,
+    /// Compact editing report: output size, tone percentiles, clipping, cast,
+    /// zones, noise strength and warnings; auto decisions are shortened.
+    #[arg(long)]
+    brief: bool,
 }
 
 #[derive(Args)]
@@ -225,6 +231,93 @@ fn recipe_origin(report: &mut Value, origin: Option<RecipeOrigin>) {
     report["recipe_compatibility"] = origin.map_or(Value::Null, |origin| origin.report());
 }
 
+fn select_fields(value: &Value, fields: &[&str]) -> Value {
+    Value::Object(fields.iter().map(|&key| (key.to_owned(), value[key].clone())).collect())
+}
+
+/// Notes are prose from the auto policy, not a stable structured API. Keep
+/// the first clause bounded while retaining failure qualifiers from later clauses.
+fn short_decision(note: &str) -> String {
+    let head = note.split(';').next().unwrap_or(note).split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut summary: String = head.chars().take(120).collect();
+    if head.chars().count() > 120 {
+        summary.push('…');
+    }
+    for qualifier in ["unresolved", "unreachable", "unavailable"] {
+        if note.contains(qualifier) && !summary.contains(qualifier) {
+            summary.push_str(&format!(" [{qualifier}]"));
+        }
+    }
+    summary
+}
+
+fn editing_report(report: Value, target: &Target, recipe_saved: bool) -> Value {
+    if !target.brief {
+        return report;
+    }
+    let mut brief = select_fields(
+        &report,
+        &[
+            "output",
+            "output_bytes",
+            "output_replaced",
+            "output_color_space",
+            "recipe_file",
+            "white_balance",
+            "region",
+            "sensor_clipped_pct",
+            "sensor_clipped_scope",
+        ],
+    );
+    brief["recipe_saved"] = json!(recipe_saved);
+    brief["stats"] = if report["stats"].is_null() {
+        Value::Null
+    } else {
+        let mut stats = select_fields(
+            &report["stats"],
+            &[
+                "width",
+                "height",
+                "clipped_highlights_pct",
+                "channel_clipped_pct",
+                "crushed_shadows_pct",
+                "neutral_cast",
+                "zones",
+            ],
+        );
+        stats["tones"] = select_fields(&report["stats"]["tones"], &["p1", "p5", "p25", "p50", "p75", "p95", "p99"]);
+        stats
+    };
+    brief["noise_reduction"] = select_fields(&report["noise_reduction"], &["strength", "source"]);
+    let mut warnings = report["warnings"].as_array().cloned().unwrap_or_default();
+    if !report["recipe_compatibility"]["note"].is_null() {
+        let version = report["recipe_compatibility"]["written_version"].as_str().unwrap_or("unknown");
+        warnings.push(json!(format!(
+            "Input recipe version {version}; rendering with current {} defaults. Writer version does not pin rendering.",
+            env!("CARGO_PKG_VERSION")
+        )));
+    }
+    if let Some(note) = report.get("note") {
+        brief["note"] = note.clone();
+    }
+    if let Some(decisions) = report["decisions"].as_array() {
+        let summaries: Vec<_> = decisions
+            .iter()
+            .map(|decision| {
+                let note = decision.as_str().expect("auto decisions are strings");
+                let summary = short_decision(note);
+                if ["unresolved", "unreachable", "unavailable"].iter().any(|word| note.contains(word)) {
+                    warnings.push(json!(summary));
+                }
+                summary
+            })
+            .collect();
+        brief["decisions"] = json!(summaries);
+    }
+    brief["warnings"] = json!(warnings);
+    brief
+}
+
 fn load_recipe(path: &Path, allow_missing: bool) -> Result<(Params, Option<RecipeOrigin>)> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
@@ -345,22 +438,23 @@ fn prepare_render(raw: &arw::RawImage, params: &Params, target: &Target) -> Resu
         image = image.crop(x, y, (((x1 - x0) * w) as usize).max(1), (((y1 - y0) * h) as usize).max(1));
     }
     let bytes = target.output.as_ref().map(|out| output::encode(out, &image, target.quality)).transpose()?;
-    Ok((
-        json!({
-            "output": target.output,
-            "output_color_space": target.output.as_ref().map(|_| "sRGB"),
-            "output_replaced": null,
-            "recipe": params.to_sparse(),
-            "white_balance": rendered.white_balance,
-            "noise_reduction": rendered.noise_reduction,
-            "sensor_clipped_pct": rendered.sensor_clipped_pct,
-            "sensor_clipped_scope": "full_active_area",
-            "region": region,
-            "stats": stats::image_stats(&image, &spaces),
-            "elapsed_ms": started.elapsed().as_millis() as u64,
-        }),
-        bytes,
-    ))
+    let mut report = json!({
+        "output": target.output,
+        "output_color_space": target.output.as_ref().map(|_| "sRGB"),
+        "output_replaced": null,
+        "recipe": params.to_sparse(),
+        "white_balance": rendered.white_balance,
+        "noise_reduction": rendered.noise_reduction,
+        "sensor_clipped_pct": rendered.sensor_clipped_pct,
+        "sensor_clipped_scope": "full_active_area",
+        "region": region,
+        "stats": stats::image_stats(&image, &spaces),
+        "elapsed_ms": started.elapsed().as_millis() as u64,
+    });
+    if target.brief {
+        report["output_bytes"] = json!(bytes.as_ref().map(Vec::len));
+    }
+    Ok((report, bytes))
 }
 
 fn render(raw_path: &Path, params: &Params, target: &Target) -> Result<Value> {
@@ -394,6 +488,15 @@ fn save_edit(raw: &arw::RawImage, recipe: &Path, params: &Params, target: &Targe
         report["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
     }
     report["recipe_file"] = json!(recipe);
+    if let Some(region) = &target.region {
+        report["region"] = json!(parse_region(region)?);
+        report["recipe_saved"] = json!(true);
+        report["note"] = json!(if target.output.is_some() {
+            "Recipe saved for the whole picture; only the requested region was written to the output image. This is a saved edit, not a trial."
+        } else {
+            "Recipe saved for the whole picture; no image was written. --region only limits rendered output. This is a saved edit, not a trial."
+        });
+    }
     Ok(report)
 }
 
@@ -429,7 +532,7 @@ fn run(cli: Cli) -> Result<Value> {
             let mut report = render(&source.raw, &params, &target)?;
             report["recipe_file"] = if loaded.is_some() { json!(path) } else { Value::Null };
             recipe_origin(&mut report, loaded);
-            Ok(report)
+            Ok(editing_report(report, &target, false))
         }
         Command::Edit(Edit { source, target, reset }) => {
             target.validate()?;
@@ -442,7 +545,7 @@ fn run(cli: Cli) -> Result<Value> {
             let params = base.with_assignments(&source.set)?;
             let mut report = save_edit(&read_raw(&source.raw)?, &path, &params, &target)?;
             recipe_origin(&mut report, origin);
-            Ok(report)
+            Ok(editing_report(report, &target, true))
         }
         Command::Auto(Auto { source, target }) => {
             target.validate()?;
@@ -461,7 +564,7 @@ fn run(cli: Cli) -> Result<Value> {
             let mut report = save_edit(&raw, &path, &params, &target)?;
             report["decisions"] = json!(proposal.notes);
             recipe_origin(&mut report, origin);
-            Ok(report)
+            Ok(editing_report(report, &target, true))
         }
         Command::ExtractJpeg { raw: path, output } => {
             protect_raw(&path, &output, "output")?;

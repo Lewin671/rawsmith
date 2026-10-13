@@ -312,7 +312,8 @@ impl Params {
 
     /// Applies assignments: `exposure=0.5`, `hsl.blue.saturation=-20`,
     /// `temperature=null`, `curve=[[0,0],[1,1]]` set a value;
-    /// `exposure+=0.3` and `contrast-=10` change the current one.
+    /// `exposure+=0.3` and `contrast-=10` change the current one;
+    /// `gradients+={...}` appends one filter, `gradients-=1` removes index 1 (zero-based).
     pub fn with_assignments(&self, assignments: &[String]) -> Result<Params> {
         let mut root = self.to_value();
         for assignment in assignments {
@@ -320,14 +321,54 @@ impl Params {
                 .split_once('=')
                 .ok_or_else(|| Error::Params(format!("'{assignment}' is not of the form path=value")))?;
             let (path, step) = match path.trim() {
-                p if p.ends_with('+') => (p.trim_end_matches('+').trim(), 1.0),
-                p if p.ends_with('-') => (p.trim_end_matches('-').trim(), -1.0),
+                p if p.ends_with('+') => (p.strip_suffix('+').unwrap().trim(), 1.0),
+                p if p.ends_with('-') => (p.strip_suffix('-').unwrap().trim(), -1.0),
                 p => (p, 0.0),
             };
             let text = text.trim();
+            if path == "gradients" && step != 0.0 {
+                let list = root["gradients"].as_array_mut().expect("gradients is an array");
+                if step > 0.0 {
+                    let value: Value = serde_json::from_str(text).map_err(|e| {
+                        Error::Params(format!("'{assignment}': gradients+= requires one gradient JSON object: {e}"))
+                    })?;
+                    if !value.is_object() {
+                        return Err(Error::Params(format!(
+                            "'{assignment}': gradients+= requires one gradient JSON object, not an array or scalar"
+                        )));
+                    }
+                    let gradient: Gradient = serde_json::from_value(value).map_err(|e| {
+                        Error::Params(format!("'{assignment}': gradients+= requires one gradient JSON object: {e}"))
+                    })?;
+                    Params { gradients: vec![gradient], ..Params::default() }.validate()?;
+                    if list.len() >= 4 {
+                        return Err(Error::Params("cannot append gradient: at most 4 gradients are supported".into()));
+                    }
+                    list.push(json!(gradient));
+                } else {
+                    let index = text.parse::<usize>().ok().filter(|_| {
+                        !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit())
+                    }).ok_or_else(|| Error::Params(format!(
+                        "'{assignment}': gradients-= requires a zero-based non-negative integer index (e.g. gradients-=0)"
+                    )))?;
+                    if index >= list.len() {
+                        return Err(Error::Params(format!(
+                            "gradient index {index} is out of range for {} gradients; indices are zero-based",
+                            list.len()
+                        )));
+                    }
+                    list.remove(index);
+                }
+                continue;
+            }
             let mut new: Value = serde_json::from_str(text.trim_start_matches('+')).map_err(|_| {
                 Error::Params(format!("'{text}' is not valid JSON; use a number, true/false, null, or an array (object keys and strings need double quotes)"))
             })?;
+            if path == "gradients" {
+                let gradients = serde_json::from_value::<Vec<Gradient>>(new.clone())
+                    .map_err(|e| Error::Params(format!("invalid gradients list: {e}")))?;
+                Params { gradients, ..Params::default() }.validate()?;
+            }
             let keys: Vec<&str> = path.split('.').collect();
             let mut node = &mut root;
             for key in &keys[..keys.len() - 1] {
@@ -402,7 +443,7 @@ pub fn schema() -> Value {
         "parameters": numeric,
         "other": [
             {"path": "curve", "default": [], "description": "Optional tone curve applied after tone mapping: [[input, output], ...] points in 0..1 on display brightness, strictly increasing inputs, joined smoothly. [0,0] and [1,1] are implied when not given. Points pull their whole neighbourhood, so pin the tones you want unchanged, e.g. lift only shadows with [[0.15,0.2],[0.4,0.4]]. Empty means none."},
-            {"path": "gradients", "default": [], "description": "Up to 4 graduated filters, e.g. [{\"from\":[0.5,0],\"to\":[0.5,0.55],\"exposure\":-0.7,\"saturation\":15}] darkens and enriches a sky: full effect at and beyond `from`, fading to none at `to`; points are [x, y] fractions of the final picture from the top left. exposure is in stops (-3..3), saturation -100..100."},
+            {"path": "gradients", "default": [], "description": "Up to 4 graduated filters, e.g. [{\"from\":[0.5,0],\"to\":[0.5,0.55],\"exposure\":-0.7,\"saturation\":15}] darkens and enriches a sky: full effect at and beyond `from`, fading to none at `to`; points are [x, y] fractions of the final picture from the top left. exposure is in stops (-3..3), saturation -100..100. --set gradients=[...] replaces the list; gradients+={...} appends one object; gradients-=INDEX removes a zero-based current-list index. Assignments run in order."},
             {"path": "lens_corrections", "default": true, "description": "Apply the camera's embedded distortion, vignetting and chromatic aberration corrections."},
         ],
         "hsl_bands": HSL_BANDS,
