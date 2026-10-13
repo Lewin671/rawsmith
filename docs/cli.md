@@ -64,6 +64,24 @@ sidecar means the default recipe. `--size` must be at least 1 pixel and
 `edit`/`auto`. `recipe` contains the effective settings, including any
 `--set` trial. `render` never saves a recipe, even with trial settings.
 
+Add `--brief` to `render`, `edit` or `auto` for the editing loop. It keeps
+`output` and encoded `output_bytes`, `output_replaced`, `output_color_space`,
+`recipe_file`, `recipe_saved`, `white_balance`, `region`, sensor clipping and
+its scope, and `noise_reduction.strength` / `source`. `stats` keeps `width`,
+`height`, all seven tone percentiles (`stats.tones.p1` through `p99`),
+`clipped_highlights_pct` (pure white), `channel_clipped_pct` (any channel),
+`crushed_shadows_pct`, `neutral_cast` and `zones`. `warnings` includes input
+recipe version mismatches and unresolved/unreachable/unavailable auto bounds.
+`auto.decisions` has one shortened line per decision (first clause, at most
+120 characters plus an ellipsis and any failure qualifiers from later clauses).
+Omit `--brief` for complete decisions, recipe settings, histogram, hue/chroma
+statistics and noise diagnostics. The default full report is unchanged except
+for the explicit saved-region notice below.
+
+For recipe-only `edit`/`auto`, brief `output`, `output_bytes` and `stats` are
+`null`; `edit`/`auto` still report `recipe_saved: true` and the saved path.
+Brief `render` reports `recipe_saved: false`, including with `--set`.
+
 `rawsmith schema` lists every parameter with its range and meaning:
 white balance (`temperature`, `tint`), tone (`exposure`, `contrast`,
 `highlights`, `shadows`, `whites`, `blacks`, `clarity`, `dehaze`, `curve`),
@@ -90,7 +108,15 @@ turns off only the additional filter; it does not turn off the demosaic fix.
 Inspect full-resolution colour detail before saving additional suppression.
 
 `--set path=value` sets a value; `path+=value` and `path-=value` adjust
-an existing numeric value. `render --set` tries changes without saving the
+an existing numeric value. For gradients, `--set 'gradients+={"from":[0.5,0],"to":[0.5,0.5],"exposure":-0.6}'`
+appends **one JSON object**; `--set gradients-=1` removes the second filter
+(zero-based index). `gradients=[...]` still replaces the whole list and
+`gradients=[]` clears it. Assignments run in command-line order; removal
+indices refer to the current list after earlier assignments. An append beyond
+four filters fails, even if a later assignment would remove one. Arrays on
+append, repeated operators (`gradients++=`), negative/fractional indices and
+out-of-range indices are errors; no recipe or output is changed.
+`render --set` tries changes without saving the
 recipe. `edit --set` saves them; `edit --reset` starts from defaults.
 Write previews to separate files to compare rounds. To keep several edits,
 use a separate `--recipe FILE` for each, consistently across `auto`,
@@ -106,8 +132,13 @@ This field concerns the output image, not the saved recipe.
 render, after noise reduction, tone and sharpening. It does not reduce the
 resolution of those stages or their working memory. `--region left,top,right,bottom` uses
 fractions of the upright, cropped picture and renders that region at full
-resolution; it cannot be combined with `--size`. Output is sRGB JPEG or
-16-bit PNG, selected by the output extension. JPEG embeds a compact ICC v2 sRGB
+resolution; it cannot be combined with `--size`. **`edit --region` saves the
+settings for the whole picture, while the output image contains only that
+region. It is not a trial.** Its full and brief reports include
+`recipe_saved: true`, `region` and a `note` explaining this. The same applies
+to `auto --region`. Use `render --region --set ...` for an unsaved detail trial.
+Output is sRGB JPEG or 16-bit PNG, selected by the output extension.
+JPEG embeds a compact ICC v2 sRGB
 profile; PNG declares sRGB with its standard sRGB chunk. This changes
 metadata only, not pixels. Developed files contain no camera metadata.
 `output_color_space` is `"sRGB"` when a developed image was written and
