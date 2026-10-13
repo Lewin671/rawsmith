@@ -12,3 +12,11 @@ Comparison images are resized JPEGs without EXIF metadata. No source RAW
 files are included. The left image is the camera's embedded JPEG; the
 right image is developed with rawsmith using the recipes in
 [`../recipes`](../recipes). Crops differ where the recipe changes framing.
+
+## One-command auto example (CC0 sample)
+
+| Camera JPEG | `rawsmith auto` |
+|---|---|
+| ![The camera's own rendering](demo-camera.jpg) | ![rawsmith auto rendering](demo-rawsmith.jpg) |
+
+A CC0 sample from [raw.pixls.us](https://raw.pixls.us) (Sony A7 IV), developed with one command.

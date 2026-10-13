@@ -12,14 +12,16 @@ description: >-
 
 `rawsmith` turns a RAW file plus a small JSON *recipe* into a picture. The
 RAW is never modified. You edit by changing recipe parameters, rendering a
-preview, **looking at it**, and repeating. Every command prints JSON.
+preview, **looking at it**, and repeating. Successful subcommands print JSON
+on stdout; errors print JSON on stderr. `--help` and `--version` print plain text.
 
 ## The loop
 
 Check `rawsmith --version` before starting. If the binary is not on PATH,
 try `~/.local/bin/rawsmith`, the release installer's default, and use that
 absolute path for the commands below. If neither works, follow the
-installation instructions in the rawsmith README before editing photos.
+installation instructions linked from the rawsmith README before editing
+photos.
 
 1. **Inspect** — `rawsmith inspect photo.ARW`
    Camera settings, as-shot white balance, and how the sensor was exposed
