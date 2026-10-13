@@ -670,8 +670,17 @@ fn auto_keeps_saved_defringe_and_allows_an_explicit_override() {
     assert_eq!(report["recipe"]["defringe"], 65.0);
     let saved: Value = serde_json::from_slice(&std::fs::read(f.recipe()).unwrap()).unwrap();
     assert_eq!(saved["defringe"], 65.0);
+    assert!(!report["decisions"].as_array().unwrap().iter().any(|d| d.as_str().unwrap().contains("overrides")));
     let report = ok(&["auto", s(&f.raw), "--set", "defringe=0"]);
     assert!(report["recipe"].get("defringe").is_none());
+    // The analysis still describes the kept strength; the report says what changed afterwards.
+    let last = report["decisions"].as_array().unwrap().last().unwrap().as_str().unwrap();
+    assert!(last.starts_with("overrides applied after this analysis: defringe=0;"), "{last}");
+    let brief = ok(&["auto", s(&f.raw), "--set", "defringe=0", "--set", "exposure=0.5", "--brief"]);
+    assert_eq!(
+        brief["decisions"].as_array().unwrap().last().unwrap(),
+        "overrides applied after this analysis: defringe=0, exposure=0.5"
+    );
     let saved: Value = serde_json::from_slice(&std::fs::read(f.recipe()).unwrap()).unwrap();
     assert!(saved.get("defringe").is_none());
 }

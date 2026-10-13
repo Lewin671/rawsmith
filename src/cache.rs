@@ -69,14 +69,38 @@ impl Config {
     }
 }
 
+/// The per-user temporary directory: assistants often run sandboxed with
+/// only the working and temporary directories writable, and the system
+/// clears it without anyone having to manage a cache.
 fn default_dir() -> Option<PathBuf> {
-    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
-    if cfg!(target_os = "macos") {
-        Some(var("HOME")?.join("Library/Caches/rawsmith"))
-    } else if cfg!(windows) {
-        Some(var("LOCALAPPDATA")?.join("rawsmith").join("cache"))
+    let user = ["USER", "USERNAME"].iter().find_map(|name| std::env::var(name).ok()).unwrap_or_default();
+    let user: String = user.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')).collect();
+    Some(std::env::temp_dir().join(if user.is_empty() {
+        "rawsmith-scenes".into()
     } else {
-        Some(var("XDG_CACHE_HOME").or_else(|| Some(var("HOME")?.join(".cache")))?.join("rawsmith"))
+        format!("rawsmith-scenes-{user}")
+    }))
+}
+
+/// Creates the directory private to this user, and refuses one that someone
+/// else owns or can write: a shared temporary directory must not let another
+/// account substitute pixels.
+fn private_dir(dir: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        let _ = fs::DirBuilder::new().recursive(true).mode(0o700).create(dir);
+        let probe = dir.join(format!("owner{}", std::process::id()));
+        let owner = File::create(&probe).and_then(|file| file.metadata()).map(|meta| meta.uid());
+        let _ = fs::remove_file(&probe);
+        match (fs::symlink_metadata(dir), owner) {
+            (Ok(meta), Ok(owner)) => meta.is_dir() && meta.uid() == owner && meta.mode() & 0o022 == 0,
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(dir).is_ok()
     }
 }
 
@@ -224,6 +248,9 @@ pub(crate) fn load(key: &Key) -> Option<Image> {
 }
 
 fn load_from(dir: &Path, key: &Key) -> Option<Image> {
+    if !dir.is_dir() || !private_dir(dir) {
+        return None;
+    }
     let file = path(dir, key);
     let mut input = File::open(&file).ok()?;
     let mut header = [0u8; HEADER];
@@ -254,7 +281,7 @@ pub(crate) fn store(key: &Key, image: &Image) -> bool {
 
 fn store_in(dir: &Path, limit: u64, key: &Key, image: &Image) -> bool {
     let size = (HEADER + std::mem::size_of_val(image.data.as_slice())) as u64;
-    if size > limit || fs::create_dir_all(dir).is_err() {
+    if size > limit || !private_dir(dir) {
         return false;
     }
     let target = path(dir, key);

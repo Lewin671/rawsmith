@@ -623,7 +623,15 @@ fn run(cli: Cli) -> Result<Value> {
             drop(file);
             let params = proposal.params.with_assignments(&source.set)?;
             let mut report = save_edit(&raw, &path, &params, &target)?;
-            report["decisions"] = json!(proposal.notes);
+            let mut decisions = proposal.notes;
+            if !source.set.is_empty() {
+                // The analysis ran before these assignments and did not see them.
+                decisions.push(format!(
+                    "overrides applied after this analysis: {}; the decisions above describe the proposal before them, so their settings and measured bounds may not match the saved recipe",
+                    source.set.join(", ")
+                ));
+            }
+            report["decisions"] = json!(decisions);
             recipe_origin(&mut report, origin);
             Ok(editing_report(report, &target, true))
         }

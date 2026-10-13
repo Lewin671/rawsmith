@@ -331,8 +331,20 @@ fn propose(raw: &RawImage, base: &Params, camera: Option<Measure>, camera_note: 
     let noise = crate::noise::resolve(raw, params.denoise);
     let scene = pipeline::scene(raw, &params, Size { max_edge: Some(ANALYSIS_EDGE) })?;
     let spaces = Spaces::new();
-    let look =
-        |p: &Params| measure(&pipeline::finish(&scene.image, &Params { sharpen: 0.0, ..p.clone() }, &spaces), &spaces);
+    // The searches below often return to settings they have already tried
+    // (a bisection end point, a trial repeated after it is accepted).
+    let measured: std::cell::RefCell<Vec<(Params, std::rc::Rc<Measure>)>> = Default::default();
+    let look = |p: &Params| {
+        if let Some((_, known)) = measured.borrow().iter().find(|(tried, _)| tried == p) {
+            return known.clone();
+        }
+        let fresh = std::rc::Rc::new(measure(
+            &pipeline::finish(&scene.image, &Params { sharpen: 0.0, ..p.clone() }, &spaces),
+            &spaces,
+        ));
+        measured.borrow_mut().push((p.clone(), fresh.clone()));
+        fresh
+    };
     let default_image = pipeline::finish(&scene.image, &Params { sharpen: 0.0, ..params.clone() }, &spaces);
     let neutral = measure(&default_image, &spaces);
     let mut notes = vec![format!(
