@@ -1,0 +1,34 @@
+{
+  "blacks": -8.0,
+  "clarity": 3.0,
+  "contrast": 8.0,
+  "exposure": -0.35,
+  "gradients": [
+    {
+      "exposure": -0.2,
+      "from": [
+        0.5,
+        0.0
+      ],
+      "saturation": 0.0,
+      "to": [
+        0.5,
+        0.5
+      ]
+    }
+  ],
+  "highlights": -30.0,
+  "hsl": {
+    "purple": {
+      "saturation": -35.0
+    },
+    "red": {
+      "saturation": -5.0
+    }
+  },
+  "rawsmith": "0.1.1",
+  "shadows": 30.0,
+  "sharpen": 20.0,
+  "vibrance": 8.0,
+  "whites": 2.0
+}

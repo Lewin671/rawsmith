@@ -29,20 +29,28 @@ the foreground is too dark. Show me a preview before exporting.”**
 
 Camera JPEG on the left, assistant edit on the right, same framing.
 
-![Snowman: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snowman-comparison.jpg)
+![Snow peak: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snow-peak-comparison.jpg)
+
+**“The forest at the bottom is a black block and the sky is too heavy. Keep the snow bright.”**
+
+<details>
+<summary>More assistant edits</summary>
+
+**Rime — open up the backlit trees without losing the frost.**
+
+![Rime: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/rime-comparison.jpg)
+
+**Maple — bring the trunk and the dark red leaves out of the shade under a bright sky.**
+
+![Maple: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/maple-comparison.jpg)
 
 **Snowman — the camera exposed the snow as grey; the edit brings it back to white and keeps its texture.**
 
-<details>
-<summary>Two more assistant edits</summary>
+![Snowman: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snowman-comparison.jpg)
 
 **Sunset — a deeper sky and a tighter frame. The camera's own rendering is already good here; this one is a matter of taste.**
 
 ![Sunset: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/sunset-comparison.jpg)
-
-**Snow mountain — less blue in the shade and a more readable foreground, with the warm summit light kept.**
-
-![Snow mountain: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snow-mountain-comparison.jpg)
 
 </details>
 
@@ -51,67 +59,55 @@ Sony A7 IV photographs, reproduced with permission.
 
 ## One edit, from request to export
 
-“Keep the sunset warm, bring out the mountain layers and crop some of the
-empty sky.”
-
-Using `sunset.ARW` for the source photo, these commands reproduce
-[the published recipe](docs/recipes/sunset.json).
+These commands reproduce [the recipe](docs/recipes/snow-peak.json) behind
+the picture above, with `peak.ARW` standing for the source photo.
 
 ```sh
-rawsmith inspect sunset.ARW
+rawsmith inspect peak.ARW
 ```
-The assistant reads the camera settings, as-shot white balance and sensor exposure.
+The assistant reads the camera settings, white balance and how the sensor was exposed.
 
 ```sh
-rawsmith auto sunset.ARW -o sunset-start.jpg --size 1400
+rawsmith auto peak.ARW -o start.jpg --size 1400
 ```
-It opens the starting preview and reads `decisions`, using output clipping
-(`stats.clipped_highlights_pct`, `stats.channel_clipped_pct_rgb`),
-full-active-area `sensor_clipped_pct` and `stats.crushed_shadows_pct` to guide
-detail checks. Zero pure-white clipping does not prove correct highlight colour.
+It opens the starting preview and reads `decisions` (what `auto` measured and chose) and the clipping statistics.
 
 ```sh
-rawsmith edit sunset.ARW --reset \
-  --set exposure=-0.8 --set highlights=-35 --set shadows=30 \
-  --set whites=-10 --set blacks=-10 --set contrast=5 \
-  --set clarity=10 --set dehaze=12 --set vibrance=25 \
+rawsmith edit peak.ARW \
+  --set exposure=0.25 --set shadows=35 --set highlights=-8 \
+  --set blacks=-12 --set contrast=12 --set clarity=5 --set vibrance=12 \
   --set crop.top=0.1 --set crop.bottom=0.98 \
-  -o sunset-edit.jpg --size 1400
+  --set 'gradients=[{"from":[0.5,0],"to":[0.5,0.35],"exposure":-0.18}]' \
+  -o edit.jpg --size 1400
 ```
-It lowers exposure, lifts shadows, adds dehaze and trims the sky, then opens `rawsmith compare sunset.ARW -o sunset-compare.jpg` to compare the upright camera JPEG with the current edit using the edit's framing.
+It lifts the shadowed forest, eases the blue, trims empty sky and darkens the top slightly with a graduated filter.
 
 ```sh
-rawsmith render sunset.ARW --region 0.4,0.4,0.6,0.6 -o sunset-detail.jpg
+rawsmith compare peak.ARW -o compare.jpg
 ```
-It checks full-resolution detail for noise, sharpening halos and lost texture.
+It checks the edit beside the camera's JPEG, upright and in the same framing.
 
 ```sh
-rawsmith render sunset.ARW -o sunset-final.jpg
+rawsmith render peak.ARW --region 0.4,0.4,0.6,0.6 -o detail.jpg
+rawsmith render peak.ARW -o final.jpg
 ```
-It exports the full-resolution JPEG; `.png` would give 16-bit output.
-Both declare sRGB (ICC in JPEG, a standard sRGB chunk in PNG).
-`compare` uses the embedded JPEG's colour declaration, falling back to RAW
-EXIF; declared Adobe RGB camera previews are converted to sRGB and tagged.
-A single `--panel camera` exports this upright camera rendering alone.
-Unknown or unverified camera colour produces a warning and an untagged row.
-Outputs are replaced; RAWs never. Use a new output name to keep a version;
-the report's `output_replaced` field signals replacement.
+It inspects detail at 100% for noise, halos and lost texture, then exports at full resolution (`.png` gives 16-bit output).
 
-The published recipe records the resulting edit:
+The edit is a small JSON file next to the RAW, holding only what differs
+from the defaults:
 
 ```json
 {
-  "blacks": -10.0,
-  "clarity": 10.0,
-  "contrast": 5.0,
+  "blacks": -12.0,
+  "clarity": 5.0,
+  "contrast": 12.0,
   "crop": { "bottom": 0.98, "top": 0.1 },
-  "dehaze": 12.0,
-  "exposure": -0.8,
-  "highlights": -35.0,
-  "rawsmith": "0.1.0",
-  "shadows": 30.0,
-  "vibrance": 25.0,
-  "whites": -10.0
+  "exposure": 0.25,
+  "gradients": [{ "exposure": -0.18, "from": [0.5, 0.0], "to": [0.5, 0.35] }],
+  "highlights": -8.0,
+  "shadows": 35.0,
+  "sharpen": 28.0,
+  "vibrance": 12.0
 }
 ```
 

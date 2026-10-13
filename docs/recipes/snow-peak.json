@@ -1,0 +1,29 @@
+{
+  "blacks": -12.0,
+  "clarity": 5.0,
+  "contrast": 12.0,
+  "crop": {
+    "bottom": 0.98,
+    "top": 0.1
+  },
+  "exposure": 0.25,
+  "gradients": [
+    {
+      "exposure": -0.18,
+      "from": [
+        0.5,
+        0.0
+      ],
+      "saturation": 0.0,
+      "to": [
+        0.5,
+        0.35
+      ]
+    }
+  ],
+  "highlights": -8.0,
+  "rawsmith": "0.1.1",
+  "shadows": 35.0,
+  "sharpen": 28.0,
+  "vibrance": 12.0
+}

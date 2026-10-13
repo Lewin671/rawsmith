@@ -1,0 +1,18 @@
+{
+  "blacks": -10.0,
+  "clarity": 3.0,
+  "contrast": 5.0,
+  "exposure": 0.18,
+  "highlights": -20.0,
+  "hsl": {
+    "blue": {
+      "saturation": -10.0
+    }
+  },
+  "rawsmith": "0.1.1",
+  "shadows": 38.0,
+  "sharpen": 28.0,
+  "temperature": 5900.0,
+  "vibrance": 8.0,
+  "whites": 3.0
+}
