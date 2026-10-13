@@ -73,8 +73,10 @@ the user (a directory another account owns or can write is not used). A 33
 MP frame takes about 390 MB; the most recently used 6000 MB are kept and
 frames unused for a day are removed. `RAWSMITH_CACHE_DIR` moves the
 directory and `RAWSMITH_CACHE_MB` sets the limit, with `0` turning reuse
-off. Frames under a megapixel are not stored. Any failure to read or write
-one develops the photo as usual.
+off. Frames under a megapixel are not stored. A stored frame carries a
+checksum of its pixels; one that fails it, or any failure to read or write,
+develops the photo as usual. Cleaning up removes only files this cache
+wrote, so the directory may hold other things.
 
 An explicit `render --recipe FILE` requires that file to exist, so a
 misspelled path cannot silently export an unedited picture. `edit` and

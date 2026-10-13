@@ -20,8 +20,9 @@ use rayon::prelude::*;
 use crate::arw::RawImage;
 use crate::image::Image;
 
-const MAGIC: &[u8; 8] = b"RSSCENE1";
-const HEADER: usize = MAGIC.len() + 16 + 16;
+const MAGIC: &[u8; 8] = b"RSSCENE2";
+/// Magic, key, width and height, then a checksum of the pixel bytes.
+const HEADER: usize = MAGIC.len() + 16 + 16 + 16;
 /// Development of smaller frames is quicker than reading them back is worth.
 const MIN_PIXELS: usize = 1_000_000;
 /// Default bound on stored scenes: about fifteen 33 MP frames, so a batch
@@ -85,19 +86,26 @@ fn default_dir() -> Option<PathBuf> {
 
 /// Creates the directory private to this user, and refuses one that someone
 /// else owns or can write: a shared temporary directory must not let another
-/// account substitute pixels.
+/// account substitute pixels. Nothing is written until the directory itself
+/// has passed, and the ownership probe is created exclusively, so a name
+/// planted there, such as a link to a photo, is never opened or truncated.
 fn private_dir(dir: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
         let _ = fs::DirBuilder::new().recursive(true).mode(0o700).create(dir);
-        let probe = dir.join(format!("owner{}", std::process::id()));
-        let owner = File::create(&probe).and_then(|file| file.metadata()).map(|meta| meta.uid());
-        let _ = fs::remove_file(&probe);
-        match (fs::symlink_metadata(dir), owner) {
-            (Ok(meta), Ok(owner)) => meta.is_dir() && meta.uid() == owner && meta.mode() & 0o022 == 0,
-            _ => false,
+        let Ok(meta) = fs::symlink_metadata(dir) else { return false };
+        if !meta.is_dir() || meta.mode() & 0o022 != 0 {
+            return false;
         }
+        // std has no way to ask for the process's user; a file it creates has it.
+        let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+        let probe = dir.join(format!("owner-{}-{nanos}", std::process::id()));
+        let Ok(file) = File::options().write(true).create_new(true).open(&probe) else { return false };
+        let owner = file.metadata().map(|meta| meta.uid());
+        drop(file);
+        let _ = fs::remove_file(&probe);
+        owner.is_ok_and(|owner| owner == meta.uid())
     }
     #[cfg(not(unix))]
     {
@@ -150,6 +158,23 @@ fn hash_bytes(bytes: &[u8]) -> [u64; 2] {
     let mut hash = Hash::new();
     hash.bytes(bytes);
     hash.0
+}
+
+/// Checksum of stored pixels, in fixed blocks so it does not depend on the
+/// thread count. A frame whose bytes changed on disk is developed again
+/// instead of being rendered.
+fn hash_pixels(bytes: &[u8]) -> [u8; 16] {
+    let blocks: Vec<[u64; 2]> = bytes.par_chunks(1 << 20).map(hash_bytes).collect();
+    let mut hash = Hash::new();
+    hash.word(bytes.len() as u64);
+    for [a, b] in blocks {
+        hash.word(a);
+        hash.word(b);
+    }
+    let mut out = [0u8; 16];
+    out[..8].copy_from_slice(&hash.0[0].to_le_bytes());
+    out[8..].copy_from_slice(&hash.0[1].to_le_bytes());
+    out
 }
 
 /// Sensor samples are hashed in fixed blocks so the result does not depend on
@@ -257,7 +282,8 @@ fn load_from(dir: &Path, key: &Key) -> Option<Image> {
     let mut header = [0u8; HEADER];
     input.read_exact(&mut header).ok()?;
     let (magic, rest) = header.split_at(MAGIC.len());
-    let (stored_key, dims) = rest.split_at(16);
+    let (stored_key, rest) = rest.split_at(16);
+    let (dims, checksum) = rest.split_at(16);
     let width = u64::from_le_bytes(dims[..8].try_into().unwrap());
     let height = u64::from_le_bytes(dims[8..].try_into().unwrap());
     let pixels = width.checked_mul(height)?;
@@ -267,6 +293,9 @@ fn load_from(dir: &Path, key: &Key) -> Option<Image> {
     }
     let mut image = Image::new(usize::try_from(width).ok()?, usize::try_from(height).ok()?);
     input.read_exact(pixel_bytes_mut(&mut image.data)).ok()?;
+    if hash_pixels(pixel_bytes(&image.data)) != checksum {
+        return None;
+    }
     // Mark the scene as recently used; eviction removes the oldest first.
     if let Ok(touch) = File::options().write(true).open(&file) {
         let _ = touch.set_modified(SystemTime::now());
@@ -288,21 +317,50 @@ fn store_in(dir: &Path, limit: u64, key: &Key, image: &Image) -> bool {
     let target = path(dir, key);
     let staged = target.with_extension(format!("tmp{}", std::process::id()));
     let written = (|| -> std::io::Result<()> {
-        let mut out = File::create(&staged)?;
+        // Never write through a name that already exists.
+        let mut out = File::options().write(true).create_new(true).open(&staged)?;
         out.write_all(MAGIC)?;
         out.write_all(key)?;
         out.write_all(&(image.width as u64).to_le_bytes())?;
         out.write_all(&(image.height as u64).to_le_bytes())?;
+        out.write_all(&hash_pixels(pixel_bytes(&image.data)))?;
         out.write_all(pixel_bytes(&image.data))?;
         drop(out);
         fs::rename(&staged, &target)
     })();
-    if written.is_err() {
-        let _ = fs::remove_file(&staged);
+    if let Err(error) = written {
+        // An existing name was not written by this call and is not this call's to remove.
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            let _ = fs::remove_file(&staged);
+        }
         return false;
     }
     trim(dir, limit);
     true
+}
+
+/// Whether a directory entry is one of this cache's own files: the name it
+/// would have generated, starting with its magic (or empty, for a staging
+/// file interrupted before its first write). The directory may be one the
+/// user chose and may hold other things; nothing else is ever removed.
+fn own_file(path: &Path, len: u64) -> Option<bool> {
+    let stem = path.file_stem()?.to_str()?;
+    let extension = path.extension()?.to_str()?;
+    let staging =
+        extension.strip_prefix("tmp").is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()));
+    if stem.len() != 32
+        || !stem.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        || !(extension == "scene" || staging)
+    {
+        return None;
+    }
+    if staging && len == 0 {
+        return Some(true);
+    }
+    let mut magic = [0u8; MAGIC.len()];
+    // Earlier formats of this cache are its own too.
+    File::open(path).and_then(|mut file| file.read_exact(&mut magic)).ok()?;
+    (magic.starts_with(b"RSSCENE")).then_some(staging)
 }
 
 /// Keeps the most recently used scenes within `limit`, and removes expired
@@ -314,11 +372,14 @@ fn trim(dir: &Path, limit: u64) {
     for entry in entries.flatten() {
         let path = entry.path();
         let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let Some(staging) = own_file(&path, meta.len()) else { continue };
         let age = meta.modified().ok().and_then(|at| now.duration_since(at).ok()).unwrap_or_default();
-        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
-        if extension == "scene" && age <= MAX_AGE {
+        if !staging && age <= MAX_AGE {
             scenes.push((age, meta.len(), path));
-        } else if extension == "scene" || (extension.starts_with("tmp") && age > Duration::from_secs(3600)) {
+        } else if !staging || age > Duration::from_secs(3600) {
             let _ = fs::remove_file(path);
         }
     }
@@ -409,6 +470,100 @@ mod tests {
         assert!(load_from(&dir, &[3; 16]).is_none());
         assert!(!store_in(&dir, size - 1, &[6; 16], &image));
         assert!(load_from(&dir, &[6; 16]).is_none());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn changed_pixel_bytes_are_developed_again() {
+        let dir = scratch("checksum");
+        let image = sample(6, 6, 3.0);
+        assert!(store_in(&dir, 1 << 20, &[7; 16], &image));
+        let file = path(&dir, &[7; 16]);
+        let bytes = fs::read(&file).unwrap();
+        for index in [HEADER, HEADER + 100, bytes.len() - 1] {
+            let mut flipped = bytes.clone();
+            flipped[index] ^= 0x40;
+            fs::write(&file, &flipped).unwrap();
+            assert!(load_from(&dir, &[7; 16]).is_none(), "byte {index}");
+        }
+        fs::write(&file, &bytes).unwrap();
+        assert!(load_from(&dir, &[7; 16]).is_some());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn trimming_removes_only_files_this_cache_wrote() {
+        let dir = scratch("foreign");
+        let image = sample(8, 8, 2.0);
+        let size = (HEADER + 8 * 8 * 12) as u64;
+        assert!(store_in(&dir, size * 9, &[1; 16], &image));
+        let old = SystemTime::now() - Duration::from_secs(4 * 24 * 3600);
+        let hex = "0123456789abcdef0123456789abcdef";
+        // Someone else's files in a directory the user pointed the cache at,
+        // including ones with this cache's extensions and name shape.
+        let foreign = ["backup.tmp", "project.scene", "notes.tmp123", &format!("{hex}.scene"), &format!("{hex}.tmp77")];
+        for name in foreign {
+            fs::write(dir.join(name), b"not a stored scene").unwrap();
+            File::options().write(true).open(dir.join(name)).unwrap().set_modified(old).unwrap();
+        }
+        fs::create_dir(dir.join(format!("{}.scene", "f".repeat(32)))).unwrap();
+        // This cache's own leftovers: an expired scene, an abandoned staging
+        // file, and one interrupted before its first write.
+        let expired = path(&dir, &[2; 16]);
+        fs::copy(path(&dir, &[1; 16]), &expired).unwrap();
+        let abandoned = path(&dir, &[3; 16]).with_extension("tmp4242");
+        fs::copy(path(&dir, &[1; 16]), &abandoned).unwrap();
+        let empty = path(&dir, &[4; 16]).with_extension("tmp4243");
+        fs::write(&empty, b"").unwrap();
+        for file in [&expired, &abandoned, &empty] {
+            File::options().write(true).open(file).unwrap().set_modified(old).unwrap();
+        }
+        // A limit below one scene evicts everything of its own.
+        trim(&dir, size * 9);
+        assert!(!expired.exists() && !abandoned.exists() && !empty.exists());
+        assert!(load_from(&dir, &[1; 16]).is_some());
+        trim(&dir, 1);
+        assert!(!path(&dir, &[1; 16]).exists());
+        for name in foreign {
+            assert_eq!(fs::read(dir.join(name)).unwrap(), b"not a stored scene", "{name}");
+        }
+        assert!(dir.join(format!("{}.scene", "f".repeat(32))).is_dir());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn planted_names_and_shared_directories_are_never_written_through() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("planted");
+        let image = sample(4, 4, 1.0);
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let victim = dir.join("photo.ARW");
+        fs::write(&victim, b"irreplaceable").unwrap();
+        // A link waiting under the staging name this process would use.
+        let staged = path(&dir, &[5; 16]).with_extension(format!("tmp{}", std::process::id()));
+        std::os::unix::fs::symlink(&victim, &staged).unwrap();
+        assert!(!store_in(&dir, 1 << 20, &[5; 16], &image));
+        assert_eq!(fs::read(&victim).unwrap(), b"irreplaceable");
+        assert!(fs::symlink_metadata(&staged).unwrap().file_type().is_symlink());
+        assert!(load_from(&dir, &[5; 16]).is_none());
+        fs::remove_file(&staged).unwrap();
+        assert!(store_in(&dir, 1 << 20, &[5; 16], &image));
+        // A directory others can write is refused before anything is created in it.
+        let shared = scratch("shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!store_in(&shared, 1 << 20, &[5; 16], &image));
+        assert_eq!(fs::read_dir(&shared).unwrap().count(), 0);
+        // A link in place of the directory is refused too.
+        let link = scratch("link");
+        let _ = fs::remove_file(&link);
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        assert!(!store_in(&link, 1 << 20, &[6; 16], &image));
+        assert!(!path(&dir, &[6; 16]).exists());
+        let _ = fs::remove_file(link);
+        let _ = fs::remove_dir_all(shared);
         let _ = fs::remove_dir_all(dir);
     }
 
