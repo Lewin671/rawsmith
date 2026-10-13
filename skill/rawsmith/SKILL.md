@@ -16,6 +16,11 @@ preview, **looking at it**, and repeating. Every command prints JSON.
 
 ## The loop
 
+Check `rawsmith --version` before starting. If the binary is not on PATH,
+try `~/.local/bin/rawsmith`, the release installer's default, and use that
+absolute path for the commands below. If neither works, follow the
+installation instructions in the rawsmith README before editing photos.
+
 1. **Inspect** — `rawsmith inspect photo.ARW`
    Camera settings, as-shot white balance, and how the sensor was exposed
    (`saturated_pct`: data that is gone for good; `headroom_stops`: unused
