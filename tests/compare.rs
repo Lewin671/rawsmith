@@ -626,3 +626,38 @@ fn comparison_help_describes_panel_and_colour_contract() {
         assert!(help.contains(text), "{help}");
     }
 }
+
+#[test]
+fn compare_honours_and_reports_jpeg_quality() {
+    let f = Fixture::new("quality");
+    let raw = f.raw(1, None);
+    let image_path = f.path("row.jpg");
+    let mut previous = Vec::new();
+    for quality in ["92", "85", "1", "100"] {
+        let report = run(&["compare", s(&raw), "--panel", "default", "-o", s(&image_path), "--quality", quality], true);
+        let bytes = std::fs::read(&image_path).unwrap();
+        assert_eq!(report["quality"], quality.parse::<u8>().unwrap());
+        assert_eq!(report["output_bytes"], bytes.len());
+        assert_ne!(bytes, previous);
+        let file = std::fs::read(&raw).unwrap();
+        let decoded = rawsmith::arw::decode(&file).unwrap();
+        let panels = [rawsmith::compare::Panel {
+            kind: "default",
+            params: rawsmith::params::Params::default(),
+            recipe_file: None,
+        }];
+        let (image, _, srgb) = rawsmith::compare::row(&decoded, &file, &panels, 1400).unwrap();
+        assert_eq!(
+            bytes,
+            output::encode_with_color_space(&image_path, &image, quality.parse().unwrap(), srgb).unwrap()
+        );
+        previous = bytes;
+    }
+    for quality in ["0", "101"] {
+        run(&["compare", s(&raw), "--panel", "default", "-o", s(&image_path), "--quality", quality], false);
+        assert_eq!(std::fs::read(&image_path).unwrap(), previous);
+    }
+    let png = f.path("row.png");
+    let report = run(&["compare", s(&raw), "--panel", "default", "-o", s(&png)], true);
+    assert_eq!(report.get("quality"), Some(&Value::Null));
+}

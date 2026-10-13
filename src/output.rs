@@ -211,6 +211,133 @@ pub fn replace_pair(first: (&Path, &[u8]), second: (&Path, &[u8])) -> std::io::R
     Ok(replaced)
 }
 
+/// Decimal byte limits: bytes, K/KB (1000), M/MB (1,000,000).
+/// Fractional suffix values are accepted when they resolve to whole bytes.
+pub fn parse_max_bytes(value: &str) -> std::result::Result<u64, String> {
+    let invalid = || "--max-bytes requires positive bytes or a decimal K/KB/M/MB size (e.g. 1.5MB)".to_string();
+    let upper = value.to_ascii_uppercase();
+    let (number, multiplier) = if let Some(n) = upper.strip_suffix("KB").or_else(|| upper.strip_suffix('K')) {
+        (n, 1000u64)
+    } else if let Some(n) = upper.strip_suffix("MB").or_else(|| upper.strip_suffix('M')) {
+        (n, 1_000_000u64)
+    } else {
+        (upper.as_str(), 1u64)
+    };
+    let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|b| b.is_ascii_digit())
+        || !fraction.bytes().all(|b| b.is_ascii_digit())
+        || (number.contains('.') && (fraction.is_empty() || multiplier == 1))
+    {
+        return Err(invalid());
+    }
+    let scale = 10u64.checked_pow(fraction.len().try_into().map_err(|_| invalid())?).ok_or_else(invalid)?;
+    let fractional = if fraction.is_empty() { 0 } else { fraction.parse::<u64>().map_err(|_| invalid())? };
+    let fractional = fractional.checked_mul(multiplier).ok_or_else(invalid)?;
+    if fractional % scale != 0 {
+        return Err(invalid());
+    }
+    let bytes = whole
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(multiplier))
+        .and_then(|n| n.checked_add(fractional / scale))
+        .filter(|&n| n > 0)
+        .ok_or_else(invalid)?;
+    Ok(bytes)
+}
+
+pub fn is_jpeg(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg"))
+}
+
+pub struct Encoded {
+    pub bytes: Vec<u8>,
+    pub quality: Option<u8>,
+    pub quality_limited_by: Option<&'static str>,
+}
+
+/// Render once, quantise once, and bisect only JPEG encoding quality.
+/// All bytes remain in memory until a fitting result is found.
+pub fn encode_export(path: &Path, image: &Image, quality: u8, max_bytes: Option<u64>) -> Result<Encoded> {
+    let Some(limit) = max_bytes else {
+        return Ok(Encoded {
+            bytes: encode(path, image, quality)?,
+            quality: is_jpeg(path).then_some(quality),
+            quality_limited_by: None,
+        });
+    };
+    if !is_jpeg(path) {
+        return Err(Error::Params("--max-bytes requires JPEG output (.jpg or .jpeg)".into()));
+    }
+    if !(60..=100).contains(&quality) {
+        return Err(Error::Params("--max-bytes requires --quality in 60..100; use --size for smaller files".into()));
+    }
+    let rgb = to_rgb8(image);
+    let mut sizes = [None; 101];
+    let encode = |q: u8, sizes: &mut [Option<usize>; 101]| {
+        let bytes = encode_jpeg(path, image, &rgb, q, true)?;
+        sizes[q as usize] = Some(bytes.len());
+        Ok::<_, Error>(bytes)
+    };
+    let mut bytes = encode(quality, &mut sizes)?;
+    if bytes.len() as u64 <= limit {
+        return Ok(Encoded { bytes, quality: Some(quality), quality_limited_by: None });
+    }
+    bytes = encode(60, &mut sizes)?;
+    let (mut low, mut high) = (if bytes.len() as u64 <= limit { 60 } else { 59 }, quality - 1);
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        let candidate = encode(mid, &mut sizes)?;
+        if candidate.len() as u64 <= limit {
+            low = mid;
+            bytes = candidate;
+        } else {
+            high = mid - 1;
+        }
+    }
+    // Optimised Huffman coding can make sizes non-monotonic, especially for
+    // tiny images. Check unvisited higher qualities before claiming the highest
+    // fitting result (or failure); never quantise or render again.
+    for q in (low + 1..quality).rev() {
+        if sizes[q as usize].is_some() {
+            continue;
+        }
+        let candidate = encode(q, &mut sizes)?;
+        if candidate.len() as u64 <= limit {
+            low = q;
+            bytes = candidate;
+            break;
+        }
+    }
+    if low < 60 {
+        let smallest = sizes.iter().flatten().min().expect("at least one JPEG encoded");
+        return Err(Error::Params(format!("--max-bytes {limit} cannot be reached: smallest size reached is {smallest} bytes with a quality 60 floor; use --size to reduce dimensions")));
+    }
+    Ok(Encoded { bytes, quality: Some(low), quality_limited_by: Some("max_bytes") })
+}
+
+fn encode_jpeg(path: &Path, image: &Image, rgb: &[u8], quality: u8, srgb: bool) -> Result<Vec<u8>> {
+    let (w, h) = (image.width, image.height);
+    if w > u16::MAX as usize || h > u16::MAX as usize {
+        return Err(Error::Params("image is too large for JPEG; use --size or PNG".into()));
+    }
+    let failed =
+        |e: &dyn std::fmt::Display| Error::Io(std::io::Error::other(format!("cannot write {}: {e}", path.display())));
+    let mut bytes = Vec::new();
+    let mut encoder = jpeg_encoder::Encoder::new(&mut bytes, quality.clamp(1, 100));
+    // Full chroma resolution also avoids scrambled previews in assistant viewers.
+    encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
+    encoder.set_optimized_huffman_tables(true);
+    if srgb {
+        encoder.add_icc_profile(SRGB_PROFILE).map_err(|e| failed(&e))?;
+    }
+    encoder.encode(rgb, w as u16, h as u16, jpeg_encoder::ColorType::Rgb).map_err(|e| failed(&e))?;
+    Ok(bytes)
+}
+
 /// Encodes `image` (sRGB-encoded, 0..1). The path extension selects the
 /// format: `.jpg`/`.jpeg` (8-bit, `quality` 1..100) or `.png` (16-bit, lossless).
 pub fn encode(path: &Path, image: &Image, quality: u8) -> Result<Vec<u8>> {
@@ -226,26 +353,7 @@ pub fn encode_with_color_space(path: &Path, image: &Image, quality: u8, srgb: bo
     let failed =
         |e: &dyn std::fmt::Display| Error::Io(std::io::Error::other(format!("cannot write {}: {e}", path.display())));
     match extension.as_str() {
-        "jpg" | "jpeg" => {
-            if w > u16::MAX as usize || h > u16::MAX as usize {
-                return Err(Error::Params("image is too large for JPEG; use --size or PNG".into()));
-            }
-            let mut bytes = Vec::new();
-            let mut encoder = jpeg_encoder::Encoder::new(&mut bytes, quality.clamp(1, 100));
-            // Always full chroma resolution. Subsampled (4:2:0) files from this
-            // encoder decode correctly in libjpeg and ImageIO, but an image
-            // viewer used by AI assistants showed them scrambled, and a preview
-            // the assistant cannot see correctly defeats the purpose.
-            encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
-            encoder.set_optimized_huffman_tables(true);
-            if srgb {
-                encoder.add_icc_profile(SRGB_PROFILE).map_err(|e| failed(&e))?;
-            }
-            encoder
-                .encode(&to_rgb8(image), w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
-                .map_err(|e| failed(&e))?;
-            Ok(bytes)
-        }
+        "jpg" | "jpeg" => encode_jpeg(path, image, &to_rgb8(image), quality, srgb),
         "png" => {
             let mut bytes = Vec::new();
             let mut encoder = png::Encoder::new(&mut bytes, w as u32, h as u32);

@@ -57,7 +57,8 @@ An explicit `render --recipe FILE` requires that file to exist, so a
 misspelled path cannot silently export an unedited picture. `edit` and
 `auto` can create a new recipe at that path. Without `--recipe`, a missing
 sidecar means the default recipe. `--size` must be at least 1 pixel and
-`--quality` is 1–100; invalid values are reported as JSON errors.
+`--quality` is 1–100 (default 92, full chroma resolution); invalid values
+are reported as JSON errors.
 
 `render`, `edit` and `auto` report `recipe_file`: the path read by `render`
 (or `null` if no default sidecar was read), and the path saved by
@@ -65,7 +66,8 @@ sidecar means the default recipe. `--size` must be at least 1 pixel and
 `--set` trial. `render` never saves a recipe, even with trial settings.
 
 Add `--brief` to `render`, `edit` or `auto` for the editing loop. It keeps
-`output` and encoded `output_bytes`, `output_replaced`, `output_color_space`,
+`output`, encoded `output_bytes`, `quality`, `quality_limited_by`,
+`output_replaced`, `output_color_space`,
 `recipe_file`, `recipe_saved`, `white_balance`, `region`, sensor clipping and
 its scope, and `noise_reduction.strength` / `source`. `stats` keeps `width`,
 `height`, all seven tone percentiles (`stats.tones.p1` through `p99`),
@@ -75,11 +77,11 @@ recipe version mismatches and unresolved/unreachable/unavailable auto bounds.
 `auto.decisions` has one shortened line per decision (first clause, at most
 120 characters plus an ellipsis and any failure qualifiers from later clauses).
 Omit `--brief` for complete decisions, recipe settings, histogram, hue/chroma
-statistics and noise diagnostics. The default full report is unchanged except
-for the explicit saved-region notice below.
+statistics and noise diagnostics. Full reports also include these export fields.
 
-For recipe-only `edit`/`auto`, brief `output`, `output_bytes` and `stats` are
-`null`; `edit`/`auto` still report `recipe_saved: true` and the saved path.
+For recipe-only `edit`/`auto`, both reports have `output_bytes: null` and
+`quality: null`; brief `output` and `stats` are also `null`. Brief reports
+still include `recipe_saved: true` and the saved path.
 Brief `render` reports `recipe_saved: false`, including with `--set`.
 
 `rawsmith schema` lists every parameter with its range and meaning:
@@ -140,6 +142,39 @@ region. It is not a trial.** Its full and brief reports include
 `recipe_saved: true`, `region` and a `note` explaining this. The same applies
 to `auto --region`. Use `render --region --set ...` for an unsaved detail trial.
 Output is sRGB JPEG or 16-bit PNG, selected by the output extension.
+
+JPEG quality defaults to **92**, with full chroma resolution: the best
+out-of-the-box choice for almost everything. `--quality 1..100` is available
+on `render`, `edit`, `auto` and `compare`; lower it for smaller files.
+For maximum fidelity or further editing, export `.png` (16-bit lossless).
+Quality and byte limits are export settings and are never saved in recipes.
+Full and brief reports include `output_bytes` and the actual JPEG `quality`
+(`null` for PNG or no image). Extracted camera JPEGs report `quality: null`
+because they are copied unchanged and their encoder quality is unknown.
+
+`render`, `edit` and `auto` accept `--max-bytes SIZE` for JPEG output only
+(default: no limit). Use it with `--size` for web or file-size targets:
+
+```sh
+rawsmith render photo.ARW -o web.jpg --size 2000 --max-bytes 1.5MB --brief
+rawsmith render photo.ARW -o smaller.jpg --size 2000 --quality 85 --brief
+```
+
+SIZE accepts positive plain integer bytes or decimal K/KB (1000 bytes) and
+M/MB (1,000,000 bytes), case-insensitively. Fractional suffix values must
+resolve to whole bytes. The image is rendered and quantised once; only the
+JPEG encoder is bisected from `--quality` (default 92) downward to a floor
+of 60 to find the highest fitting quality. Because JPEG sizes can be
+non-monotonic, untested higher qualities are checked before reporting a
+result or failure; this can require additional encodes, never another render.
+With a byte limit, `--quality` must be at least 60. If lowered, full and brief reports include
+`quality_limited_by: "max_bytes"` (otherwise `null`). If no quality at or
+above the floor fits the limit, the command returns a JSON error giving the smallest
+size reached and suggesting `--size`; no image or recipe is written and
+existing files remain unchanged. PNG output, missing output, invalid suffixes
+and overflowing/zero limits are rejected. Selection and encoded bytes are
+deterministic under the same conditions as ordinary exports.
+
 JPEG embeds a compact ICC v2 sRGB
 profile; PNG declares sRGB with its standard sRGB chunk. This changes
 metadata only, not pixels. Developed files contain no camera metadata.
@@ -263,7 +298,8 @@ or a camera JPEG with a different original field of view.
 `--size` defaults to 1400 and bounds **each panel's** longest edge, not the
 whole row. Panels shrink proportionally to the smallest bounded panel
 height, without upscaling; widths are rounded to whole pixels. JPEG uses
-quality 92; `.png` gives 16-bit output. The camera decoder accepts 8-bit RGB
+`--quality 1..100` (default 92, full chroma resolution); lower for smaller
+files. `.png` gives 16-bit output. The camera decoder accepts 8-bit RGB
 or greyscale JPEGs, with a 128 MiB decoded-buffer limit. Images carry no camera metadata.
 Encoding and staging complete before the destination is replaced; failures
 preserve existing files. Repeated comparisons are deterministic under the
@@ -271,7 +307,7 @@ same binary/platform conditions as rendering.
 
 The report contains:
 
-- `output`, `output_replaced`, `output_color_space`.
+- `output`, `output_bytes`, `quality` (null for PNG), `output_replaced`, `output_color_space`.
 - `panels`, in left-to-right order: `kind`, `recipe_file` (null for camera,
   default, or a missing saved sidecar), final `width` and `height`,
   `framing` (`crop`, `rotate`), and `color_space`.
@@ -354,7 +390,8 @@ as well as checking full-resolution detail.
 With the same executable binary on the same platform (OS/runtime versions
 and CPU architecture/features), identical RAW bytes, effective recipe
 settings and render options (`--size`, `--region`, output format and JPEG
-quality) produce bit-identical pixels, JPEG/PNG bytes and report statistics,
+quality and `--max-bytes`) produce bit-identical pixels, JPEG/PNG bytes and
+report statistics,
 regardless of Rayon thread count or scheduling. Report timing and paths are
 not part of this guarantee. A matching version number alone, different
 builds or different platforms do not guarantee bit-identical results.

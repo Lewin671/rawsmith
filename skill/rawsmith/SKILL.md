@@ -110,7 +110,11 @@ keep a version.
    that caused it rather than accepting the artefact.
 
 7. **Export** — `rawsmith render photo.ARW -o final.jpg --brief` (full
-   resolution, sRGB; `.png` gives 16-bit). Open the exported file. Tell
+   resolution, sRGB). Default JPEG quality 92 is right for almost everything.
+   For “smaller file”, “for the web” or “under N MB”, use `--max-bytes` (decimal MB)
+   or `--quality 85` with a `--size`; choose the settings without asking for a number.
+   For maximum fidelity or further editing, export `.png` (16-bit); tell the user the final file size from `output_bytes`.
+   Open the exported file. Tell
    the user in two or three plain sentences what you made of the picture
    and why — the intent, not a list of sliders.
 

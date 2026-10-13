@@ -332,7 +332,8 @@ fn brief_reports_keep_editing_metrics_without_changing_full_reports_or_pixels() 
             assert!(brief["stats"].get(key).is_none());
         }
         assert!(full.get("recipe").is_some());
-        assert!(full.get("output_bytes").is_none());
+        assert_eq!(full["output_bytes"], brief["output_bytes"]);
+        assert_eq!(full["quality"], brief["quality"]);
         assert!(full.get("recipe_saved").is_none());
         assert!(brief.get("recipe").is_none());
         assert!(brief.get("recipe_compatibility").is_none());
@@ -1248,4 +1249,196 @@ fn masks_mutations_schema_diagnostic_and_errors_preserve_files() {
     let (success, error) = run(&["edit", s(&f.raw), "--set", luma, "--set", "masks-=0"]);
     assert!(!success);
     assert!(error["error"]["message"].as_str().unwrap().contains("at most 8"));
+}
+
+#[test]
+fn export_quality_is_reported_in_full_and_brief_without_entering_recipes() {
+    let f = Fixture::new("export-quality-reports");
+    for command in ["render", "edit", "auto"] {
+        for brief in [false, true] {
+            for extension in ["jpg", "png"] {
+                let path = f.path(&format!("out.{extension}"));
+                let mut args = vec![command, s(&f.raw), "-o", s(&path), "--quality", "85"];
+                if brief {
+                    args.push("--brief");
+                }
+                let report = ok(&args);
+                assert_eq!(report["output_bytes"], std::fs::metadata(&path).unwrap().len());
+                assert!(report.get("quality").is_some());
+                assert_eq!(report["quality"], if extension == "jpg" { serde_json::json!(85) } else { Value::Null });
+                assert!(report["quality_limited_by"].is_null());
+            }
+        }
+        if command != "render" {
+            for brief in [false, true] {
+                let mut args = vec![command, s(&f.raw)];
+                if brief {
+                    args.push("--brief");
+                }
+                let report = ok(&args);
+                assert_eq!(report.get("quality"), Some(&Value::Null));
+                assert_eq!(report.get("output_bytes"), Some(&Value::Null));
+            }
+            let recipe: Value = serde_json::from_slice(&std::fs::read(f.recipe()).unwrap()).unwrap();
+            assert!(recipe.get("quality").is_none());
+            assert!(recipe.get("max_bytes").is_none());
+        }
+    }
+}
+
+#[test]
+fn max_bytes_selects_highest_fitting_quality_deterministically() {
+    let f = Fixture::new("export-byte-limit");
+    let raw = rawsmith::arw::decode(&std::fs::read(&f.raw).unwrap()).unwrap();
+    let rendered = rawsmith::pipeline::render(
+        &raw,
+        &rawsmith::params::Params::default(),
+        rawsmith::pipeline::Size { max_edge: None },
+    )
+    .unwrap();
+    let path = f.path("out.jpg");
+    let encodings: Vec<_> = (60..=92).map(|q| rawsmith::output::encode(&path, &rendered.image, q).unwrap()).collect();
+    for index in [0, 12, 25, 32] {
+        let limit = encodings[index].len();
+        let expected = encodings.iter().rposition(|bytes| bytes.len() <= limit).unwrap();
+        for brief in [false, true] {
+            let limit_text = limit.to_string();
+            let mut args = vec!["render", s(&f.raw), "-o", s(&path), "--max-bytes", &limit_text];
+            if brief {
+                args.push("--brief");
+            }
+            let first = ok(&args);
+            assert_eq!(first["quality"], 60 + expected);
+            assert_eq!(first["output_bytes"], encodings[expected].len());
+            assert_eq!(std::fs::read(&path).unwrap(), encodings[expected]);
+            assert_eq!(
+                first["quality_limited_by"],
+                if expected < 32 { serde_json::json!("max_bytes") } else { Value::Null }
+            );
+            let second = ok(&args);
+            assert_eq!(first["quality"], second["quality"]);
+            assert_eq!(std::fs::read(&path).unwrap(), encodings[expected]);
+        }
+    }
+    for command in ["edit", "auto"] {
+        let report =
+            ok(&[command, s(&f.raw), "-o", s(&path), "--max-bytes", "1MB", "--quality", "85", "--size", "160"]);
+        assert_eq!(report["quality"], 85);
+        assert!(report["quality_limited_by"].is_null());
+    }
+}
+
+#[test]
+fn byte_limit_errors_preserve_files_and_validate_units() {
+    let f = Fixture::new("export-byte-errors");
+    let path = f.path("out.jpg");
+    let recipe = b"{\"exposure\":0.25}";
+    std::fs::write(f.recipe(), recipe).unwrap();
+    for command in ["render", "edit", "auto"] {
+        for existing in [false, true] {
+            if existing {
+                std::fs::write(&path, b"old image").unwrap();
+            }
+            let (success, report) = run(&[command, s(&f.raw), "-o", s(&path), "--max-bytes", "1"]);
+            assert!(!success);
+            assert_eq!(report["error"]["kind"], "params");
+            let message = report["error"]["message"].as_str().unwrap();
+            assert!(
+                message.contains("smallest size reached")
+                    && message.contains("quality 60")
+                    && message.contains("--size")
+            );
+            assert_eq!(std::fs::read(f.recipe()).unwrap(), recipe);
+            if existing {
+                assert_eq!(std::fs::read(&path).unwrap(), b"old image");
+                std::fs::remove_file(&path).unwrap();
+            } else {
+                assert!(!path.exists());
+            }
+        }
+    }
+    for value in ["1GB", "0", "-1", "18446744073709551615MB", "1.2.3MB", "1.0001K"] {
+        assert!(!run(&["render", s(&f.raw), "-o", s(&path), "--max-bytes", value]).0);
+        assert!(!path.exists());
+    }
+    let png = f.path("out.png");
+    std::fs::write(&png, b"old png").unwrap();
+    assert!(!run(&["render", s(&f.raw), "-o", s(&png), "--max-bytes", "1MB"]).0);
+    assert_eq!(std::fs::read(&png).unwrap(), b"old png");
+    assert!(!run(&["edit", s(&f.raw), "--max-bytes", "1MB"]).0);
+    assert!(!run(&["render", s(&f.raw), "-o", s(&path), "--quality", "59", "--max-bytes", "1MB"]).0);
+    for value in ["1000000", "1000K", "1000KB", "1M", "1MB", "1.0mb"] {
+        let report = ok(&["render", s(&f.raw), "-o", s(&path), "--max-bytes", value]);
+        assert_eq!(report["quality"], 92);
+    }
+}
+
+#[test]
+fn export_options_are_discoverable_in_help() {
+    for command in [None, Some("render"), Some("edit"), Some("auto"), Some("compare")] {
+        let mut args = Vec::new();
+        if let Some(command) = command {
+            args.push(command);
+        }
+        args.push("--help");
+        let output = Command::new(env!("CARGO_BIN_EXE_rawsmith")).args(args).output().unwrap();
+        assert!(output.status.success());
+        let help = String::from_utf8(output.stdout).unwrap();
+        for phrase in ["--quality", "92", "smaller files"] {
+            assert!(help.contains(phrase), "{help}");
+        }
+        if command != Some("compare") {
+            for phrase in ["--max-bytes", "1000", "--size", "targets"] {
+                assert!(help.contains(phrase), "{help}");
+            }
+        }
+    }
+}
+
+#[test]
+fn byte_limit_handles_non_monotonic_tiny_jpegs() {
+    let f = Fixture::new("export-tiny-limit");
+    let raw = rawsmith::arw::decode(&std::fs::read(&f.raw).unwrap()).unwrap();
+    let rendered = rawsmith::pipeline::render(
+        &raw,
+        &rawsmith::params::Params::default(),
+        rawsmith::pipeline::Size { max_edge: Some(1) },
+    )
+    .unwrap();
+    let path = f.path("tiny.jpg");
+    let encodings: Vec<_> = (60..=100).map(|q| rawsmith::output::encode(&path, &rendered.image, q).unwrap()).collect();
+    let mut limits: Vec<_> = encodings.iter().map(Vec::len).collect();
+    limits.sort_unstable();
+    limits.dedup();
+    for limit in limits {
+        let expected = encodings.iter().rposition(|bytes| bytes.len() <= limit).unwrap();
+        let report = ok(&[
+            "render",
+            s(&f.raw),
+            "-o",
+            s(&path),
+            "--size",
+            "1",
+            "--quality",
+            "100",
+            "--max-bytes",
+            &limit.to_string(),
+        ]);
+        assert_eq!(report["quality"], 60 + expected);
+        assert_eq!(std::fs::read(&path).unwrap(), encodings[expected]);
+    }
+    let smallest = encodings.iter().map(Vec::len).min().unwrap();
+    let (_, report) = run(&[
+        "render",
+        s(&f.raw),
+        "-o",
+        s(&path),
+        "--size",
+        "1",
+        "--quality",
+        "100",
+        "--max-bytes",
+        &(smallest - 1).to_string(),
+    ]);
+    assert!(report["error"]["message"].as_str().unwrap().contains(&format!("{smallest} bytes")));
 }

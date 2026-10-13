@@ -18,7 +18,7 @@ use rawsmith::{arw, compare, output, stats};
     name = "rawsmith",
     version,
     about,
-    after_help = "Errors are JSON on stderr (exit status 1, empty stdout).\nRAW, recipe and output paths must be valid UTF-8; invalid paths are rejected before any file is written.\nRecipes use current rendering defaults; writer versions do not pin pixels. Omitted/null denoise measures native noise; explicit 0..100 is exact.\nRAWs are never written; outputs are replaced, so use a new output name to keep a version.\nValidation and staging failures preserve recipes and outputs; paired saves roll back commit failures unless interrupted or rollback fails."
+    after_help = "JPEG export: --quality defaults to 92 (full chroma); lower for smaller files.\n--max-bytes has no default limit; use with --size for web/file-size targets (K/KB=1000, M/MB=1000000).\nErrors are JSON on stderr (exit status 1, empty stdout).\nRAW, recipe and output paths must be valid UTF-8; invalid paths are rejected before any file is written.\nRecipes use current rendering defaults; writer versions do not pin pixels. Omitted/null denoise measures native noise; explicit 0..100 is exact.\nRAWs are never written; outputs are replaced, so use a new output name to keep a version.\nValidation and staging failures preserve recipes and outputs; paired saves roll back commit failures unless interrupted or rollback fails."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -89,9 +89,12 @@ struct Target {
     /// Edit/auto still save the recipe for the whole picture; render --set is a trial.
     #[arg(long, value_name = "X0,Y0,X1,Y1", conflicts_with = "size")]
     region: Option<String>,
-    /// JPEG quality (1..100)
+    /// JPEG quality (1..100): default 92 suits almost everything; lower for smaller files
     #[arg(long, default_value_t = 92)]
     quality: u8,
+    /// JPEG byte limit [default: unlimited]; use with --size for web/file-size targets. K/KB=1000, M/MB=1000000; quality floor 60.
+    #[arg(long, value_name = "SIZE", value_parser = output::parse_max_bytes)]
+    max_bytes: Option<u64>,
     /// Compact editing report: output size, tone percentiles, clipping, cast,
     /// zones, noise strength and warnings; auto decisions are shortened.
     #[arg(long)]
@@ -141,6 +144,9 @@ struct Compare {
     /// Bound each panel's longest edge; panels shrink to one shared height (at least 1)
     #[arg(long, default_value_t = 1400)]
     size: usize,
+    /// JPEG quality (1..100): default 92 suits almost everything; lower for smaller files
+    #[arg(long, default_value_t = 92)]
+    quality: u8,
 }
 
 fn validate_report_path(path: &Path) -> Result<()> {
@@ -195,6 +201,16 @@ impl Target {
         }
         if !(1..=100).contains(&self.quality) {
             return Err(Error::Params("--quality must be in 1..100".into()));
+        }
+        if self.max_bytes.is_some() {
+            if !self.output.as_deref().is_some_and(output::is_jpeg) {
+                return Err(Error::Params("--max-bytes requires JPEG output (.jpg or .jpeg)".into()));
+            }
+            if self.quality < 60 {
+                return Err(Error::Params(
+                    "--max-bytes requires --quality in 60..100; use --size for smaller files".into(),
+                ));
+            }
         }
         if let Some(region) = &self.region {
             parse_region(region)?;
@@ -266,6 +282,8 @@ fn editing_report(report: Value, target: &Target, recipe_saved: bool) -> Value {
         &[
             "output",
             "output_bytes",
+            "quality",
+            "quality_limited_by",
             "output_replaced",
             "output_color_space",
             "recipe_file",
@@ -450,9 +468,16 @@ fn prepare_render(raw: &arw::RawImage, params: &Params, target: &Target) -> Resu
         let (x, y) = ((x0 * w) as usize, (y0 * h) as usize);
         image = image.crop(x, y, (((x1 - x0) * w) as usize).max(1), (((y1 - y0) * h) as usize).max(1));
     }
-    let bytes = target.output.as_ref().map(|out| output::encode(out, &image, target.quality)).transpose()?;
+    let encoded = target
+        .output
+        .as_ref()
+        .map(|out| output::encode_export(out, &image, target.quality, target.max_bytes))
+        .transpose()?;
     let mut report = json!({
         "output": target.output,
+        "output_bytes": encoded.as_ref().map(|e| e.bytes.len()),
+        "quality": encoded.as_ref().and_then(|e| e.quality),
+        "quality_limited_by": encoded.as_ref().and_then(|e| e.quality_limited_by),
         "output_color_space": target.output.as_ref().map(|_| "sRGB"),
         "output_replaced": null,
         "recipe": params.to_sparse(),
@@ -467,10 +492,7 @@ fn prepare_render(raw: &arw::RawImage, params: &Params, target: &Target) -> Resu
     if let Some(index) = target.show_mask {
         report["show_mask"] = json!({"index": index, "list": "masks", "meaning": "diagnostic greyscale weights: white selected, black excluded; not an edited photo"});
     }
-    if target.brief {
-        report["output_bytes"] = json!(bytes.as_ref().map(Vec::len));
-    }
-    Ok((report, bytes))
+    Ok((report, encoded.map(|e| e.bytes)))
 }
 
 fn render(raw_path: &Path, params: &Params, target: &Target) -> Result<Value> {
@@ -498,7 +520,7 @@ fn save_edit(raw: &arw::RawImage, recipe: &Path, params: &Params, target: &Targe
     } else {
         pipeline::white_balance(raw, params)?;
         output::replace(recipe, &recipe_data)?;
-        json!({"recipe": params.to_sparse(), "noise_reduction": rawsmith::noise::resolve(raw, params.denoise), "output_color_space": null, "output_replaced": null})
+        json!({"recipe": params.to_sparse(), "noise_reduction": rawsmith::noise::resolve(raw, params.denoise), "output_color_space": null, "output_replaced": null, "output_bytes": null, "quality": null, "quality_limited_by": null})
     };
     if target.output.is_some() {
         report["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
@@ -606,7 +628,7 @@ fn run(cli: Cli) -> Result<Value> {
                 _ => None,
             };
             Ok(json!({
-                "output": output, "bytes": len, "output_replaced": replaced,
+                "output": output, "bytes": len, "output_bytes": len, "quality": null, "output_replaced": replaced,
                 "raw_orientation": raw.meta.orientation,
                 "needs_rotation": rotation.map(|degrees| degrees != 0),
                 "rotation_degrees_clockwise": rotation,
@@ -616,6 +638,9 @@ fn run(cli: Cli) -> Result<Value> {
 }
 
 fn compare_versions(args: Compare) -> Result<Value> {
+    if !(1..=100).contains(&args.quality) {
+        return Err(Error::Params("--quality must be in 1..100".into()));
+    }
     if args.size == 0 {
         return Err(Error::Params("--size must be at least 1 pixel".into()));
     }
@@ -659,8 +684,10 @@ fn compare_versions(args: Compare) -> Result<Value> {
     for (panel, origin) in report["panels"].as_array_mut().expect("compare panels").iter_mut().zip(origins) {
         recipe_origin(panel, origin);
     }
-    let bytes = output::encode_with_color_space(&args.output, &image, 92, srgb)?;
+    let bytes = output::encode_with_color_space(&args.output, &image, args.quality, srgb)?;
     report["output_replaced"] = json!(output::replace(&args.output, &bytes)?);
+    report["output_bytes"] = json!(bytes.len());
+    report["quality"] = json!(output::is_jpeg(&args.output).then_some(args.quality));
     report["output"] = json!(args.output);
     report["output_color_space"] = json!(if srgb { "sRGB" } else { "mixed-unmanaged" });
     Ok(report)
