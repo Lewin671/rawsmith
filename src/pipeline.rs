@@ -142,20 +142,107 @@ fn denoise(image: &mut Image, strength: f32) {
     let y = plane(&|p| (p[0] + 2.0 * p[1] + p[2]) * 0.25);
     let cr = plane(&|p| p[0] - p[1]);
     let cb = plane(&|p| p[2] - p[1]);
+    drop(encoded);
     let radius = (2.0 + strength * 6.0) as usize;
     let eps = 0.0004 * strength * strength + 1e-6;
     // Chroma follows luminance edges, so colour does not bleed across them.
-    let cr = guided_filter(&y, &cr, radius, eps);
-    let cb = guided_filter(&y, &cb, radius, eps);
+    let original_cr = cr;
+    let original_cb = cb;
+    let mut cr = guided_filter(&y, &original_cr, radius, eps);
+    let mut cb = guided_filter(&y, &original_cb, radius, eps);
+    let coarse_strength = ((strength - 0.25) / 0.35).clamp(0.0, 1.0);
+    if coarse_strength > 0.0 {
+        // A native-pixel filter removes grain but leaves correlated chroma
+        // clouds. Estimate that base at quarter size (48-pixel native radius).
+        // A chroma boundary mask keeps strong colour discontinuities,
+        // including ones with little luminance contrast. Apply only the base
+        // correction so fine, luminance-guided colour detail is retained.
+        let (sw, sh) = (w.div_ceil(4), h.div_ceil(4));
+        let guides = [original_cr.resized(sw, sh), original_cb.resized(sw, sh), y.resized(sw, sh)];
+        let coarse = |chroma: &mut Plane| {
+            let small = chroma.resized(sw, sh);
+            let base = chroma_base(&small, &guides, 12, 0.0064 * strength * strength);
+            let (fx, fy) = (sw as f32 / w as f32, sh as f32 / h as f32);
+            chroma.data.par_chunks_mut(w).enumerate().for_each(|(row, values)| {
+                let sy = (row as f32 + 0.5) * fy - 0.5;
+                for (x, v) in values.iter_mut().enumerate() {
+                    let sx = (x as f32 + 0.5) * fx - 0.5;
+                    *v += (base.sample(sx, sy) - small.sample(sx, sy)) * coarse_strength;
+                }
+            });
+        };
+        coarse(&mut cr);
+        coarse(&mut cb);
+    }
+    drop(original_cr);
+    drop(original_cb);
     // Luminance smoothing only in the upper half of the slider.
     let luma_strength = ((strength - 0.5) * 2.0).max(0.0);
-    let y = if luma_strength > 0.0 { guided_filter(&y, &y, 2, 0.0003 * luma_strength * luma_strength) } else { y };
+    let original_luma = Plane::from_fn(image, |p| color::luma(p).max(0.0).sqrt());
     image.data.par_iter_mut().enumerate().for_each(|(i, p)| {
-        // Invert: y = (r + 2g + b) / 4 with r = g + cr, b = g + cb.
+        // Invert the encoded guide, keeping it unchanged by chroma smoothing.
         let g = y.data[i] - (cr.data[i] + cb.data[i]) * 0.25;
-        let (r, b) = (g + cr.data[i], g + cb.data[i]);
-        *p = [r.max(0.0).powi(2), g.max(0.0).powi(2), b.max(0.0).powi(2)];
+        *p = [g + cr.data[i], g, g + cb.data[i]].map(|v| v.max(0.0).powi(2));
     });
+    let guide = Plane::from_fn(image, |p| color::luma(p).max(0.0).sqrt());
+    // The chroma-cleaned reconstruction is a lower-noise guide. Preserve
+    // true linear luminance as the input rather than using sqrt-RGB's proxy.
+    let luma = if luma_strength > 0.0 {
+        // At high strength, use the chroma-cleaned luminance estimate as well:
+        // the camera colour matrix correlates colour noise with noisy Y.
+        // Restoring all of that Y would bring the removed noise back as grain.
+        let mut input = original_luma;
+        input.data.par_iter_mut().zip(&guide.data).for_each(|(v, g)| *v += (*g - *v) * luma_strength);
+        guided_filter(&guide, &input, 2, 0.00005 * luma_strength * luma_strength)
+    } else {
+        original_luma
+    };
+    image.data.par_iter_mut().enumerate().for_each(|(i, p)| {
+        let gain = luma.data[i].max(0.0).powi(2) / color::luma(*p).max(1e-10);
+        *p = p.map(|v| v * gain);
+    });
+}
+
+/// Remove smooth chroma clouds while protecting discontinuous colour edges.
+/// Detect boundaries on prefiltered quarter-size guides to reduce false
+/// protection from grain without hiding edges behind prior chroma smoothing.
+/// The protection covers the complete two-window support of the base filter.
+fn chroma_base(input: &Plane, guides: &[Plane; 3], radius: usize, noise_variance: f32) -> Plane {
+    // Follow luminance structure at the broad scale too; self-guidance would
+    // suppress true colour carried by feathers, foliage and water ripples.
+    let mut base = guided_filter(&guides[2], input, radius, noise_variance / 16.0);
+    let (w, h) = (input.width, input.height);
+    let guides = guides.each_ref().map(|guide| guide.box_blur(1));
+    let mut edges = Plane::new(w, h);
+    // Use a conservative two-sample budget; prefiltered samples are correlated.
+    let threshold = (2.0 * noise_variance).sqrt();
+    for y in 0..h {
+        for x in 0..w {
+            // Use one mask for both axes: protecting only the stronger axis
+            // would rotate the hue of a real colour boundary.
+            let gradient = guides
+                .iter()
+                .map(|guide| {
+                    let dx = (guide.data[y * w + (x + 1).min(w - 1)] - guide.data[y * w + x.saturating_sub(1)]).abs();
+                    let dy = (guide.data[(y + 1).min(h - 1) * w + x] - guide.data[y.saturating_sub(1) * w + x]).abs();
+                    dx.max(dy)
+                })
+                .fold(0.0, f32::max);
+            // A soft transition avoids switching protection at one noise value.
+            let t = (gradient / threshold - 1.0).clamp(0.0, 1.0);
+            edges.data[y * w + x] = t * t * (3.0 - 2.0 * t);
+        }
+    }
+    let support = radius * 2;
+    let protection = edges.box_blur(support);
+    // A line occupies one pixel per window side; multiply by its side length
+    // to preserve it across the whole support, with a continuous mask.
+    let gain = (support * 2 + 1) as f32;
+    base.data.par_iter_mut().enumerate().for_each(|(i, v)| {
+        let keep = (protection.data[i] * gain).clamp(0.0, 1.0);
+        *v += (input.data[i] - *v) * keep;
+    });
+    base
 }
 
 /// How large to render.
@@ -165,7 +252,42 @@ pub struct Size {
     pub max_edge: Option<usize>,
 }
 
-/// Builds the scene-linear image for a recipe.
+impl Size {
+    /// Area-average a finished, encoded image; never enlarge it.
+    pub fn apply(self, image: Image) -> Image {
+        let long = image.width.max(image.height);
+        if let Some(edge) = self.max_edge.filter(|&edge| edge < long) {
+            let k = edge as f64 / long as f64;
+            image.resized(
+                ((image.width as f64 * k).round() as usize).max(1),
+                ((image.height as f64 * k).round() as usize).max(1),
+            )
+        } else {
+            image
+        }
+    }
+}
+
+/// A finished render and its sensor metadata.
+pub struct Render {
+    pub image: Image,
+    pub white_balance: WhiteBalance,
+    pub sensor_clipped_pct: f64,
+}
+
+/// Develop at native resolution through sharpening, then resize encoded
+/// pixels. Nonlinear tone/gamut operations cannot be commuted with averaging;
+/// scaling radii alone would still misrepresent noise, clipping and contrast.
+pub fn render(raw: &RawImage, params: &Params, size: Size) -> Result<Render> {
+    let Scene { image, white_balance, sensor_clipped_pct, .. } = scene(raw, params, Size::default())?;
+    let finished = finish(&image, params, &Spaces::new());
+    drop(image);
+    Ok(Render { image: size.apply(finished), white_balance, sensor_clipped_pct })
+}
+
+/// Builds the scene-linear image for a recipe. A reduced size is an
+/// approximation for automatic candidate analysis only; use `render` for
+/// previews and exports so every spatial/nonlinear stage precedes resizing.
 pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
     let cam_to_work = color::camera_to_working(&camera_matrix(raw)?);
     let (white_balance, gains) = white_balance(raw, params)?;
@@ -335,4 +457,96 @@ pub fn finish(scene: &Image, params: &Params, spaces: &Spaces) -> Image {
     sharpen(&mut image, params.sharpen as f32 / 100.0 * 1.5);
     image.map(|p| p.map(|v| v.clamp(0.0, 1.0)));
     image
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coarse_denoise_preserves_weak_colour_texture_carried_by_luminance() {
+        let (w, h) = (128, 64);
+        // Quarter-size colour texture with no discontinuity large enough to
+        // trigger the boundary mask. Colour follows genuine light/shade, as
+        // on subtly tinted feathers, foliage or reflected water ripples.
+        let texture: Vec<f32> = (0..w * h)
+            .map(|i| {
+                (std::f32::consts::TAU * (i % w) as f32 / 32.0).sin()
+                    * (std::f32::consts::TAU * (i / w) as f32 / 48.0).cos()
+            })
+            .collect();
+        let plane = |offset, amplitude| Plane {
+            width: w,
+            height: h,
+            data: texture.iter().map(|v| offset + amplitude * v).collect(),
+        };
+        let guides = [plane(0.02, 0.012), plane(-0.01, -0.008), plane(0.25, 0.10)];
+        let projection = |output: &Plane, input: &Plane| {
+            let mut cross = 0.0f64;
+            let mut power = 0.0f64;
+            let mean = input.data.iter().map(|v| *v as f64).sum::<f64>() / input.data.len() as f64;
+            for y in 16..h - 16 {
+                for x in 16..w - 16 {
+                    let i = y * w + x;
+                    let signal = input.data[i] as f64 - mean;
+                    cross += (output.data[i] as f64 - mean) * signal;
+                    power += signal * signal;
+                }
+            }
+            cross / power
+        };
+        for input in &guides[..2] {
+            let filtered = chroma_base(input, &guides, 12, 0.0064);
+            let self_guided = guided_filter(input, input, 12, 0.0064);
+            let kept = projection(&filtered, input);
+            let erased = projection(&self_guided, input);
+            eprintln!("weak colour texture: luminance-guided {kept:.4}, self-guided control {erased:.4}");
+            assert!(kept > 0.80, "true colour texture retained: {kept}");
+            assert!(erased < 0.20, "the scene must expose self-guided desaturation: {erased}");
+        }
+    }
+
+    #[test]
+    fn chroma_smoothing_keeps_luminance_texture_and_colour_boundaries() {
+        let mut image = Image::new(192, 128);
+        image.map_xy(|x, y, _| {
+            let texture = 0.002 * (x as f32 * 1.1).sin() * (y as f32 * 0.7).cos();
+            // Equal Rec.2020 luminance across a real, strong colour boundary.
+            let p = if x < 96 { [0.12, 0.06, 0.02] } else { [0.02, 0.09, 0.12] };
+            let gain = (0.07 + texture) / color::luma(p);
+            p.map(|v| v * gain)
+        });
+        let original = image.clone();
+        denoise(&mut image, 0.5);
+        for (a, b) in image.data.iter().zip(&original.data) {
+            assert!((color::luma(*a) - color::luma(*b)).abs() < 1e-7);
+        }
+        let encoded = |channel: usize| Plane::from_fn(&original, |p| p[channel].sqrt() - p[1].sqrt());
+        let y = Plane::from_fn(&original, |p| (p[0].sqrt() + 2.0 * p[1].sqrt() + p[2].sqrt()) * 0.25);
+        let guides = [encoded(0).resized(48, 32), encoded(2).resized(48, 32), y.resized(48, 32)];
+        for channel in [0, 2] {
+            let chroma = encoded(channel);
+            let small = guided_filter(&y, &chroma, 8, 0.000401).resized(48, 32);
+            let base = chroma_base(&small, &guides, 12, 0.0064);
+            for x in [20, 23, 24, 28] {
+                let i = 16 * 48 + x;
+                assert!(
+                    (base.data[i] - small.data[i]).abs() < 0.01,
+                    "channel {channel}, x {x}: {}",
+                    base.data[i] - small.data[i]
+                );
+            }
+        }
+        for strength in [0.85, 1.0] {
+            let mut image = original.clone();
+            denoise(&mut image, strength);
+            for x in [64, 128] {
+                let (p, q) = (image.at(x, 64), original.at(x, 64));
+                // Preserve hue/chroma on both sides as well as luminance.
+                for channel in [0, 2] {
+                    assert!(((p[channel] - p[1]) - (q[channel] - q[1])).abs() < 0.01);
+                }
+            }
+        }
+    }
 }

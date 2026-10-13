@@ -208,8 +208,8 @@ pub fn fields() -> Vec<Field> {
             "Shifts the shadow/highlight split of the colour grade; positive favours highlights.",
         ),
         field("vignette", -100.0, 100.0, "Brightens (positive) or darkens (negative) the corners, on top of the lens correction."),
-        field("sharpen", 0.0, 100.0, "Output sharpening amount."),
-        field("denoise", 0.0, 100.0, "Noise reduction strength (chroma first, luminance at higher values)."),
+        field("sharpen", 0.0, 100.0, "Native-resolution output sharpening amount; previews resize after sharpening."),
+        field("denoise", 0.0, 100.0, "Noise reduction strength (chroma grain first, broader chroma above 25, mild luminance above 50)."),
         field(
             "rotate",
             -45.0,

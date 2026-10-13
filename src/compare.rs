@@ -8,7 +8,7 @@ use jpeg_decoder::{Decoder, PixelFormat};
 use serde_json::{json, Value};
 
 use crate::arw::RawImage;
-use crate::color::{self, Spaces};
+use crate::color;
 use crate::error::{Error, Result};
 use crate::image::Image;
 use crate::params::Params;
@@ -131,18 +131,6 @@ fn camera(jpeg: &[u8], raw_file: &[u8]) -> Result<(Image, Value)> {
     ))
 }
 
-fn bounded(image: Image, edge: usize) -> Image {
-    let long = image.width.max(image.height);
-    if long <= edge {
-        return image;
-    }
-    let scale = edge as f64 / long as f64;
-    image.resized(
-        ((image.width as f64 * scale).round() as usize).max(1),
-        ((image.height as f64 * scale).round() as usize).max(1),
-    )
-}
-
 fn framing(params: &Params) -> Value {
     json!({"rotate": params.rotate, "crop": params.crop})
 }
@@ -170,12 +158,11 @@ pub fn row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result
             .and_then(|end| file.get(offset..end))
             .ok_or_else(|| Error::Format("embedded JPEG is out of bounds".into()))?;
         let (image, report) = camera(jpeg, file)?;
-        Some((bounded(pipeline::framed(image, raw.meta.orientation, camera_params), size), report))
+        Some((pipeline::framed(image, raw.meta.orientation, camera_params), report))
     } else {
         None
     };
     let srgb = camera.as_ref().is_none_or(|(_, report)| report["color_space"] == "sRGB");
-    let spaces = Spaces::new();
     let mut images = Vec::new();
     let mut reports = Vec::new();
     for panel in panels {
@@ -183,8 +170,8 @@ pub fn row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result
             let (image, report) = camera.as_ref().expect("camera requested");
             (image.clone(), report.clone(), camera_params)
         } else {
-            let scene = pipeline::scene(raw, &panel.params, Size { max_edge: Some(size) })?;
-            (pipeline::finish(&scene.image, &panel.params, &spaces), json!({"color_space": "sRGB"}), &panel.params)
+            let rendered = pipeline::render(raw, &panel.params, Size::default())?;
+            (rendered.image, json!({"color_space": "sRGB"}), &panel.params)
         };
         report["kind"] = json!(panel.kind);
         report["recipe_file"] = json!(panel.recipe_file);
@@ -194,10 +181,17 @@ pub fn row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result
     }
     // Never upscale a small camera JPEG or a heavily cropped recipe. Taking
     // the smallest bounded height keeps every panel's long edge within --size.
-    let height = images.iter().map(|image| image.height).min().expect("at least one panel");
+    let height = images
+        .iter()
+        .map(|image| {
+            let scale = (size as f64 / image.width.max(image.height) as f64).min(1.0);
+            ((image.height as f64 * scale).round() as usize).max(1)
+        })
+        .min()
+        .expect("at least one panel");
     let mut width = SEPARATOR.checked_mul(images.len() - 1);
     for (image, report) in images.iter_mut().zip(&mut reports) {
-        let w = ((image.width as f64 * height as f64 / image.height as f64).round() as usize).max(1);
+        let w = ((image.width as f64 * height as f64 / image.height as f64).round() as usize).clamp(1, size);
         *image = image.resized(w, height);
         report["width"] = json!(w);
         report["height"] = json!(height);

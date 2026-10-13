@@ -86,10 +86,13 @@ photos.
 6. **Check detail at 100%** before delivering —
    `rawsmith render photo.ARW --region 0.4,0.4,0.6,0.6 -o detail.jpg`
    `--region` is `left,top,right,bottom` as fractions of the finished
-   (upright, cropped) picture, rendered at full resolution, so it takes a
-   few seconds. Look for noise in lifted shadows, harsh sharpening, halos
-   on edges. A 100% crop of a dark area looks darker than it did in the
-   small preview; that is perception, not a different rendering.
+   (upright, cropped) picture, rendered at full resolution. Look for noise
+   in lifted shadows, harsh sharpening, halos and lost texture. Previews
+   develop the same native-resolution pixels and area-resize the finished
+   sRGB image; they take full-resolution processing work and memory.
+   Resizing hides fine artefacts, so inspect 100% even when the preview is
+   clean. Different viewer filters and JPEG compression can change the
+   appearance of a resized export slightly.
 
 7. **Export** — `rawsmith render photo.ARW -o final.jpg` (full resolution;
    `.png` gives 16-bit). Both declare sRGB: an ICC v2 profile in JPEG, the
@@ -261,7 +264,11 @@ export report before deciding that highlight or shadow detail is safe.
   cast. Sunsets want their warmth; do not "correct" it.
 - Lifting shadows reveals noise. After a strong lift check a dark region
   at 100% and raise `denoise` if needed. The defaults (`sharpen` 40,
-  `denoise` 10; auto raises `denoise` with ISO) suit most files.
+  `denoise` 10; auto raises `denoise` with ISO) are a starting point.
+  `denoise` smooths chroma grain first, adds a broader chroma correction
+  gradually above 25, and mild luminance smoothing above 50. High values
+  retain fine luminance texture but cannot recover focus or motion blur;
+  residual noise still needs a 100% check.
 - For the 100% check choose the subject, the darkest area you lifted,
   and a patch of plain sky (dust shows there, especially after `dehaze`
   or a darkening gradient).
