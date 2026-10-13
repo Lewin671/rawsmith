@@ -16,3 +16,7 @@
 
 # Documentation pictures: CC0 samples only (see CONTRIBUTING.md)
 !docs/images/*.jpg
+
+# Python bytecode
+__pycache__/
+*.pyc
