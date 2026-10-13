@@ -150,7 +150,11 @@ def cmd_render(args):
         if index % 3 == 0:
             # Controls spoil the auto rendering in one obvious way each.
             for control, settings in CONTROLS.items():
-                render(f"control-{control}", entry["auto_recipe"], [flag for s in settings for flag in ("--set", s)])
+                try:
+                    render(f"control-{control}", entry["auto_recipe"], [flag for s in settings for flag in ("--set", s)])
+                except RuntimeError as error:
+                    # e.g. a colour cast this photo's white balance cannot take
+                    print(f"  control {control} skipped: {error}", flush=True)
         if sips:
             # The embedded JPEG is stored unrotated, the RAW engine applies orientation itself.
             embedded = os.path.join(work, "embedded.jpg")
@@ -211,6 +215,8 @@ def parse_verdict(text):
             text = outer["result"]
     except ValueError:
         pass
+    if not isinstance(text, str):
+        raise ValueError("the judge's reply holds no text")
     start, end = text.find("{"), text.rfind("}")
     verdict = json.loads(text[start:end + 1])
     if verdict.get("winner") not in ("A", "B", "tie"):

@@ -27,15 +27,23 @@ struct Measure {
     chroma_bright: f32,
     /// Percent of pixels blown to display white.
     clipped: f32,
+    /// Mean Oklab a, b x 100 of the near-grey pixels, and their share of the picture.
+    cast: [f32; 2],
+    neutral_share: f32,
 }
 
 fn measure(image: &Image, spaces: &Spaces) -> Measure {
+    let mut cast = (0.0f64, 0.0f64, 0usize);
     let mut samples: Vec<(f32, f32)> = image
         .data
         .iter()
         .map(|p| {
             let lab = spaces.to_oklab(apply(&spaces.srgb_to_work, p.map(srgb_decode)));
-            (lab[0] * 100.0, (lab[1] * lab[1] + lab[2] * lab[2]).sqrt() * 100.0)
+            let sample = (lab[0] * 100.0, (lab[1] * lab[1] + lab[2] * lab[2]).sqrt() * 100.0);
+            if sample.1 < 3.0 && (20.0..90.0).contains(&sample.0) {
+                cast = (cast.0 + lab[1] as f64, cast.1 + lab[2] as f64, cast.2 + 1);
+            }
+            sample
         })
         .collect();
     samples.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -53,6 +61,8 @@ fn measure(image: &Image, spaces: &Spaces) -> Measure {
         chroma: mean_chroma(&samples),
         chroma_bright: mean_chroma(&samples[n * 4 / 5..]),
         clipped: image.data.iter().filter(|p| p.iter().all(|&v| v >= 0.998)).count() as f32 * 100.0 / n as f32,
+        cast: [cast.0, cast.1].map(|sum| (sum / cast.2.max(1) as f64 * 100.0) as f32),
+        neutral_share: cast.2 as f32 / n as f32,
     }
 }
 
@@ -191,8 +201,25 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
     ));
 
     // Colour: lift muted scenes more than already vivid ones.
-    params.vibrance = round_to(30.0 - 15.0 * smoothstep(4.0, 9.0, toned.chroma), 5.0);
+    // Nearly colourless scenes (snow, fog) have nothing for vibrance to act on.
+    let coloured = smoothstep(1.2, 2.5, toned.chroma);
+    params.vibrance = round_to((30.0 - 15.0 * smoothstep(4.0, 9.0, toned.chroma)) * coloured, 5.0);
     params.clarity = 10.0;
-    notes.push(format!("vibrance {:+.0}, clarity +10: mean colourfulness was {:.0}", params.vibrance, toned.chroma));
+    notes.push(format!("vibrance {:+.0}, clarity +10: mean colourfulness was {:.1}", params.vibrance, toned.chroma));
+
+    // White balance is a matter of mood, so it is reported, never changed.
+    let [a, b] = toned.cast;
+    // Only where greys dominate a bright scene; elsewhere blue shade and
+    // warm light are the scene itself.
+    if high_key > 0.5 && toned.neutral_share > 0.3 && (a.abs() >= 0.4 || b.abs() >= 0.8) {
+        notes.push(format!(
+            "white balance left as shot, but the greys lean {} (neutral cast a {a:+.1}, b {b:+.1}): if snow, fog or cloud looks tinted rather than atmospheric, adjust tint (a) or temperature (b)",
+            match (a.abs() >= 0.4, b.abs() >= 0.8) {
+                (true, true) => format!("{} and {}", if a > 0.0 { "magenta" } else { "green" }, if b > 0.0 { "yellow" } else { "blue" }),
+                (true, false) => (if a > 0.0 { "magenta" } else { "green" }).to_string(),
+                _ => (if b > 0.0 { "yellow" } else { "blue" }).to_string(),
+            }
+        ));
+    }
     Ok(Auto { params, notes })
 }

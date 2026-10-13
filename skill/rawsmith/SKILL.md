@@ -56,8 +56,15 @@ preview, **looking at it**, and repeating. Every command prints JSON.
    `.png` gives 16-bit). Report what you changed and why, in plain words.
 
 `rawsmith schema` lists every parameter with range and meaning. Use
-`rawsmith render ... --set k=v` to try something without saving it, and
+`rawsmith render ... --set k=v` to try something without saving it (the
+recipe it prints includes the trial values, but the recipe file is not
+touched; repeat the `--set` with `edit` to keep it), and
 `rawsmith edit ... --reset` to start over.
+
+Auto only sets global tone and colour. It never changes white balance,
+crops, or adds gradients, so a landscape with a bright sky usually still
+needs a gradient, and its `decisions` mention a colour cast when it sees
+one in the greys.
 
 The recipe lives next to the RAW by default. To keep it elsewhere, or to
 keep several versions of one photo, pass the same `--recipe FILE` to every
@@ -101,7 +108,8 @@ rawsmith edit photo.ARW --set 'gradients=[{"from":[0.5,0],"to":[0.5,0.5],"exposu
 ```
 
 Setting `gradients` replaces the whole list. Place `to` where the effect
-should end (usually the horizon).
+should end (usually the horizon). Positions are fractions of the finished
+(cropped) picture: after changing `crop`, place the gradients again.
 
 **Curve** points are `[input, output]` on display brightness, joined
 smoothly; `[0,0]` and `[1,1]` are implied. A point moves its whole
@@ -111,7 +119,8 @@ what they cannot do.
 
 `+=` and `-=` need a parameter that has a number; `temperature` and
 `tint` start as "as shot", so set them to a value first (the as-shot
-values are in every render's `white_balance`).
+values are in every render's `white_balance`). Setting only one of the two
+keeps the other as shot; `--set temperature=null` returns to as shot.
 
 ## Reading the stats
 
@@ -138,19 +147,36 @@ values are in every render's `white_balance`).
   so a frame that is uniformly blue or orange shows up in `hues_pct`
   (one band above ~85%) rather than here. To find a neutral setting, try
   values with `render --set tint=...` and watch `neutral_cast`.
-- `hues_pct` shows which colour bands are present — adjust only those.
+- `hues_pct` shows which colour bands are present among the clearly
+  coloured pixels (greys are not counted) — adjust only those. In snow
+  scenes sky, haze and shaded snow all count as blue, so `hsl.blue`
+  moves nearly everything.
+- `histogram` is the share of the picture in each tenth of the lightness
+  range, darkest first.
 
 ## Judgement
 
 - Preserve the scene's character. Fog stays soft, dusk stays dark, snow is
   bright but keeps texture. Do not push every photo to the same brightness.
+- `highlights` is for areas that really are too bright. Where everything
+  is bright (snow, fog) or nothing is, a strong negative value greys or
+  flattens the whole picture; stay within about −20, or give some
+  `exposure` back.
+- `whites` brightens a clear sky as much as snow; hold the sky with a
+  gradient if it goes pale.
+- `blacks` and `contrast` are gentle on hazy, low-contrast scenes; use
+  `dehaze` to set a firm black there.
 - Prefer several moderate settings to one extreme one. Values beyond ±60
   are rarely right; if you need them, a different parameter is probably
   the correct tool (e.g. `exposure` instead of `shadows=100`).
 - White balance: trust the as-shot value unless the picture has an evident
   cast. Sunsets want their warmth; do not "correct" it.
 - Lifting shadows reveals noise. After a strong lift check a dark region
-  at 100% and raise `denoise` if needed.
+  at 100% and raise `denoise` if needed. The defaults (`sharpen` 40,
+  `denoise` 10; auto raises `denoise` with ISO) suit most files.
+- For the 100% check choose the subject, the darkest area you lifted,
+  and a patch of plain sky (dust shows there, especially after `dehaze`
+  or a darkening gradient).
 - Snow and fog: auto aims high already, but grey snow is the classic
   failure. Bright snow sits around lightness 85–93 at `tones.p95`; use
   `exposure` and `whites` to get there while texture remains.

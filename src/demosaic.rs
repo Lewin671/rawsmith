@@ -175,17 +175,15 @@ pub fn reconstruct_highlights(image: &mut Image, clip: [f32; 3]) -> f32 {
         return 0.0;
     }
 
-    // Offsets are measured in cube-root space, where they are roughly
-    // independent of brightness.
-    let opposed = |p: [f32; 3], c: usize| {
-        let (a, b) = (p[(c + 1) % 3].max(0.0).cbrt(), p[(c + 2) % 3].max(0.0).cbrt());
-        (a + b) * 0.5
-    };
+    // Offsets between channels are measured in cube-root space, where they
+    // are roughly independent of brightness. `acc[c][k]` gathers channel c
+    // minus the k-th other channel.
+    let others = |c: usize| [(c + 1) % 3, (c + 2) % 3];
     let reach = (w.max(h) / 400).max(2) as isize;
     let sums = (0..h)
         .into_par_iter()
         .map(|y| {
-            let mut acc = [(0.0f64, 0u64); 3];
+            let mut acc = [[(0.0f64, 0u64); 2]; 3];
             for x in 0..w {
                 let p = image.data[y * w + x];
                 if clipped[y * w + x] != 0 || p.iter().any(|&v| v < 0.2 * clip[1]) {
@@ -201,24 +199,27 @@ pub fn reconstruct_highlights(image: &mut Image, clip: [f32; 3]) -> f32 {
                 }
                 for c in 0..3 {
                     if near & (1 << c) != 0 {
-                        acc[c].0 += (p[c].cbrt() - opposed(p, c)) as f64;
-                        acc[c].1 += 1;
+                        for (k, o) in others(c).into_iter().enumerate() {
+                            acc[c][k].0 += (p[c].cbrt() - p[o].cbrt()) as f64;
+                            acc[c][k].1 += 1;
+                        }
                     }
                 }
             }
             acc
         })
         .reduce(
-            || [(0.0, 0); 3],
-            |a, b| {
-                [
-                    (a[0].0 + b[0].0, a[0].1 + b[0].1),
-                    (a[1].0 + b[1].0, a[1].1 + b[1].1),
-                    (a[2].0 + b[2].0, a[2].1 + b[2].1),
-                ]
+            || [[(0.0, 0); 2]; 3],
+            |mut a, b| {
+                for c in 0..3 {
+                    for k in 0..2 {
+                        a[c][k] = (a[c][k].0 + b[c][k].0, a[c][k].1 + b[c][k].1);
+                    }
+                }
+                a
             },
         );
-    let offset: Vec<f32> = sums.iter().map(|&(s, n)| if n > 100 { (s / n as f64) as f32 } else { 0.0 }).collect();
+    let offset = sums.map(|pair| pair.map(|(s, n)| if n > 100 { (s / n as f64) as f32 } else { 0.0 }));
 
     image.data.par_iter_mut().zip(&clipped).for_each(|(p, &mask)| {
         if mask == 0 {
@@ -233,8 +234,15 @@ pub fn reconstruct_highlights(image: &mut Image, clip: [f32; 3]) -> f32 {
         }
         for c in 0..3 {
             if mask & (1 << c) != 0 {
-                let estimate = (opposed(original, c) + offset[c]).max(0.0).powi(3);
-                p[c] = original[c].max(estimate);
+                // Only channels that did not clip say anything about this one.
+                let (mut sum, mut n) = (0.0, 0.0);
+                for (k, o) in others(c).into_iter().enumerate() {
+                    if mask & (1 << o) == 0 {
+                        sum += original[o].max(0.0).cbrt() + offset[c][k];
+                        n += 1.0;
+                    }
+                }
+                p[c] = original[c].max((sum / n).max(0.0).powi(3));
             }
         }
     });
@@ -246,6 +254,23 @@ mod tests {
     use super::*;
     use crate::arw;
     use crate::synthetic::Synthetic;
+
+    #[test]
+    fn a_highlight_with_two_clipped_channels_follows_the_surviving_one() {
+        // Neutral ramp; green clips at 1.0 and blue at 1.6, red survives.
+        let (w, h) = (200, 40);
+        let clip = [2.5, 1.0, 1.6];
+        let mut image = Image::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let v = 0.3 + 1.9 * x as f32 / w as f32;
+                image.data[y * w + x] = [v.min(clip[0]), v.min(clip[1]), v.min(clip[2])];
+            }
+        }
+        reconstruct_highlights(&mut image, clip);
+        let p = image.data[20 * w + 180]; // true value 2.01 in every channel
+        assert!((p[1] - p[0]).abs() < 0.15 && (p[2] - p[0]).abs() < 0.15, "{p:?}");
+    }
 
     #[test]
     fn stuck_photosites_are_repaired_and_real_detail_is_kept() {

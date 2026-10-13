@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
@@ -126,9 +127,21 @@ fn save_recipe(path: &Path, params: &Params) -> Result<()> {
     value["rawsmith"] = json!(env!("CARGO_PKG_VERSION"));
     let text = serde_json::to_string_pretty(&value).expect("recipes always serialise");
     // Write-then-rename so an interrupted save never leaves half a recipe.
-    let temporary = path.with_extension("json.tmp");
-    std::fs::write(&temporary, text + "\n")?;
-    Ok(std::fs::rename(&temporary, path)?)
+    // The staging file must be new: `create_new` refuses an existing name
+    // without following it, so a link planted there cannot redirect the write.
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".{}.tmp", std::process::id()));
+    let temporary = PathBuf::from(name);
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .and_then(|mut file| file.write_all(text.as_bytes()).and_then(|()| file.write_all(b"\n")))
+        .and_then(|()| std::fs::rename(&temporary, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    Ok(written?)
 }
 
 fn read_raw(path: &Path) -> Result<arw::RawImage> {
@@ -152,27 +165,40 @@ fn parse_region(text: &str) -> Result<[f32; 4]> {
 /// Refuses to write `destination` when it is the RAW file itself, by any
 /// name: the same path, a symlink to it, or a hard link sharing its data.
 fn protect_raw(raw: &Path, destination: &Path, what: &str) -> Result<()> {
-    let same_path = match (std::fs::canonicalize(raw), std::fs::canonicalize(destination)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    };
-    #[cfg(unix)]
-    let same_file = {
-        use std::os::unix::fs::MetadataExt;
-        match (std::fs::metadata(raw), std::fs::metadata(destination)) {
-            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
-            _ => false,
-        }
-    };
-    #[cfg(not(unix))]
-    let same_file = false;
-    if same_path || same_file {
+    if same_file(raw, destination) {
         return Err(Error::Params(format!(
             "{what} {} is the RAW file itself; the RAW is never written",
             destination.display()
         )));
     }
     Ok(())
+}
+
+/// Whether two paths name one file: the same path (even if nothing exists
+/// there yet), a symlink to it, or a hard link sharing its data.
+fn same_file(a: &Path, b: &Path) -> bool {
+    let resolved = |p: &Path| std::fs::canonicalize(p).or_else(|_| std::path::absolute(p)).ok();
+    if resolved(a).is_some_and(|x| Some(x) == resolved(b)) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(a), Ok(b)) = (std::fs::metadata(a), std::fs::metadata(b)) {
+            return a.dev() == b.dev() && a.ino() == b.ino();
+        }
+    }
+    false
+}
+
+/// The recipe and the picture are two files; one must not replace the other.
+fn distinct(recipe: &Path, target: &Target) -> Result<()> {
+    match &target.output {
+        Some(out) if same_file(recipe, out) => {
+            Err(Error::Params(format!("output {} is also the recipe file; give them different names", out.display())))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Renders `params` and writes the output; returns the JSON report.
@@ -225,11 +251,14 @@ fn run(cli: Cli) -> Result<Value> {
         }
         Command::Schema => Ok(params::schema()),
         Command::Render(Render { source, target }) => {
-            let params = load_recipe(&recipe_path(&source)?)?.with_assignments(&source.set)?;
+            let path = recipe_path(&source)?;
+            distinct(&path, &target)?;
+            let params = load_recipe(&path)?.with_assignments(&source.set)?;
             render(&source.raw, &params, &target)
         }
         Command::Edit(Edit { source, target, reset }) => {
             let path = recipe_path(&source)?;
+            distinct(&path, &target)?;
             let base = if reset { Params::default() } else { load_recipe(&path)? };
             let params = base.with_assignments(&source.set)?;
             // Render first: a recipe that cannot be rendered is not saved.
@@ -244,6 +273,7 @@ fn run(cli: Cli) -> Result<Value> {
         }
         Command::Auto(Auto { source, target }) => {
             let path = recipe_path(&source)?;
+            distinct(&path, &target)?;
             // White balance, crop and other non-tone settings of an existing recipe are kept.
             let base = load_recipe(&path)?;
             let proposal = rawsmith::auto::auto(&read_raw(&source.raw)?, &base)?;

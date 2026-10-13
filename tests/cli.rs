@@ -229,6 +229,36 @@ fn mistakes_produce_json_errors_and_change_nothing() {
     }
     assert_eq!(std::fs::read(&f.raw).unwrap(), before, "the RAW was modified");
 
+    // A recipe and a picture cannot share a name, in either direction.
+    let shared = f.path("shared.jpg");
+    for args in [
+        vec!["edit", s(&f.raw), "--reset", "--recipe", s(&shared), "-o", s(&shared)],
+        vec!["auto", s(&f.raw), "--recipe", s(&shared), "-o", s(&shared)],
+        vec!["render", s(&f.raw), "--recipe", s(&shared), "-o", s(&shared)],
+    ] {
+        let (success, v) = run(&args);
+        assert!(!success && v["error"]["kind"] == "params", "{args:?} -> {v}");
+    }
+    assert!(!shared.exists());
+
+    // Saving a recipe leaves no staging file behind.
+    ok(&["edit", s(&f.raw), "--set", "exposure=0.3"]);
+    let leftovers: Vec<_> = std::fs::read_dir(&f.dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+    std::fs::remove_file(f.recipe()).unwrap();
+
+    // The smallest accepted RAW still crops to at least one pixel.
+    let tiny = f.path("tiny.ARW");
+    std::fs::write(&tiny, Synthetic::new(16, 16, vec![3000; 256]).to_bytes()).unwrap();
+    for settings in ["crop.top=0.95", "crop.left=0.95", "crop.bottom=0.05", "crop.right=0.05"] {
+        let v = ok(&["render", s(&tiny), "--size", "8", "--set", settings, "-o", s(&f.path("tiny.png"))]);
+        assert!(v["stats"]["width"].as_u64().unwrap() >= 1 && v["stats"]["height"].as_u64().unwrap() >= 1);
+    }
+
     let junk = f.path("junk.ARW");
     std::fs::write(&junk, b"not a raw file at all").unwrap();
     assert_eq!(run(&["inspect", s(&junk)]).1["error"]["kind"], "format");

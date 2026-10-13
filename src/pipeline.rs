@@ -180,10 +180,15 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
         image = rotated(&image, params.rotate as f32);
     }
     if *crop != Default::default() {
-        let (w, h) = (image.width as f64, image.height as f64);
-        let (x0, y0) = ((crop.left * w).round() as usize, (crop.top * h).round() as usize);
-        let (x1, y1) = ((crop.right * w).round() as usize, (crop.bottom * h).round() as usize);
-        image = image.crop(x0, y0, (x1 - x0).max(1), (y1 - y0).max(1));
+        // At least one pixel, and never past the edge, however small the image.
+        let span = |from: f64, to: f64, size: usize| {
+            let start = ((from * size as f64).round() as usize).min(size - 1);
+            let end = ((to * size as f64).round() as usize).clamp(start + 1, size);
+            (start, end - start)
+        };
+        let ((x0, cw), (y0, ch)) =
+            (span(crop.left, crop.right, image.width), span(crop.top, crop.bottom, image.height));
+        image = image.crop(x0, y0, cw, ch);
     }
     let mut scale = if half { 0.5 } else { 1.0 };
     if let Some(edge) = size.max_edge {

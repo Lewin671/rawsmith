@@ -67,14 +67,18 @@ pub fn write(path: &Path, image: &Image, quality: u8) -> Result<()> {
             encoder.encode(&to_rgb8(image), w as u16, h as u16, jpeg_encoder::ColorType::Rgb).map_err(|e| failed(&e))
         }
         "png" => {
-            let file = std::io::BufWriter::new(std::fs::File::create(path).map_err(|e| failed(&e))?);
-            let mut encoder = png::Encoder::new(file, w as u32, h as u32);
+            // Encoded in memory and written in one call, so a failed write
+            // (a full disk) is reported instead of lost in a buffer's drop.
+            let mut bytes = Vec::new();
+            let mut encoder = png::Encoder::new(&mut bytes, w as u32, h as u32);
             encoder.set_color(png::ColorType::Rgb);
             encoder.set_depth(png::BitDepth::Sixteen);
             encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
             encoder.set_compression(png::Compression::Fast);
             let mut writer = encoder.write_header().map_err(|e| failed(&e))?;
-            writer.write_image_data(&to_rgb16_be(image)).map_err(|e| failed(&e))
+            writer.write_image_data(&to_rgb16_be(image)).map_err(|e| failed(&e))?;
+            writer.finish().map_err(|e| failed(&e))?;
+            std::fs::write(path, bytes).map_err(|e| failed(&e))
         }
         _ => Err(Error::Params(format!("unsupported output format '.{extension}'; use .jpg or .png"))),
     }
