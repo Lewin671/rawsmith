@@ -40,7 +40,8 @@ pub struct Scene {
     /// Scene-linear working-space image, upright and cropped.
     pub image: Image,
     pub white_balance: WhiteBalance,
-    /// Percent of pixels where at least one channel saturated on the sensor.
+    /// Percent of full-active-area 2x2 CFA cells with a sensor-saturated
+    /// photosite, before repair or geometry; identical to inspect's statistic.
     pub sensor_clipped_pct: f64,
     /// Pixels per pixel of the full-resolution upright image.
     pub scale: f32,
@@ -184,7 +185,7 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
     let half = size.max_edge.is_some_and(|edge| edge as f32 <= full_edge * 0.5);
 
     let mut image = if half { demosaic::half(&mosaic) } else { demosaic::full(&mosaic) };
-    let clipped = mosaic.saturated_fraction();
+    let (_, _, clipped) = crate::stats::sensor_clipping(raw);
     demosaic::reconstruct_highlights(&mut image, mosaic.clip);
     drop(mosaic);
     if params.lens_corrections {
@@ -212,7 +213,7 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
             scale *= k;
         }
     }
-    Ok(Scene { image, white_balance, sensor_clipped_pct: (clipped as f64 * 10_000.0).round() / 100.0, scale })
+    Ok(Scene { image, white_balance, sensor_clipped_pct: clipped, scale })
 }
 
 /// Unsharp mask on the encoded image's luminance, limited to the local

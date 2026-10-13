@@ -38,12 +38,45 @@ fast.
 
 ## 3. Highlight reconstruction — `demosaic.rs`
 
-After white balance the channels saturate at different levels, so a blown
-area keeps some channels and loses others; left alone it turns magenta. A
-lost channel is estimated from the surviving ones plus the typical offset
-between them, measured on unclipped pixels bordering the blown area.
-Where all three channels are gone nothing can be recovered and the area
-becomes neutral white.
+After white balance each channel has a different sensor limit (its WB gain).
+Saturation is detected against those limits, not against a common RGB value.
+A missing channel is estimated using ratios measured on bright, intact
+pixels bordering saturated regions. Ratios preserve chromaticity as
+brightness increases, unlike additive cube-root offsets. The bordering
+colour is a prior: different lamps or daylight regions can disagree.
+
+Reconstruction blends in over the last tenth of sensor range (90–98%);
+near-clipped channels progressively stop being trusted. A colour prior
+that disagrees with surviving-channel ratios or predicts less than a
+clipped channel's observed lower bound loses authority. With two reliable
+survivors, their measured colour is kept and only the missing channel is
+estimated conservatively from them. With an untrusted prior and only one
+reliable survivor, colour fades continuously towards neutral. Independently
+keeping each clipped bound under an incompatible colour prior would invent
+a hue. Variation in the border's colour ratios also lowers trust: mixed
+illuminants do not establish the patch's missing colour. A consistent
+coloured reference remains reconstructable. The existing 2% clipping margin
+sets the tolerance for these consistency checks. This deliberately favours
+neutral highlights over unsupported colour.
+
+As the last channel approaches its limit, colour fades continuously to a
+neutral highlight. Its endpoint is at least as bright as the prior-based
+estimate at the last-channel limit, including WB gains, so a fully clipped
+core does not become darker than its reconstructed boundary. This estimates
+plausible colour and roll-off, not lost detail. With no bright, intact
+reference the prior defaults to neutral. A wrong prior consistent with the
+remaining channel can still be wrong; optical and fine demosaic fringes
+are not resolved by this stage.
+
+Sensor clipping reports use every complete 2×2 CFA cell in the full active
+area, before hot-pixel repair and WB, at 98% of black-subtracted sensor
+range. `inspect.exposure.saturated_pct` counts photosites of each colour (two
+green sites per cell); `saturated_cells_pct` counts cells with either site
+of that colour clipped. `sensor_clipped_pct` is the union of clipped cells,
+identical in inspect and render. It need not be below the sum of the
+photosite percentages: their denominators differ. Cropping, rotation,
+`--region`, resizing and WB do not change this full-active-area statistic;
+render reports identify its scope explicitly.
 
 ## 4. Lens corrections — `lens.rs`
 
@@ -75,7 +108,9 @@ smoothing joins in the upper half of the `denoise` range. Orientation,
   reduced size and applied at full resolution, so large regions can be
   brightened or darkened without halos and without flattening texture.
 - A filmic sigmoid maps scene light to display range: middle grey stays
-  put, sensor saturation reaches white, and both ends roll off smoothly.
+  put and both ends roll off smoothly. An upper Hermite shoulder joins the
+  sigmoid halfway to its scene white point and reaches white with zero
+  derivative, avoiding a hard per-channel cut-off.
   Shadows and midtones keep their hue under the curve; highlights take it
   per channel, so bright colours fade towards yellow and white the way film
   and camera JPEGs do. `contrast` changes the slope, `whites` the white
@@ -106,3 +141,16 @@ sunset sky) without washing out midtones or adding clipping; shadows,
 highlights, contrast, black point and vibrance follow from the measured
 tone distribution. Every decision is reported in words and saved as
 ordinary recipe values.
+
+## Clipping in render reports — `stats.rs`
+
+Output clipping counts every rendered pixel before encoding/dithering:
+`clipped_highlights_pct` requires all three encoded sRGB channels ≥0.998,
+`channel_clipped_pct` requires any one, and `channel_clipped_pct_rgb` gives
+R/G/B separately on the same pixel set. Other tone and colour statistics
+use a regular grid of at most about 400k samples. Output statistics apply
+to the requested size and region; `region` echoes the requested normalized
+coordinates in the rotated/cropped frame (or null for the whole frame).
+Output clipping and sensor clipping answer different questions. A low
+pure-white count cannot establish that partly clipped highlights have
+correct colour or that sensor-saturated detail was recovered.

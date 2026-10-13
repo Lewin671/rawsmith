@@ -76,7 +76,8 @@ struct Target {
     #[arg(long)]
     size: Option<usize>,
     /// Render only this part of the picture at full resolution, to check fine
-    /// detail: x0,y0,x1,y1 as fractions of the picture
+    /// detail: x0,y0,x1,y1 in the rotated/cropped frame. Report echoes region;
+    /// sensor_clipped_pct always describes the full sensor active area.
     #[arg(long, value_name = "X0,Y0,X1,Y1", conflicts_with = "size")]
     region: Option<String>,
     /// JPEG quality (1..100)
@@ -227,10 +228,19 @@ fn read_raw(path: &Path) -> Result<arw::RawImage> {
     arw::decode(&read_file(path)?)
 }
 
-fn parse_region(text: &str) -> Result<[f32; 4]> {
-    let parts: Option<Vec<f32>> = text.split(',').map(|v| v.trim().parse().ok()).collect();
+fn parse_region(text: &str) -> Result<[f64; 4]> {
+    let parts: Option<Vec<f64>> = text.split(',').map(|v| v.trim().parse().ok()).collect();
     match parts.as_deref() {
-        Some(&[x0, y0, x1, y1]) if 0.0 <= x0 && x0 < x1 && x1 <= 1.0 && 0.0 <= y0 && y0 < y1 && y1 <= 1.0 => {
+        Some(&[x0, y0, x1, y1])
+            if 0.0 <= x0
+                && x0 < x1
+                && x1 <= 1.0
+                && 0.0 <= y0
+                && y0 < y1
+                && y1 <= 1.0
+                && (x0 as f32) < (x1 as f32)
+                && (y0 as f32) < (y1 as f32) =>
+        {
             Ok([x0, y0, x1, y1])
         }
         _ => Err(Error::Params(
@@ -294,6 +304,9 @@ fn prepare_render(raw: &arw::RawImage, params: &Params, target: &Target) -> Resu
     let spaces = Spaces::new();
     let mut image = pipeline::finish(&scene.image, params, &spaces);
     if let Some([x0, y0, x1, y1]) = region {
+        // Keep the existing pixel rounding while echoing decimal requests
+        // without f32 representation noise in JSON.
+        let [x0, y0, x1, y1] = [x0, y0, x1, y1].map(|v| v as f32);
         let (w, h) = (image.width as f32, image.height as f32);
         let (x, y) = ((x0 * w) as usize, (y0 * h) as usize);
         image = image.crop(x, y, (((x1 - x0) * w) as usize).max(1), (((y1 - y0) * h) as usize).max(1));
@@ -307,6 +320,8 @@ fn prepare_render(raw: &arw::RawImage, params: &Params, target: &Target) -> Resu
             "recipe": params.to_sparse(),
             "white_balance": scene.white_balance,
             "sensor_clipped_pct": scene.sensor_clipped_pct,
+            "sensor_clipped_scope": "full_active_area",
+            "region": region,
             "stats": stats::image_stats(&image, &spaces),
             "elapsed_ms": started.elapsed().as_millis() as u64,
         }),

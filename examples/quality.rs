@@ -314,6 +314,69 @@ fn highlight_section() -> Value {
     })
 }
 
+/// Dense ramps expose discontinuities hidden by average reconstruction error.
+/// Two separate illuminants also test that distant warm highlights cannot
+/// give a neutral clipped patch their hue.
+fn highlight_boundary_section() -> Value {
+    let clip = [2.5f32, 1.0, 1.6];
+    let mut ramp = Image::new(4000, 2);
+    for y in 0..2 {
+        for x in 0..4000 {
+            let v = 0.3 + x as f32 * 0.0007;
+            ramp.data[y * 4000 + x] = [(v * 1.15).min(clip[0]), v.min(clip[1]), (v * 0.8).min(clip[2])];
+        }
+    }
+    demosaic::reconstruct_highlights(&mut ramp, clip);
+    let jump = ramp.data[..4000]
+        .windows(2)
+        .flat_map(|p| (0..3).map(move |c| (p[1][c] - p[0][c]).abs()))
+        .fold(0.0f32, f32::max);
+
+    let (w, h) = (768, 128);
+    let mut mixed = Image::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let v = 0.3 + 2.1 * (x % (w / 2)) as f32 / (w / 2) as f32;
+            let p = if x < w / 2 { [v; 3] } else { [v * 1.5, v, v * 0.6] };
+            mixed.data[y * w + x] = std::array::from_fn(|c| p[c].min(clip[c]));
+        }
+    }
+    demosaic::reconstruct_highlights(&mut mixed, clip);
+    let mut error = 0.0f32;
+    for y in 0..h {
+        for x in 240..350 {
+            let p = mixed.at(x, y);
+            let lo = p.into_iter().fold(f32::MAX, f32::min);
+            let hi = p.into_iter().fold(0.0f32, f32::max);
+            error = error.max((hi - lo) / hi.max(1e-6));
+        }
+    }
+    // Green alone clipped in the coloured half: red and blue are measured,
+    // not guesses. A neutral fallback must not erase either surviving signal.
+    let mut survivor_error = 0.0f32;
+    for y in 0..h {
+        for x in 168..212 {
+            let v = 0.3 + 2.1 * x as f32 / (w / 2) as f32;
+            let got = mixed.at(x + w / 2, y);
+            survivor_error = survivor_error.max((got[0] / (v * 1.5) - 1.0).abs());
+            survivor_error = survivor_error.max((got[2] / (v * 0.6) - 1.0).abs());
+        }
+    }
+    let shoulder_slope = [-100.0, 0.0, 100.0]
+        .into_iter()
+        .map(|contrast| {
+            let f = tone::Filmic::new(contrast, 2.3);
+            ((f.eval(2.3) - f.eval(2.3 - 0.0001)) / 0.0001).abs()
+        })
+        .fold(0.0f32, f32::max);
+    json!({
+        "max_linear_rgb_step": round(jump as f64, 6),
+        "mixed_illuminant_neutral_channel_spread": round(error as f64, 6),
+        "white_point_left_slope": round(shoulder_slope as f64, 6),
+        "surviving_channel_relative_error": round(survivor_error as f64, 6),
+    })
+}
+
 /// Known colours through the whole RAW path: file, decode, white balance,
 /// demosaic, camera matrix. Reports the Oklab colour difference (x100,
 /// roughly comparable to CIE Delta E).
@@ -453,6 +516,10 @@ fn failures(report: &Value) -> Vec<String> {
         floor("demosaic.mean_psnr_gain_db.over_bilinear", 4.0),
         floor("demosaic.mean_psnr_gain_db.over_malvar_he_cutler", 1.0),
         ceiling("highlight_reconstruction.mean_relative_error.rawsmith", 0.03),
+        ceiling("highlight_boundaries.max_linear_rgb_step", 0.01),
+        ceiling("highlight_boundaries.mixed_illuminant_neutral_channel_spread", 0.03),
+        ceiling("highlight_boundaries.white_point_left_slope", 0.002),
+        ceiling("highlight_boundaries.surviving_channel_relative_error", 0.000001),
         ceiling("colour_accuracy.mean_delta_e", 0.5),
         ceiling("colour_accuracy.max_delta_e", 1.0),
         ceiling("tone_and_sharpening.sharpen_overshoot_pct_of_step", 2.0),
@@ -472,6 +539,7 @@ fn main() {
         "rawsmith": env!("CARGO_PKG_VERSION"),
         "demosaic": demosaic_section(),
         "highlight_reconstruction": highlight_section(),
+        "highlight_boundaries": highlight_boundary_section(),
         "colour_accuracy": colour_section(),
         "tone_and_sharpening": tone_section(),
         "noise_reduction": denoise_section(),

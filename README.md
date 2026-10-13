@@ -65,7 +65,10 @@ The assistant reads the camera settings, as-shot white balance and sensor exposu
 ```sh
 rawsmith auto sunset.ARW -o sunset-start.jpg --size 1400
 ```
-It opens the starting preview and reads `decisions`, using `stats.clipped_highlights_pct` and `stats.crushed_shadows_pct` to check for lost detail.
+It opens the starting preview and reads `decisions`, using output clipping
+(`stats.clipped_highlights_pct`, `stats.channel_clipped_pct_rgb`),
+full-active-area `sensor_clipped_pct` and `stats.crushed_shadows_pct` to guide
+detail checks. Zero pure-white clipping does not prove correct highlight colour.
 
 ```sh
 rawsmith edit sunset.ARW --reset \
