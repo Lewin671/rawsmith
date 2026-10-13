@@ -196,13 +196,32 @@ export report before deciding that highlight or shadow detail is safe.
 - `tones.p50` is the median lightness (0–100). Typical daylight scenes sit
   around 45–60; snow and fog higher; dusk lower. It is a description, not
   a target: a sunset silhouette is supposed to be dark.
-- `clipped_highlights_pct` is the share of the picture blown to pure
-  white. Above ~1% on a scene without the sun or lamps in frame means
-  lost highlight detail: lower `exposure`, `highlights` or `whites`.
-  `sensor_clipped_pct` is what the camera already lost; no setting brings
-  that back. `channel_clipped_pct` also counts vivid colours at the limit
-  of the output (a saturated sunset sky); high values there mean colour is
-  at its ceiling, so adding saturation will only flatten it.
+- `clipped_highlights_pct` counts pixels with all three encoded sRGB
+  channels ≥0.998; `channel_clipped_pct` counts any channel, and
+  `channel_clipped_pct_rgb` gives R/G/B separately. These counts use every
+  output pixel, before file dithering. Above ~1% pure white without sun or
+  lamps in frame calls for checking lost detail and trying lower `exposure`,
+  `highlights` or `whites`. A zero pure-white count does **not** make a
+  highlight safe: inspect bright regions at 100% for pink/magenta edges,
+  coloured speckles and hard transitions. High channel counts can also be
+  legitimate vivid colours at the output ceiling; adding saturation can
+  flatten them. Use the image, not a count alone, to decide.
+- `sensor_clipped_pct` is the percentage of full-active-area 2×2 CFA cells
+  with any sensor-saturated photosite, at 98% of black-subtracted range,
+  before hot-pixel repair or WB. Render identifies this as
+  `sensor_clipped_scope="full_active_area"`; it is unchanged by crop,
+  `--region`, output size or recipe and matches `inspect.exposure.sensor_clipped_pct`.
+  `inspect.exposure.saturated_pct` gives each colour's photosite percentage;
+  green has two sites per cell, so its denominator is different.
+  `saturated_cells_pct` gives R/G/B cell percentages (either green site),
+  which share the union's denominator. No edit restores sensor-saturated
+  detail. If this count is nonzero, check the sun, lamps, bright sky or snow
+  even when output clipping is zero. Prefer a natural transition to white
+  over false colour; lowering output clipping alone is not a repair.
+- `region` echoes the requested normalized `[x0,y0,x1,y1]` in the
+  rotated/cropped frame, or null for the whole frame. Keep it with the detail
+  report so the check can be reproduced. Output stats describe that region;
+  the sensor clipping statistic still describes the full active area.
 - `tones.spread` is global contrast (below ~15 is flat); `chroma_mean` is
   colourfulness averaged over the frame (snow and fog about 1, hazy
   landscapes 2–3, colourful scenes 4–8, vivid above 10).

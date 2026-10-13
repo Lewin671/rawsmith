@@ -189,6 +189,8 @@ pub struct Filmic {
     pivot: f32,
     scale: f32,
     white: f32,
+    shoulder: f32,
+    shoulder_slope: f32,
 }
 
 impl Filmic {
@@ -203,7 +205,11 @@ impl Filmic {
         // A white point too close to grey for this contrast has no solution;
         // fall back to an unscaled curve.
         let (pivot, scale) = if p > 0.0 { (p, (wc + p) / wc) } else { (gc * (1.0 - GREY) / GREY, 1.0) };
-        Filmic { contrast: c, pivot, scale, white }
+        let knee = white * 0.5;
+        let kc = knee.powf(c);
+        let shoulder = scale * kc / (kc + pivot);
+        let shoulder_slope = scale * c * pivot * kc / (knee * (kc + pivot).powi(2));
+        Filmic { contrast: c, pivot, scale, white, shoulder, shoulder_slope }
     }
 
     #[inline]
@@ -211,7 +217,16 @@ impl Filmic {
         if x <= 0.0 {
             return 0.0;
         }
-        let xc = x.min(self.white).powf(self.contrast);
+        let knee = self.white * 0.5;
+        if x > knee {
+            // Hermite shoulder: match the sigmoid at the knee, then reach
+            // white with zero derivative. No abrupt per-channel flat cut-off.
+            let t = ((x - knee) / knee).min(1.0);
+            let d = (1.0 - self.shoulder).max(0.0);
+            let m = (self.shoulder_slope * knee).min(3.0 * d);
+            return 1.0 - (1.0 - t).powi(2) * (d + (2.0 * d - m) * t);
+        }
+        let xc = x.powf(self.contrast);
         (self.scale * xc / (xc + self.pivot)).min(1.0)
     }
 }
@@ -291,6 +306,16 @@ mod tests {
                     last = y;
                 }
             }
+        }
+    }
+
+    #[test]
+    fn filmic_reaches_white_with_a_flat_shoulder() {
+        for contrast in [-100.0, 0.0, 100.0] {
+            let f = Filmic::new(contrast, 2.3);
+            let step = 0.0001;
+            let slope = (f.eval(2.3) - f.eval(2.3 - step)) / step;
+            assert!(slope.abs() < 0.002, "hard shoulder at contrast {contrast}: {slope}");
         }
     }
 

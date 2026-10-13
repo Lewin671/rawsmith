@@ -179,6 +179,25 @@ from the RAW, not parsed from the embedded JPEG. A viewer may already apply
 orientation metadata in the JPEG: check its displayed geometry and avoid
 rotating twice.
 
+Render reports echo `region` as `[x0,y0,x1,y1]` in the rotated/cropped
+frame, or `null` for the whole frame. Output `stats` describe those pixels.
+Clipping counts every output pixel before file dithering: encoded sRGB
+values ≥0.998 count as at the ceiling. `clipped_highlights_pct` counts all
+three channels; `channel_clipped_pct` any channel;
+`channel_clipped_pct_rgb` counts R/G/B separately. Pure-white zero does not
+rule out damaged highlight colour.
+
+`inspect.exposure.saturated_pct` counts saturated photosites per colour over
+all complete 2×2 CFA cells in the active sensor area, rather than the old
+1-in-16 cell sample. `saturated_cells_pct` counts cells with that colour
+saturated (either green site); `sensor_clipped_pct` counts their union.
+All use ≥98% of black-subtracted range, before hot-pixel repair and white
+balance. Green photosites have twice the cell denominator, so the union
+can exceed the sum of `saturated_pct`. Render's `sensor_clipped_pct` is now
+exactly the same union as inspect's, and `sensor_clipped_scope` is
+`"full_active_area"`: it does not describe the cropped frame or region.
+Neither clipping count measures recovered detail or proves correct colour.
+
 Preview statistics describe the rendered preview. Small clipped areas can
 average away at a small size, so clipping percentages may differ slightly
 from those in the full-resolution export. Read the final export's report

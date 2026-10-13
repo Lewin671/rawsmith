@@ -178,7 +178,7 @@ pub fn fields() -> Vec<Field> {
             "highlights",
             -100.0,
             100.0,
-            "Local brightness of bright areas; negative recovers skies and sunlit snow while keeping local detail.",
+            "Local brightness of bright areas; negative darkens skies and sunlit snow while keeping available detail. Sensor-saturated detail cannot be recovered.",
         ),
         field("shadows", -100.0, 100.0, "Local brightness of dark areas; positive opens foreground silhouettes."),
         field(

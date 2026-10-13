@@ -269,8 +269,15 @@ fn auto_writes_an_explained_recipe() {
 #[test]
 fn region_renders_full_resolution_detail() {
     let f = Fixture::new("region");
+    let inspect = ok(&["inspect", s(&f.raw)]);
     let v = ok(&["render", s(&f.raw), "--region", "0.25,0.25,0.75,0.75", "-o", s(&f.path("r.png"))]);
     assert_eq!((v["stats"]["width"].as_u64(), v["stats"]["height"].as_u64()), (Some(160), Some(120)));
+    assert_eq!(v["region"], serde_json::json!([0.25, 0.25, 0.75, 0.75]));
+    assert_eq!(v["sensor_clipped_scope"], "full_active_area");
+    assert_eq!(v["sensor_clipped_pct"], inspect["exposure"]["sensor_clipped_pct"]);
+    let full = ok(&["render", s(&f.raw)]);
+    assert_eq!(full["region"], Value::Null);
+    assert_eq!(full["sensor_clipped_pct"], v["sensor_clipped_pct"]);
 }
 
 #[test]
@@ -423,7 +430,14 @@ fn invalid_preview_options_fail_before_changing_any_files() {
     ok(&["edit", s(&f.raw), "--set", "exposure=0.5"]);
     let recipe = std::fs::read(f.recipe()).unwrap();
     for command in ["render", "edit", "auto"] {
-        for (flag, value) in [("--size", "0"), ("--quality", "0"), ("--quality", "200"), ("--region", "bad")] {
+        for (flag, value) in [
+            ("--size", "0"),
+            ("--quality", "0"),
+            ("--quality", "200"),
+            ("--region", "bad"),
+            ("--region", "0.999999999,0,1,1"),
+            ("--region", "0,0.999999999,1,1"),
+        ] {
             for output in [false, true] {
                 let mut args = vec![command, s(&f.raw), flag, value];
                 if output {

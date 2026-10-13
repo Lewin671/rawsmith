@@ -25,9 +25,9 @@ impl Mosaic {
 }
 
 impl Mosaic {
-    /// Fraction of the picture where the sensor itself saturated: 2x2 cells
-    /// with at least one photosite at its limit. Measured on the photosites,
-    /// so it does not depend on how they are interpolated afterwards.
+    /// Fraction of prepared 2x2 cells with a photosite at its limit, after
+    /// stuck-site repair and WB but before interpolation. Public reports use
+    /// `stats::sensor_clipping` on the original active-area samples instead.
     pub fn saturated_fraction(&self) -> f32 {
         let (w, h) = (self.width / 2, self.height / 2);
         let saturated: usize = (0..h)
@@ -179,96 +179,146 @@ pub fn full(m: &Mosaic) -> Image {
 }
 
 /// Samples within this fraction of the saturation point count as clipped.
-const CLIP_MARGIN: f32 = 0.98;
+pub(crate) const CLIP_MARGIN: f32 = 0.98;
+
+// Reconstruction gains confidence over the final tenth of sensor range.
+// Start before the saturation threshold so crossing it cannot change hue
+// discontinuously; the same interval fades colour as the last channel goes.
+const CLIP_KNEE: f32 = 0.9;
+
+fn clip_weight(v: f32) -> f32 {
+    let t = ((v - CLIP_KNEE) / (CLIP_MARGIN - CLIP_KNEE)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
 
 /// Rebuilds colour channels that saturated on the sensor.
 ///
 /// A clipped channel only says "at least this much". Its true value is
-/// estimated from the channels that did not clip plus the typical offset
+/// estimated from the channels that did not clip and the typical ratio
 /// between them, measured on pixels just outside the clipped areas. Without
 /// this, blown highlights turn magenta once white balance scales the channels
 /// apart. Returns the fraction of pixels that had a channel at its limit
-/// after demosaicing (use `Mosaic::saturated_fraction` for what the sensor lost).
+/// after demosaicing (not the full-active-area sensor statistic).
 pub fn reconstruct_highlights(image: &mut Image, clip: [f32; 3]) -> f32 {
-    let level = [clip[0] * CLIP_MARGIN, clip[1] * CLIP_MARGIN, clip[2] * CLIP_MARGIN];
+    let level = clip.map(|v| v * CLIP_KNEE);
     let (w, h) = (image.width, image.height);
     let clipped: Vec<u8> =
         image.data.par_iter().map(|p| (0..3).fold(0u8, |mask, c| mask | (((p[c] >= level[c]) as u8) << c))).collect();
-    let count = clipped.par_iter().filter(|&&m| m != 0).count();
-    if count == 0 {
+    let count = image.data.par_iter().filter(|p| (0..3).any(|c| p[c] >= clip[c] * CLIP_MARGIN)).count();
+    if clipped.par_iter().all(|&mask| mask == 0) {
         return 0.0;
     }
 
-    // Offsets between channels are measured in cube-root space, where they
-    // are roughly independent of brightness. `acc[c][k]` gathers channel c
-    // minus the k-th other channel.
-    let others = |c: usize| [(c + 1) % 3, (c + 2) % 3];
+    // Ratios preserve chromaticity as illumination increases, unlike the
+    // old additive cube-root offsets. These bordering pixels supply a prior,
+    // not evidence that every clipped patch has the same illuminant.
     let reach = (w.max(h) / 400).max(2) as isize;
-    let rows: Vec<_> = (0..h)
+    let rows: Vec<[f64; 5]> = (0..h)
         .into_par_iter()
         .map(|y| {
-            let mut acc = [[(0.0f64, 0u64); 2]; 3];
+            let mut sum = [0.0f64; 5];
             for x in 0..w {
-                let p = image.data[y * w + x];
+                let p = image.at(x, y);
                 if clipped[y * w + x] != 0 || p.iter().any(|&v| v < 0.2 * clip[1]) {
                     continue;
                 }
-                // Bright, unclipped, and close to a clipped pixel.
-                let mut near = 0u8;
-                for (dx, dy) in [(-reach, 0), (reach, 0), (0, -reach), (0, reach)] {
+                let near = [(-reach, 0), (reach, 0), (0, -reach), (0, reach)].into_iter().any(|(dx, dy)| {
                     let (nx, ny) = (x as isize + dx, y as isize + dy);
-                    if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h {
-                        near |= clipped[ny as usize * w + nx as usize];
-                    }
-                }
-                for c in 0..3 {
-                    if near & (1 << c) != 0 {
-                        for (k, o) in others(c).into_iter().enumerate() {
-                            acc[c][k].0 += (p[c].cbrt() - p[o].cbrt()) as f64;
-                            acc[c][k].1 += 1;
-                        }
-                    }
+                    nx >= 0
+                        && ny >= 0
+                        && (nx as usize) < w
+                        && (ny as usize) < h
+                        && clipped[ny as usize * w + nx as usize] != 0
+                });
+                if near {
+                    let (r, b) = ((p[0] / p[1]) as f64, (p[2] / p[1]) as f64);
+                    sum[0] += r;
+                    sum[1] += b;
+                    sum[2] += r * r;
+                    sum[3] += b * b;
+                    sum[4] += 1.0;
                 }
             }
-            acc
+            sum
         })
         .collect();
-    // Indexed collection preserves row order. Even f64 addition is not
-    // associative: a parallel reduction would let scheduling choose offsets.
-    let sums = rows.into_iter().fold([[(0.0, 0); 2]; 3], |mut a, b| {
-        for c in 0..3 {
-            for k in 0..2 {
-                a[c][k] = (a[c][k].0 + b[c][k].0, a[c][k].1 + b[c][k].1);
-            }
-        }
-        a
-    });
-    let offset = sums.map(|pair| pair.map(|(s, n)| if n > 100 { (s / n as f64) as f32 } else { 0.0 }));
+    // Fixed row order keeps the colour prior independent of Rayon splits.
+    let sum = rows.into_iter().fold([0.0f64; 5], |a, b| std::array::from_fn(|c| a[c] + b[c]));
+    let (colour, uncertainty) = if sum[4] > 0.0 {
+        let (r, b) = (sum[0] / sum[4], sum[1] / sum[4]);
+        let spread = ((sum[2] / sum[4] - r * r).max(0.0).sqrt() / r).max((sum[3] / sum[4] - b * b).max(0.0).sqrt() / b);
+        ([r as f32, 1.0, b as f32], spread as f32)
+    } else {
+        ([1.0; 3], 1.0)
+    };
+    // A neutral endpoint no darker than any plausible prior-based recovery
+    // at the last channel's limit. The clipped core must not form a dark disk
+    // surrounded by a brighter reconstructed ring.
+    let last_clip = (0..3).map(|c| clip[c] / colour[c]).fold(0.0f32, f32::max);
+    let neutral_endpoint = colour.iter().copied().fold(0.0f32, f32::max) * last_clip;
 
     image.data.par_iter_mut().zip(&clipped).for_each(|(p, &mask)| {
         if mask == 0 {
             return;
         }
         let original = *p;
-        if mask == 0b111 {
-            // Nothing left to infer colour from: a neutral highlight at the
-            // brightest channel's level.
-            *p = [original[0].max(original[1]).max(original[2]); 3];
-            return;
-        }
-        for c in 0..3 {
-            if mask & (1 << c) != 0 {
-                // Only channels that did not clip say anything about this one.
-                let (mut sum, mut n) = (0.0, 0.0);
-                for (k, o) in others(c).into_iter().enumerate() {
-                    if mask & (1 << o) == 0 {
-                        sum += original[o].max(0.0).cbrt() + offset[c][k];
-                        n += 1.0;
-                    }
-                }
-                p[c] = original[c].max((sum / n).max(0.0).powi(3));
+        let weights = [0, 1, 2].map(|c| clip_weight(original[c] / clip[c]));
+        let trust = weights.map(|v| 1.0 - v);
+        // A varied border does not establish this patch's missing colour.
+        // A single consistent illuminant remains reconstructable (including
+        // strongly coloured light); mixed references fade towards neutral.
+        let most = weights.into_iter().fold(0.0f32, f32::max);
+        let complete = weights.into_iter().fold(1.0f32, f32::min);
+        let second = (weights.iter().sum::<f32>() - most - complete).clamp(0.0, 1.0);
+        let mut mismatch = 0.0f32;
+        for a in 0..3 {
+            for b in a + 1..3 {
+                let (sa, sb) = (original[a].max(0.0) / colour[a], original[b].max(0.0) / colour[b]);
+                mismatch = mismatch.max((sa - sb).abs() / sa.max(sb).max(1e-6) * trust[a] * trust[b]);
             }
         }
+        let mut estimates = original;
+        let mut neutral_estimates = original;
+        for c in 0..3 {
+            if weights[c] > 0.0 {
+                let (mut sum, mut neutral_sum, mut n) = (0.0, 0.0, 0.0);
+                for o in [(c + 1) % 3, (c + 2) % 3] {
+                    sum += original[o].max(0.0) * (colour[c] / colour[o]) * trust[o];
+                    neutral_sum += original[o].max(0.0) * trust[o];
+                    n += trust[o];
+                }
+                if n > 0.0 {
+                    let estimate = sum / n;
+                    // Independently keeping a clipped lower bound when the
+                    // prior contradicts it would invent a hue.
+                    mismatch = mismatch.max((original[c] - estimate).max(0.0) / clip[c] * weights[c]);
+                    estimates[c] = estimate.max(original[c]);
+                    neutral_estimates[c] = (neutral_sum / n).max(original[c]);
+                }
+            }
+        }
+        let t = (mismatch.max(uncertainty) / (1.0 - CLIP_MARGIN)).clamp(0.0, 1.0);
+        let untrusted = t * t * (3.0 - 2.0 * t);
+        // With two survivors, retain their measured colour and estimate only
+        // the missing channel. Desaturating the whole pixel here destroys
+        // genuine warm clouds and produces flat white islands.
+        for c in 0..3 {
+            let estimate = estimates[c] + (neutral_estimates[c] - estimates[c]) * untrusted;
+            p[c] += (estimate - p[c]) * weights[c];
+        }
+        // Once all channels approach their sensor limits, colour is no longer
+        // evidence. Fade to neutral continuously instead of switching masks
+        // from a coloured reconstruction to white in one pixel.
+        // Fade the whole colour only as a second channel loses authority;
+        // apply the activation weight after bounding prior confidence, so a
+        // varied reference cannot make the fade saturate prematurely.
+        let rejected = untrusted * second;
+        let neutral_weight = complete.max(rejected);
+        let observed = original.iter().copied().fold(0.0f32, f32::max);
+        let rebuilt = p.iter().copied().fold(0.0f32, f32::max);
+        let neutral_base = observed + (rebuilt - observed).max(0.0) * (1.0 - rejected);
+        let neutral = neutral_base + (neutral_endpoint.max(neutral_base) - neutral_base) * complete;
+        *p = p.map(|v| v + (neutral - v) * neutral_weight);
     });
     count as f32 / (w * h) as f32
 }
@@ -294,6 +344,24 @@ mod tests {
         reconstruct_highlights(&mut image, clip);
         let p = image.data[20 * w + 180]; // true value 2.01 in every channel
         assert!((p[1] - p[0]).abs() < 0.15 && (p[2] - p[0]).abs() < 0.15, "{p:?}");
+    }
+
+    #[test]
+    fn coloured_highlight_has_no_jump_when_the_last_channel_clips() {
+        let clip = [2.5f32, 1.0, 1.6];
+        let mut image = Image::new(4000, 2);
+        for y in 0..2 {
+            for x in 0..4000 {
+                let v = 0.3 + x as f32 * 0.0007;
+                image.data[y * 4000 + x] = [(v * 1.15).min(clip[0]), v.min(clip[1]), (v * 0.8).min(clip[2])];
+            }
+        }
+        reconstruct_highlights(&mut image, clip);
+        let max_jump = image.data[..4000]
+            .windows(2)
+            .flat_map(|p| (0..3).map(move |c| (p[0][c] - p[1][c]).abs()))
+            .fold(0.0f32, f32::max);
+        assert!(max_jump < 0.01, "highlight boundary jumps by {max_jump}");
     }
 
     #[test]

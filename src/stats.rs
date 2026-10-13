@@ -1,6 +1,7 @@
 //! Numeric descriptions of a picture, so an assistant can judge a rendering
 //! from numbers as well as from the image itself.
 
+use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::adjust::band_weights;
@@ -35,6 +36,8 @@ pub struct ImageStats {
     /// Percent of pixels with at least one channel at maximum: includes vivid
     /// colours at the edge of what the output can show, such as a sunset sky.
     pub channel_clipped_pct: f64,
+    /// Percent at maximum for R, G and B separately (same rendered pixel set).
+    pub channel_clipped_pct_rgb: [f64; 3],
     /// Percent of pixels at pure black.
     pub crushed_shadows_pct: f64,
     /// Share of pixels (percent) in 10 equal lightness bins from black to white.
@@ -67,16 +70,31 @@ pub fn image_stats(image: &Image, spaces: &Spaces) -> ImageStats {
     let step = ((image.width * image.height) as f32 / 400_000.0).sqrt().ceil().max(1.0) as usize;
     let mut lightness = Vec::new();
     let mut chroma = Vec::new();
-    let (mut clipped, mut channel_clipped, mut crushed) = (0usize, 0usize, 0usize);
+    // Clipping needs every pixel: a regular tone-sampling grid can miss thin
+    // saturated lights or CFA-related patterns entirely. Integer sums are
+    // independent of Rayon scheduling.
+    let counts = image
+        .data
+        .par_iter()
+        .map(|p| {
+            let channels = p.map(|v| (v >= 0.998) as usize);
+            [
+                channels.iter().all(|&n| n != 0) as usize,
+                channels.iter().any(|&n| n != 0) as usize,
+                p.iter().all(|&v| v <= 0.008) as usize,
+                channels[0],
+                channels[1],
+                channels[2],
+            ]
+        })
+        .reduce(|| [0; 6], |a, b| std::array::from_fn(|c| a[c] + b[c]));
+    let pixel_count = image.data.len().max(1) as f32;
     let mut zones = [[(0.0f64, 0usize); 3]; 3];
     let mut cast = (0.0f64, 0.0f64, 0usize);
     let mut hues = [0.0f64; 8];
     for y in (0..image.height).step_by(step) {
         for x in (0..image.width).step_by(step) {
             let p = image.at(x, y);
-            clipped += p.iter().all(|&v| v >= 0.998) as usize;
-            channel_clipped += p.iter().any(|&v| v >= 0.998) as usize;
-            crushed += p.iter().all(|&v| v <= 0.008) as usize;
             let lab = spaces.to_oklab(apply(&spaces.srgb_to_work, p.map(srgb_decode)));
             let c = (lab[1] * lab[1] + lab[2] * lab[2]).sqrt();
             let l = lab[0] * 100.0;
@@ -120,9 +138,10 @@ pub fn image_stats(image: &Image, spaces: &Spaces) -> ImageStats {
             mean: round(mean),
             spread: round(spread),
         },
-        clipped_highlights_pct: round2(clipped as f32 * 100.0 / n as f32),
-        channel_clipped_pct: round2(channel_clipped as f32 * 100.0 / n as f32),
-        crushed_shadows_pct: round2(crushed as f32 * 100.0 / n as f32),
+        clipped_highlights_pct: round2(counts[0] as f32 * 100.0 / pixel_count),
+        channel_clipped_pct: round2(counts[1] as f32 * 100.0 / pixel_count),
+        channel_clipped_pct_rgb: std::array::from_fn(|c| round2(counts[c + 3] as f32 * 100.0 / pixel_count)),
+        crushed_shadows_pct: round2(counts[2] as f32 * 100.0 / pixel_count),
         histogram: histogram.into_iter().map(round).collect(),
         zones: zones.map(|row| row.map(|(sum, count)| round((sum / count.max(1) as f64) as f32))),
         chroma_mean: round(chroma.iter().sum::<f32>() / n as f32),
@@ -145,6 +164,12 @@ pub struct RawStats {
     /// Percent of each colour's photosites that saturated on the sensor
     /// (red, green, blue). Saturated data cannot be recovered by editing.
     pub saturated_pct: [f64; 3],
+    /// Percent of 2x2 CFA cells with a saturated photosite of each colour.
+    /// Green counts a cell if either green site saturated.
+    pub saturated_cells_pct: [f64; 3],
+    /// Percent of 2x2 CFA cells with any saturated photosite. Full active
+    /// area, before hot-pixel repair, white balance, geometry or resizing.
+    pub sensor_clipped_pct: f64,
     /// Stops between the 99.9th-percentile green sample and sensor
     /// saturation: how much highlight headroom the exposure left.
     pub headroom_stops: f64,
@@ -152,10 +177,48 @@ pub struct RawStats {
     pub median_stops_below_saturation: f64,
 }
 
+/// Exact sensor clipping counts. All complete CFA cells in the active area,
+/// with the same black-subtracted 98% threshold used by reconstruction.
+/// Photosite and cell percentages have different green denominators.
+pub fn sensor_clipping(raw: &RawImage) -> ([f64; 3], [f64; 3], f64) {
+    let crop = raw.crop;
+    let (w, h) = (crop.width / 2, crop.height / 2);
+    let totals = (0..h)
+        .into_par_iter()
+        .map(|y| {
+            let mut sums = [0usize; 7];
+            for x in 0..w {
+                let mut mask = [false; 3];
+                for cell in 0..4 {
+                    let (sx, sy) = (crop.x + x * 2 + cell % 2, crop.y + y * 2 + cell / 2);
+                    let tile = (sy & 1) * 2 + (sx & 1);
+                    let c = raw.cfa[tile] as usize;
+                    let v = (raw.data[sy * raw.width + sx] as f32 - raw.black[tile])
+                        / (raw.white - raw.black[tile]).max(1.0);
+                    let clipped = v >= crate::demosaic::CLIP_MARGIN;
+                    sums[c] += clipped as usize;
+                    mask[c] |= clipped;
+                }
+                for c in 0..3 {
+                    sums[c + 3] += mask[c] as usize;
+                }
+                sums[6] += mask.into_iter().any(|v| v) as usize;
+            }
+            sums
+        })
+        .reduce(|| [0; 7], |a, b| std::array::from_fn(|c| a[c] + b[c]));
+    let count = w * h;
+    let pct = |n: usize, d: usize| round2(n as f32 * 100.0 / d.max(1) as f32);
+    (
+        std::array::from_fn(|c| pct(totals[c], count * if c == 1 { 2 } else { 1 })),
+        std::array::from_fn(|c| pct(totals[c + 3], count)),
+        pct(totals[6], count),
+    )
+}
+
 pub fn raw_stats(raw: &RawImage) -> RawStats {
     let crop = raw.crop;
-    let mut saturated = [0usize; 3];
-    let mut count = [0usize; 3];
+    let (saturated_pct, saturated_cells_pct, sensor_clipped_pct) = sensor_clipping(raw);
     let mut greens = Vec::new();
     // Every 4th CFA tile in each direction is a dense enough sample.
     for y in (crop.y..crop.y + crop.height).step_by(8) {
@@ -166,8 +229,6 @@ pub fn raw_stats(raw: &RawImage) -> RawStats {
                 let v =
                     (raw.data[sy * raw.width + sx] as f32 - raw.black[tile]) / (raw.white - raw.black[tile]).max(1.0);
                 let c = raw.cfa[tile] as usize;
-                count[c] += 1;
-                saturated[c] += (v >= 0.98) as usize;
                 if c == 1 {
                     greens.push(v.max(1e-5));
                 }
@@ -176,10 +237,55 @@ pub fn raw_stats(raw: &RawImage) -> RawStats {
     }
     greens.sort_by(|a, b| a.total_cmp(b));
     let at = |p: f64| greens[((greens.len() - 1) as f64 * p) as usize];
-    let pct = |c: usize| round2(saturated[c] as f32 * 100.0 / count[c].max(1) as f32);
     RawStats {
-        saturated_pct: [pct(0), pct(1), pct(2)],
+        saturated_pct,
+        saturated_cells_pct,
+        sensor_clipped_pct,
         headroom_stops: round2((-at(0.999).log2()).max(0.0)),
         median_stops_below_saturation: round2(-at(0.5).log2()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{arw, synthetic::Synthetic};
+
+    #[test]
+    fn clipping_counts_include_pixels_between_tone_samples() {
+        let mut image = Image::new(1000, 1000);
+        image.data.fill([0.5; 3]);
+        for y in (1..1000).step_by(2) {
+            for x in (1..1000).step_by(2) {
+                image.data[y * 1000 + x] = [1.0, 0.5, 0.5];
+            }
+        }
+        let got = image_stats(&image, &Spaces::new());
+        assert_eq!(got.clipped_highlights_pct, 0.0);
+        assert_eq!(got.channel_clipped_pct, 25.0);
+        assert_eq!(got.channel_clipped_pct_rgb, [25.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn sensor_sites_and_cells_have_explicit_green_denominators() {
+        // Only one of the two green sites in each cell is saturated.
+        let raw = arw::decode(
+            &Synthetic::from_camera_rgb(32, 32, |x, y| if x % 2 == 1 && y % 2 == 0 { [1.0; 3] } else { [0.1; 3] })
+                .to_bytes(),
+        )
+        .unwrap();
+        let got = raw_stats(&raw);
+        assert_eq!(got.saturated_pct, [0.0, 50.0, 0.0]);
+        assert_eq!(got.saturated_cells_pct, [0.0, 100.0, 0.0]);
+        assert_eq!(got.sensor_clipped_pct, 100.0);
+        for edge in [None, Some(8)] {
+            let scene = crate::pipeline::scene(
+                &raw,
+                &crate::params::Params::default(),
+                crate::pipeline::Size { max_edge: edge },
+            )
+            .unwrap();
+            assert_eq!(scene.sensor_clipped_pct, got.sensor_clipped_pct);
+        }
     }
 }
