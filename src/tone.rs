@@ -59,7 +59,7 @@ pub fn base_layer(log_luma: &Plane) -> Plane {
 
 /// Smooth one-sided ramp: 0 for `d <= 0`, approaching `d - knee` for large `d`.
 #[inline]
-fn ramp(d: f32, knee: f32) -> f32 {
+pub(crate) fn ramp(d: f32, knee: f32) -> f32 {
     if d <= 0.0 {
         0.0
     } else {

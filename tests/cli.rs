@@ -1177,3 +1177,75 @@ fn denoise_schema_reports_and_legacy_recipe_migration_are_explicit() {
     assert_eq!(std::fs::read(f.recipe()).unwrap(), before);
     assert!(!f.path("rejected.png").exists());
 }
+
+#[test]
+fn masks_mutations_schema_diagnostic_and_errors_preserve_files() {
+    let f = Fixture::new("masks");
+    let radial = r#"masks+={"shape":"radial","center":[0.5,0.5],"radii":[0.3,0.2],"exposure":0.5}"#;
+    let luma = r#"masks+={"luma":[0.7,1],"exposure":-0.5}"#;
+    let report = ok(&["edit", s(&f.raw), "--set", radial, "--set", luma]);
+    assert_eq!(report["recipe"]["masks"].as_array().unwrap().len(), 2);
+    assert!(report["recipe"]["masks"][1].get("shape").is_none());
+    let saved = std::fs::read(f.recipe()).unwrap();
+    let raw = std::fs::read(&f.raw).unwrap();
+    let output = f.path("mask.png");
+    let report = ok(&["render", s(&f.raw), "--show-mask", "0", "-o", s(&output), "--size", "32", "--brief"]);
+    assert_eq!(report["show_mask"]["index"], 0);
+    assert_eq!(report["recipe_saved"], false);
+    let existing = std::fs::read(&output).unwrap();
+    let report = ok(&["render", s(&f.raw), "--set", "masks-=0", "--set", radial]);
+    assert_eq!(report["recipe"]["masks"][0]["luma"][0], 0.7);
+    for assignment in [
+        "masks-=2",
+        "masks-=-1",
+        "masks-=1.0",
+        "masks+=[]",
+        r#"masks+=["linear",[0,0],[1,1],null,null,0,0.5,false,null,0.05,0.5,0,0,0,0]"#,
+        r#"masks=[["linear",[0,0],[1,1],null,null,0,0.5,false,null,0.05,0.5,0,0,0,0]]"#,
+        "masks++={}",
+        "masks={}",
+        "masks=null",
+        r#"masks+={"shape":"radial","center":[0.5,0.5],"radii":[0,0.2]}"#,
+        r#"masks+={"luma":[0.8,0.2]}"#,
+        r#"masks+={"luma":[0.2,1],"temperatur":5}"#,
+        r#"masks+={"luma":[0.2,1],"exposure":4}"#,
+    ] {
+        let (success, error) = run(&["edit", s(&f.raw), "--set", assignment, "-o", s(&output)]);
+        assert!(!success, "{assignment}");
+        assert_eq!(error["error"]["kind"], "params");
+        assert_eq!(std::fs::read(f.recipe()).unwrap(), saved);
+        assert_eq!(std::fs::read(&output).unwrap(), existing);
+        assert_eq!(std::fs::read(&f.raw).unwrap(), raw);
+    }
+    let (success, error) = run(&["render", s(&f.raw), "--show-mask", "2", "-o", s(&output)]);
+    assert!(!success);
+    assert!(error["error"]["message"].as_str().unwrap().contains("out of range"));
+    assert_eq!(std::fs::read(&output).unwrap(), existing);
+    let schema = ok(&["schema"]);
+    assert_eq!(schema["local_masks"]["max_entries"], 8);
+    for name in [
+        "shape",
+        "radii",
+        "feather",
+        "luma",
+        "luma_feather",
+        "exposure",
+        "saturation",
+        "contrast",
+        "shadows",
+        "highlights",
+    ] {
+        assert!(schema["local_masks"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["path"] == name && v["description"].is_string()));
+    }
+    ok(&["edit", s(&f.raw), "--set", "masks=[]"]);
+    for _ in 0..8 {
+        ok(&["edit", s(&f.raw), "--set", luma]);
+    }
+    let (success, error) = run(&["edit", s(&f.raw), "--set", luma, "--set", "masks-=0"]);
+    assert!(!success);
+    assert!(error["error"]["message"].as_str().unwrap().contains("at most 8"));
+}

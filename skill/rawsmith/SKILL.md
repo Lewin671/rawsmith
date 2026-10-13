@@ -35,7 +35,7 @@ glance** — not the same picture with tidier numbers.
   touch of colour looks like the camera's JPEG and is not worth making.
   Use the whole kit: crop for composition, white balance as a creative
   choice, per-colour hue and luminance to build a palette, colour grading
-  for mood, a tone curve for the contrast you want, gradients and
+  for mood, a tone curve for the contrast you want, gradients, local masks and
   vignette to lead the eye.
 - **Stay believable.** The result must still read as a photograph of that
   place and light: no garish colour, no halos, no crushed or blown mess,
@@ -83,7 +83,7 @@ keep a version.
    a preview rendered). Open every preview.
    - *Composition*: `crop`, `rotate`.
    - *Light*: `exposure`, `contrast`, `highlights`, `shadows`, `whites`,
-     `blacks`, `curve`; `gradients` to darken a sky or lift a foreground;
+     `blacks`, `curve`; `gradients` or `masks` to shape local light;
      `vignette` to hold the eye in the frame.
    - *Colour*: `temperature` / `tint`, `vibrance`, `hsl.<band>.*`,
      `grade.shadows` / `grade.highlights`.
@@ -137,7 +137,7 @@ keep several versions.
 | More or less colour overall | `vibrance` (protects vivid colours), `saturation` |
 | Build a palette | `hsl.<band>.hue / saturation / luminance` — bands: red orange yellow green aqua blue purple magenta |
 | Mood | `grade.shadows` / `grade.highlights` (`hue` 0–360, `saturation`), `grade.balance` |
-| Only the sky, or only the foreground | `gradients` |
+| Local subject, corner or sky through branches | `masks` (radial, linear and luminance selection); `gradients` for a simple fade |
 | Hold the eye in the frame | `vignette` (negative darkens the corners) |
 | Purple edges on branches against bright sky | `defringe` |
 | Noise; crispness | `denoise`, `sharpen` |
@@ -176,6 +176,36 @@ one filter; `gradients-=1` removes the second (zero-based current-list index).
 Assignments run in order; a fifth append or invalid index fails without saving.
 Place them again after changing `crop`. A
 gradient also affects trees or buildings that cross it.
+
+**Local masks.** Use a radial to lift a pavilion or face, or darken a blurred
+foreground corner without a straight gradient reaching a nearby tree. Use a
+luma range for bright sky behind dark branches or roofs; multiply it by a
+radial/linear shape when only part of that brightness range needs editing.
+
+```sh
+rawsmith render photo.ARW --set 'masks=[{"shape":"radial","center":[0.6,0.5],"radii":[0.18,0.22],"feather":0.6,"exposure":0.7}]' --show-mask 0 -o mask.png --size 1400
+rawsmith edit photo.ARW --set 'masks+={"luma":[0.75,1],"luma_feather":0.08,"exposure":-0.4}' -o preview.jpg --size 1400
+```
+
+Check placement first with `render --show-mask N`: white is selected, black
+excluded, N is a zero-based **masks** index. Trial assignments are not saved;
+apply the same assignment with `edit` after checking. Check the photo and mask
+with a full-resolution `--region` across the boundary, not just a preview.
+Radial centre and radii are fractions of finished width/height; `rotation` is
+clockwise, `feather` fades inside the ellipse, and `invert:true` selects outside.
+Default shape is linear with `from`/`to`; omit geometry for luma alone.
+Luma uses display lightness 0–1 before the new local edits and finishing controls;
+its guided refinement suppresses speckle and preserves thin high-contrast edges.
+It is a brightness selection, not recognition of a sky or subject.
+
+`masks=[...]` replaces up to eight entries; `masks+={...}` appends one;
+`masks-=INDEX` removes one in current-list order. Available adjustments are
+exposure (−3–3 stops), saturation, contrast, shadows and highlights (−100–100).
+Contrast is an offset to global filmic contrast. Local temperature/tint and
+hue ranges are not available. Change framing first, then reposition masks.
+Strong lifting still exposes noise; darkening sensor-lost sky still makes grey.
+For a blurred foreground corner, start with a radial alone: a brightness
+threshold can reshape the soft edge.
 
 **White balance** starts as shot. To nudge it, set a number first (the
 as-shot values are in rendered reports' `white_balance`);
@@ -216,10 +246,10 @@ full-resolution export's report as well.
 ## Craft notes
 
 - Crop early. An empty sky or a distracting edge weakens everything else,
-  and positions for gradients and regions depend on the crop.
+  and positions for gradients, masks and regions depend on the crop.
 - Light before colour: decide what is bright and what recedes first.
 - Subjects in shade want lifting; surroundings that compete want
-  darkening. With no brush, use gradients from the edges and a vignette.
+  darkening. Use a radial for the subject or a corner, and luma to protect dark occluders.
 - A scene with one dominant colour (autumn leaves, a blue hour, a sunset)
   gets stronger when the other colours are quietened, not when everything
   is saturated.
@@ -249,8 +279,9 @@ Sony A7 IV (ILCE-7M4) ARW only: uncompressed and lossy-compressed (full
 frame and APS-C), and lossless-compressed in full-frame L and APS-C M.
 Lossless M/S sizes are reported as unsupported.
 
-Local adjustments are limited to graduated filters: no brushes, subject
-or luminance masks, no spot or dust removal, no black-and-white mixer.
+Local adjustments support four legacy gradients plus eight linear/radial masks
+with optional luminance selection. No brushes, semantic subject masks, local
+white balance, hue selection, spot/dust removal or black-and-white mixer.
 If you see sensor dust, a stray object or a hot pixel, tell the user;
 cropping is the only workaround. Output is sRGB JPEG or 16-bit PNG
 without camera metadata.

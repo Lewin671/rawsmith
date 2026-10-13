@@ -136,7 +136,7 @@ from the defaults.
 - **A discoverable CLI.** Successful subcommands return JSON on stdout;
   errors return JSON on stderr with exit status 1 and empty stdout. `--help` and
   `--version` print plain text. `rawsmith schema` gives parameter ranges
-  and meanings, including `vignette` and graduated filters (`gradients`).
+  and meanings, including `vignette` graduated filters (`gradients`) and local linear/radial/luminance masks (`masks`).
   RAW, recipe and output paths must be valid UTF-8; invalid paths return a
   `params` error before any file is written, with the path named lossily.
   Reports identify the recipe file, declared output colour space and RAW
@@ -198,8 +198,9 @@ S store reduced-size YCbCr rather than Bayer and return `unsupported`.
 Other cameras need a colour matrix and a test file; see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Local edits are graduated filters. There are no brushes, subject or
-luminance masks, spot removal or dust removal.
+Local edits support four legacy graduated filters and eight linear/radial
+masks with optional luminance selection. There are no brushes, semantic subject
+masks, local white balance, spot removal or dust removal.
 
 Known rendering weaknesses: with the sun in frame, pulling `highlights`
 far down shows the blown core as a disc with a visible edge where the

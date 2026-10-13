@@ -84,6 +84,13 @@ impl ColorOps {
         }
     }
 
+    /// The same uniform saturation operator for a spatially weighted local offset.
+    pub(crate) fn saturate(pixel: [f32; 3], amount: f32, spaces: &Spaces) -> [f32; 3] {
+        let ops =
+            Self { vibrance: 0.0, saturation: amount, bands: None, shadows: None, highlights: None, balance: 0.0 };
+        spaces.from_oklab(ops.apply_lab(spaces.to_oklab(pixel)))
+    }
+
     pub fn is_identity(&self) -> bool {
         self.vibrance == 0.0
             && self.saturation == 0.0

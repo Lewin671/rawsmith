@@ -87,7 +87,7 @@ white balance (`temperature`, `tint`), tone (`exposure`, `contrast`,
 `highlights`, `shadows`, `whites`, `blacks`, `clarity`, `dehaze`, `curve`),
 colour (`vibrance`, `saturation`, eight `hsl` bands, shadow/highlight
 `grade`), detail (`sharpen`, `denoise`, `defringe`), local adjustments (`vignette`,
-`gradients`), and geometry (`rotate`, `crop`, `lens_corrections`).
+`gradients`, `masks`), and geometry (`rotate`, `crop`, `lens_corrections`).
 
 `denoise` defaults to `null`: omitted/null means native noise measurement
 with an ISO prior, shared by default rendering and `auto`. `auto` preserves
@@ -118,6 +118,8 @@ append, repeated operators (`gradients++=`), negative/fractional indices and
 out-of-range indices are errors; no recipe or output is changed.
 `render --set` tries changes without saving the
 recipe. `edit --set` saves them; `edit --reset` starts from defaults.
+Auto computes a fresh tone/colour base and clears manual gradients, masks and
+vignette; keep a separate recipe to preserve a finished manual version.
 Write previews to separate files to compare rounds. To keep several edits,
 use a separate `--recipe FILE` for each, consistently across `auto`,
 `edit` and `render`.
@@ -143,6 +145,85 @@ profile; PNG declares sRGB with its standard sRGB chunk. This changes
 metadata only, not pixels. Developed files contain no camera metadata.
 `output_color_space` is `"sRGB"` when a developed image was written and
 `null` otherwise. [Profile source and CC0 licence](../assets/profiles/README.md).
+
+## Local masks
+
+`masks` holds up to **eight** local entries, in addition to the four legacy
+`gradients`. Each entry multiplies its shape by an optional luminance range,
+then applies its adjustments. All positions refer to the **finished rotated,
+cropped frame**, with [0,0] at top left. Reposition after changing framing.
+Existing `gradients` recipes keep their original arithmetic and rendering.
+
+```sh
+# Lift a subject inside a feathered ellipse.
+rawsmith render photo.ARW --set 'masks+={"shape":"radial","center":[0.6,0.5],"radii":[0.18,0.22],"feather":0.6,"exposure":0.7}' -o trial.jpg --size 1400
+# Select only bright sky within a top-down linear gradient, excluding dark branches.
+rawsmith render photo.ARW --set 'masks+={"from":[0.5,0],"to":[0.5,0.6],"luma":[0.75,1],"luma_feather":0.08,"exposure":-0.4}' -o sky.jpg --size 1400
+# View this same trial selection, replacing the trial list so its index is 0.
+rawsmith render photo.ARW --set 'masks=[{"from":[0.5,0],"to":[0.5,0.6],"luma":[0.75,1],"luma_feather":0.08,"exposure":-0.4}]' --show-mask 0 -o mask.png --size 1400
+```
+
+`masks=[...]` replaces the list; `masks=[]` clears it; `masks+={...}` appends
+one object; `masks-=INDEX` removes a zero-based current-list index. Assignments
+run in order. Invalid entries, excess appends and bad indices fail before
+saving either recipe or image, even if a later assignment would remove them.
+`render --set` is a trial; use `edit --set` to save the same assignments.
+Entries are sparse. Unknown fields and shape-inappropriate fields are errors.
+Set entry fields by replacing the list or removing/appending an entry; indexed
+`--set masks.0.exposure=...` assignments are not supported.
+
+| Field | Range / meaning |
+|---|---|
+| `shape` | `linear` (default) or `radial` |
+| `from`, `to` | Linear [x,y] fractions 0–1, at least 0.02 apart; full at/beyond from, smoothly zero at to |
+| `center`, `radii` | Radial centre 0–1; semi-axes 0.01–2, fractions of width and height before ellipse rotation |
+| `rotation` | Radial clockwise degrees −180–180 (default 0), rotated in pixel space |
+| `feather` | Radial 0.01–1 (default 0.5); fade inside the outer ellipse over this fraction of its radius |
+| `invert` | Invert the shape to affect its outside; with luma alone invert the luminance selection |
+| `luma` | [low,high] display lightness 0–1, low < high; omit shape geometry to select luminance alone |
+| `luma_feather` | 0.02–0.5 (default 0.05), smooth transitions outside low/high; bounds 0/1 include black/white fully |
+| `exposure` | −3–3 EV |
+| `saturation` | −100–100, Oklab chroma multiplier as for the global control |
+| `contrast` | −100–100 offset to global contrast, clamped to its range; blends the corresponding filmic and colour rendering |
+| `shadows`, `highlights` | −100–100 offsets using the same edge-aware log-luminance base and response as the global controls |
+
+`rawsmith schema` includes these ranges and meanings in `local_masks.fields`.
+Luminance selection uses Oklab display lightness from global exposure and
+legacy gradients through the global filmic curve, **before** new local edits,
+vignette, dehaze, global shadow/highlight adjustments, black/white points,
+point curve, colour adjustments and sharpening. All entries share this
+immutable selection, so one local edit cannot move another's threshold.
+A native-resolution luminance-guided refinement suppresses flat-patch grain
+while retaining thin high-contrast occluders. Soft thresholds and clamped
+weights avoid selection overshoot; inspect actual edges at 100%.
+
+Masked exposure offsets add in stops; masked shadows/highlights share one
+base layer after that exposure. They precede vignette and the global local-tone
+stage. Contrast entries blend in list order from the global curve towards
+the global-plus-offset curve, including its colour separation. Saturation
+multipliers combine after global colour adjustments. Zero adjustment values
+are neutral. For extreme overlapping masks, each scene gain is bounded to
+±32 stops and to a largest absolute RGB channel of 65536, using one common
+gain to preserve chromaticity. This prevents valid stacked entries overflowing
+to infinity/NaN and exporting black; ordinary photographic settings stay
+below these safety bounds. Raising exposure/shadows can still reveal or brighten existing
+noise; these masks do not replace denoising. Narrow brightness thresholds can
+select texture as well as objects. At soft out-of-focus edges, a brightness
+selection can reshape the blur; prefer a radial without luma for a blurred
+corner distraction. A blown sky cannot regain detail and can
+turn grey when darkened too much.
+
+`render --show-mask N` shows the **masks** entry N, white selected, black
+excluded, without adjustments, sharpening or tone mapping of the weights.
+`--size` resizes the native mask last; `--region` extracts a native region after
+full-frame mask refinement. Full and brief JSON include a `show_mask` diagnostic
+marker; statistics describe the greyscale weights, not a developed photo.
+This never saves a recipe and invalid indices preserve existing files. Indices
+refer to the effective list after all trial assignments; an appended entry has
+index equal to the previous list length.
+The diagnostic supports sRGB JPEG and 16-bit PNG; PNG is preferable for checking
+weights. There are no local temperature/tint controls, hue selections, brushes
+or semantic subject masks. White balance remains a global pre-demosaic operation.
 
 ## Comparing versions
 

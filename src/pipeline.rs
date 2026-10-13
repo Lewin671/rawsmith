@@ -422,8 +422,8 @@ pub fn finish(scene: &Image, params: &Params, spaces: &Spaces) -> Image {
     finish_owned(scene.clone(), params, spaces)
 }
 
-fn finish_owned(mut image: Image, params: &Params, spaces: &Spaces) -> Image {
-    let stage = crate::profile::Stage::new("exposure/local tone");
+/// Global exposure and legacy gradients remain in their original operation order.
+fn prepare_local(image: &mut Image, params: &Params) {
     let base = BASE_EXPOSURE;
     let gain = (params.exposure as f32 + base).exp2();
     image.map(|p| [p[0] * gain, p[1] * gain, p[2] * gain]);
@@ -453,6 +453,31 @@ fn finish_owned(mut image: Image, params: &Params, spaces: &Spaces) -> Image {
             p
         });
     }
+}
+
+/// Diagnostic mask pixels (encoded grey weights, not tone-mapped or sharpened).
+pub fn render_mask(raw: &RawImage, params: &Params, size: Size, index: usize) -> Result<Render> {
+    params.validate()?;
+    if index >= params.masks.len() {
+        return Err(Error::Params(format!(
+            "mask index {index} is out of range for {} masks; indices are zero-based",
+            params.masks.len()
+        )));
+    }
+    let Scene { mut image, white_balance, sensor_clipped_pct, noise_reduction, .. } =
+        scene(raw, params, Size::default())?;
+    prepare_local(&mut image, params);
+    let masks = crate::local::Masks::new(&image, params, &Spaces::new());
+    let mask = masks.view(index, image.width, image.height);
+    Ok(Render { image: size.apply(mask), white_balance, sensor_clipped_pct, noise_reduction })
+}
+
+fn finish_owned(mut image: Image, params: &Params, spaces: &Spaces) -> Image {
+    let stage = crate::profile::Stage::new("exposure/local tone");
+    prepare_local(&mut image, params);
+    let base = BASE_EXPOSURE;
+    let masks = crate::local::Masks::new(&image, params, spaces);
+    masks.apply_scene(&mut image);
     if params.vignette != 0.0 {
         // Up to one stop at the corners, growing with the square of the radius.
         let (cx, cy) = ((image.width as f32 - 1.0) * 0.5, (image.height as f32 - 1.0) * 0.5);
@@ -482,8 +507,16 @@ fn finish_owned(mut image: Image, params: &Params, spaces: &Spaces) -> Image {
     let white_point = 1.0 - params.whites as f32 / 100.0 * 0.25;
     let curve = (!params.curve.is_empty()).then(|| tone::curve_lut(&params.curve, 1025));
     let ops = ColorOps::new(params, spaces);
-    image.map(|p| {
-        let mut p = spaces.render_colour(filmic.map_rgb(p), filmic.log_slope(color::luma(p)));
+    let contrasts = masks.contrast_curves(params);
+    let render_colour = |x, y, scene| {
+        let mut p = spaces.render_colour(filmic.map_rgb(scene), filmic.log_slope(color::luma(scene)));
+        for (n, curve) in &contrasts {
+            let weight = masks.weight(*n, x, y);
+            if weight > 0.0 {
+                let target = spaces.render_colour(curve.map_rgb(scene), curve.log_slope(color::luma(scene)));
+                p = [0, 1, 2].map(|c| p[c] + weight * (target[c] - p[c]));
+            }
+        }
         if black != 0.0 || white_point != 1.0 || curve.is_some() {
             p = p.map(|v| {
                 let mut e = srgb_encode(v);
@@ -495,8 +528,14 @@ fn finish_owned(mut image: Image, params: &Params, spaces: &Spaces) -> Image {
             });
         }
         p
-    });
+    };
+    if contrasts.is_empty() {
+        image.map(|p| render_colour(0, 0, p));
+    } else {
+        image.map_xy(render_colour);
+    }
     ops.run(&mut image, spaces);
+    masks.apply_saturation(&mut image, spaces);
     image.map(|p| spaces.to_srgb_gamut(p).map(srgb_encode));
     drop(stage);
     let stage = crate::profile::Stage::new("sharpen/clamp");
@@ -654,3 +693,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "legacy_local_tests.rs"]
+mod legacy_local_tests;

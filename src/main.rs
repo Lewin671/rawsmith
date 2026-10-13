@@ -68,12 +68,15 @@ struct Source {
     /// value, exposure+=0.3 or contrast-=10 changes the current one. denoise=null
     /// measures native noise; an explicit denoise=0..100 is exact. gradients+={...}
     /// appends one filter (maximum 4); gradients-=INDEX removes a zero-based index.
+    /// masks=[...] replaces local masks (maximum 8); masks+={...} appends, masks-=INDEX removes.
     #[arg(long = "set", value_name = "PATH=VALUE", allow_hyphen_values = true)]
     set: Vec<String>,
 }
 
 #[derive(Args)]
 struct Target {
+    #[arg(skip)]
+    show_mask: Option<usize>,
     /// Output image (sRGB ICC JPEG or sRGB 16-bit PNG, reported as output_color_space); output_replaced reports whether a file was replaced.
     #[arg(short, long)]
     output: Option<PathBuf>,
@@ -97,6 +100,9 @@ struct Target {
 
 #[derive(Args)]
 struct Render {
+    /// Show the zero-based masks entry as encoded greyscale weights (white selected), without saving the recipe. Supports --size and --region.
+    #[arg(long, value_name = "INDEX")]
+    show_mask: Option<usize>,
     #[command(flatten)]
     source: Source,
     #[command(flatten)]
@@ -157,7 +163,7 @@ impl Command {
                 validate_report_path(raw)?;
                 validate_report_path(output)
             }
-            Self::Render(Render { source, target })
+            Self::Render(Render { source, target, .. })
             | Self::Edit(Edit { source, target, .. })
             | Self::Auto(Auto { source, target }) => {
                 validate_report_path(&source.raw)?;
@@ -269,6 +275,9 @@ fn editing_report(report: Value, target: &Target, recipe_saved: bool) -> Value {
             "sensor_clipped_scope",
         ],
     );
+    if let Some(mask) = report.get("show_mask") {
+        brief["show_mask"] = mask.clone();
+    }
     brief["recipe_saved"] = json!(recipe_saved);
     brief["stats"] = if report["stats"].is_null() {
         Value::Null
@@ -426,7 +435,11 @@ fn distinct(recipe: &Path, target: &Target) -> Result<()> {
 fn prepare_render(raw: &arw::RawImage, params: &Params, target: &Target) -> Result<(Value, Option<Vec<u8>>)> {
     let started = Instant::now();
     let region = target.region.as_deref().map(parse_region).transpose()?;
-    let rendered = pipeline::render(raw, params, Size { max_edge: target.size })?;
+    let rendered = if let Some(index) = target.show_mask {
+        pipeline::render_mask(raw, params, Size { max_edge: target.size }, index)?
+    } else {
+        pipeline::render(raw, params, Size { max_edge: target.size })?
+    };
     let spaces = Spaces::new();
     let mut image = rendered.image;
     if let Some([x0, y0, x1, y1]) = region {
@@ -451,6 +464,9 @@ fn prepare_render(raw: &arw::RawImage, params: &Params, target: &Target) -> Resu
         "stats": stats::image_stats(&image, &spaces),
         "elapsed_ms": started.elapsed().as_millis() as u64,
     });
+    if let Some(index) = target.show_mask {
+        report["show_mask"] = json!({"index": index, "list": "masks", "meaning": "diagnostic greyscale weights: white selected, black excluded; not an edited photo"});
+    }
     if target.brief {
         report["output_bytes"] = json!(bytes.as_ref().map(Vec::len));
     }
@@ -523,12 +539,21 @@ fn run(cli: Cli) -> Result<Value> {
         }
         Command::Schema => Ok(params::schema()),
         Command::Compare(args) => compare_versions(args),
-        Command::Render(Render { source, target }) => {
+        Command::Render(Render { source, mut target, show_mask }) => {
+            target.show_mask = show_mask;
             target.validate()?;
             let path = recipe_path(&source)?;
             distinct(&path, &target)?;
             let (params, loaded) = load_recipe(&path, source.recipe.is_none())?;
             let params = params.with_assignments(&source.set)?;
+            if let Some(index) = show_mask {
+                if index >= params.masks.len() {
+                    return Err(Error::Params(format!(
+                        "mask index {index} is out of range for {} masks; indices are zero-based",
+                        params.masks.len()
+                    )));
+                }
+            }
             let mut report = render(&source.raw, &params, &target)?;
             report["recipe_file"] = if loaded.is_some() { json!(path) } else { Value::Null };
             recipe_origin(&mut report, loaded);

@@ -83,6 +83,160 @@ pub struct Gradient {
     pub saturation: f64,
 }
 
+/// One local selection multiplied by adjustments. Geometry is in the finished frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskShape {
+    #[default]
+    Linear,
+    Radial,
+}
+
+fn default_feather() -> f64 {
+    0.5
+}
+fn default_luma_feather() -> f64 {
+    0.05
+}
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+fn is_linear(v: &MaskShape) -> bool {
+    *v == MaskShape::Linear
+}
+fn is_default_feather(v: &f64) -> bool {
+    *v == default_feather()
+}
+fn is_default_luma_feather(v: &f64) -> bool {
+    *v == default_luma_feather()
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LocalMask {
+    #[serde(skip_serializing_if = "is_linear")]
+    pub shape: MaskShape,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<[f64; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<[f64; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub center: Option<[f64; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub radii: Option<[f64; 2]>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub rotation: f64,
+    #[serde(skip_serializing_if = "is_default_feather")]
+    pub feather: f64,
+    #[serde(skip_serializing_if = "is_false")]
+    pub invert: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub luma: Option<[f64; 2]>,
+    #[serde(skip_serializing_if = "is_default_luma_feather")]
+    pub luma_feather: f64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub exposure: f64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub saturation: f64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub contrast: f64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub shadows: f64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub highlights: f64,
+}
+
+impl Default for LocalMask {
+    fn default() -> Self {
+        Self {
+            shape: MaskShape::Linear,
+            from: None,
+            to: None,
+            center: None,
+            radii: None,
+            rotation: 0.0,
+            feather: default_feather(),
+            invert: false,
+            luma: None,
+            luma_feather: default_luma_feather(),
+            exposure: 0.0,
+            saturation: 0.0,
+            contrast: 0.0,
+            shadows: 0.0,
+            highlights: 0.0,
+        }
+    }
+}
+
+impl LocalMask {
+    pub fn validate(&self) -> Result<()> {
+        let fail = |message: &str| Error::Params(format!("invalid mask: {message}"));
+        let point = |p: [f64; 2]| p.iter().all(|v| (0.0..=1.0).contains(v));
+        match self.shape {
+            MaskShape::Linear => {
+                if self.center.is_some()
+                    || self.radii.is_some()
+                    || self.rotation != 0.0
+                    || self.feather != default_feather()
+                {
+                    return Err(fail("center, radii, rotation and feather require shape radial"));
+                }
+                match (self.from, self.to) {
+                    (Some(a), Some(b)) if point(a) && point(b) && (a[0] - b[0]).hypot(a[1] - b[1]) >= 0.02 => {}
+                    (None, None) if self.luma.is_some() => {}
+                    _ => {
+                        return Err(fail(
+                            "linear requires from/to points in 0..1 at least 0.02 apart; omit both for luma alone",
+                        ))
+                    }
+                }
+            }
+            MaskShape::Radial => {
+                if self.from.is_some() || self.to.is_some() {
+                    return Err(fail("radial cannot have from/to"));
+                }
+                if !self.center.is_some_and(point)
+                    || !self.radii.is_some_and(|r| r.iter().all(|v| (0.01..=2.0).contains(v)))
+                {
+                    return Err(fail("radial requires center in 0..1 and radii in 0.01..2 (finished-frame fractions)"));
+                }
+                if !(-180.0..=180.0).contains(&self.rotation) || !(0.01..=1.0).contains(&self.feather) {
+                    return Err(fail("rotation must be -180..180 degrees and feather 0.01..1 of the ellipse radius"));
+                }
+            }
+        }
+        if let Some([low, high]) = self.luma {
+            if !(0.0..=1.0).contains(&low) || !(0.0..=1.0).contains(&high) || low >= high {
+                return Err(fail("luma requires [low, high] in 0..1 with low < high"));
+            }
+        } else if self.luma_feather != default_luma_feather() {
+            return Err(fail("luma_feather requires luma"));
+        }
+        if !(0.02..=0.5).contains(&self.luma_feather) {
+            return Err(fail("luma_feather must be 0.02..0.5 display lightness"));
+        }
+        if !(-3.0..=3.0).contains(&self.exposure) {
+            return Err(fail("exposure must be -3..3 EV"));
+        }
+        for (name, v) in [
+            ("saturation", self.saturation),
+            ("contrast", self.contrast),
+            ("shadows", self.shadows),
+            ("highlights", self.highlights),
+        ] {
+            if !(-100.0..=100.0).contains(&v) {
+                return Err(fail(&format!("{name} must be -100..100")));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub const MAX_MASKS: usize = 8;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Params {
@@ -102,6 +256,7 @@ pub struct Params {
     pub grade: Grade,
     pub curve: Vec<[f64; 2]>,
     pub gradients: Vec<Gradient>,
+    pub masks: Vec<LocalMask>,
     pub vignette: f64,
     pub sharpen: f64,
     pub denoise: Option<f64>,
@@ -130,6 +285,7 @@ impl Default for Params {
             grade: Grade::default(),
             curve: Vec::new(),
             gradients: Vec::new(),
+            masks: Vec::new(),
             vignette: 0.0,
             sharpen: 40.0,
             denoise: None,
@@ -259,6 +415,11 @@ impl Params {
     }
 
     pub fn from_value(value: Value) -> Result<Params> {
+        if let Some(masks) = value.get("masks") {
+            if !masks.as_array().is_some_and(|entries| entries.iter().all(Value::is_object)) {
+                return Err(Error::Params("masks requires an array of mask JSON objects".into()));
+            }
+        }
         let params: Params =
             serde_json::from_value(value).map_err(|e| Error::Params(format!("invalid recipe: {e}")))?;
         params.validate()?;
@@ -290,6 +451,12 @@ impl Params {
                     "curve needs [input, output] points in 0..1 with strictly increasing inputs".into(),
                 ));
             }
+        }
+        if self.masks.len() > MAX_MASKS {
+            return Err(Error::Params("at most 8 masks are supported".into()));
+        }
+        for (i, mask) in self.masks.iter().enumerate() {
+            mask.validate().map_err(|e| Error::Params(format!("masks[{i}]: {e}")))?;
         }
         if self.gradients.len() > 4 {
             return Err(Error::Params("at most 4 gradients are supported".into()));
@@ -326,6 +493,51 @@ impl Params {
                 p => (p, 0.0),
             };
             let text = text.trim();
+            if path == "masks" {
+                let list = root["masks"].as_array_mut().expect("masks is an array");
+                if step > 0.0 {
+                    let value: Value = serde_json::from_str(text)
+                        .map_err(|e| Error::Params(format!("masks+= requires one mask JSON object: {e}")))?;
+                    if !value.is_object() {
+                        return Err(Error::Params(
+                            "masks+= requires one mask JSON object, not an array or scalar".into(),
+                        ));
+                    }
+                    let mask: LocalMask = serde_json::from_value(value)
+                        .map_err(|e| Error::Params(format!("masks+= requires one mask JSON object: {e}")))?;
+                    mask.validate()?;
+                    if list.len() >= MAX_MASKS {
+                        return Err(Error::Params("at most 8 masks are supported".into()));
+                    }
+                    list.push(json!(mask));
+                } else if step < 0.0 {
+                    let index = text
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|_| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+                        .ok_or_else(|| {
+                            Error::Params("masks-= requires a zero-based non-negative integer index".into())
+                        })?;
+                    if index >= list.len() {
+                        return Err(Error::Params(format!(
+                            "mask index {index} is out of range for {} masks",
+                            list.len()
+                        )));
+                    }
+                    list.remove(index);
+                } else {
+                    let value: Value =
+                        serde_json::from_str(text).map_err(|e| Error::Params(format!("invalid masks list: {e}")))?;
+                    if !value.as_array().is_some_and(|entries| entries.iter().all(Value::is_object)) {
+                        return Err(Error::Params("masks requires an array of mask JSON objects".into()));
+                    }
+                    let masks: Vec<LocalMask> =
+                        serde_json::from_value(value).map_err(|e| Error::Params(format!("invalid masks list: {e}")))?;
+                    Params { masks: masks.clone(), ..Params::default() }.validate()?;
+                    *list = masks.into_iter().map(|m| json!(m)).collect();
+                }
+                continue;
+            }
             if path == "gradients" && step != 0.0 {
                 let list = root["gradients"].as_array_mut().expect("gradients is an array");
                 if step > 0.0 {
@@ -444,9 +656,35 @@ pub fn schema() -> Value {
         "other": [
             {"path": "curve", "default": [], "description": "Optional tone curve applied after tone mapping: [[input, output], ...] points in 0..1 on display brightness, strictly increasing inputs, joined smoothly. [0,0] and [1,1] are implied when not given. Points pull their whole neighbourhood, so pin the tones you want unchanged, e.g. lift only shadows with [[0.15,0.2],[0.4,0.4]]. Empty means none."},
             {"path": "gradients", "default": [], "description": "Up to 4 graduated filters, e.g. [{\"from\":[0.5,0],\"to\":[0.5,0.55],\"exposure\":-0.7,\"saturation\":15}] darkens and enriches a sky: full effect at and beyond `from`, fading to none at `to`; points are [x, y] fractions of the final picture from the top left. exposure is in stops (-3..3), saturation -100..100. --set gradients=[...] replaces the list; gradients+={...} appends one object; gradients-=INDEX removes a zero-based current-list index. Assignments run in order."},
+            {"path": "masks", "default": [], "max_entries": MAX_MASKS, "description": "Local shape times luminance selection. masks=[...] replaces; masks+={...} appends; masks-=INDEX removes a zero-based index. See local_masks for fields and ranges; render --show-mask INDEX checks placement."},
             {"path": "lens_corrections", "default": true, "description": "Apply the camera's embedded distortion, vignetting and chromatic aberration corrections."},
         ],
         "hsl_bands": HSL_BANDS,
+        "local_masks": mask_schema(),
+    })
+}
+
+/// Local entry ranges and meanings, separate from global numeric assignments.
+fn mask_schema() -> Value {
+    json!({
+        "max_entries": MAX_MASKS,
+        "fields": [
+            {"path":"shape", "default":"linear", "values":["linear","radial"], "description":"Linear from/to fade, or a rotated ellipse; omit geometry for luma alone."},
+            {"path":"from", "min":0,"max":1,"description":"[x,y] full-strength point in the finished rotated/cropped frame; linear only."},
+            {"path":"to", "min":0,"max":1,"description":"[x,y] zero-strength point, at least 0.02 from from; linear only."},
+            {"path":"center", "min":0,"max":1,"description":"Radial ellipse centre [x,y] in finished-frame fractions."},
+            {"path":"radii", "min":0.01,"max":2,"description":"Ellipse semi-axes [horizontal,vertical] as fractions of finished width/height before rotation."},
+            {"path":"rotation", "min":-180,"max":180,"default":0,"description":"Clockwise ellipse rotation in degrees, in pixel space."},
+            {"path":"feather", "min":0.01,"max":1,"default":0.5,"description":"Radial fade occupies this fraction of the radius inside the ellipse; outer boundary is zero."},
+            {"path":"invert", "default":false,"description":"Invert the shape (outside ellipse); with luma alone invert the luma selection."},
+            {"path":"luma", "min":0,"max":1,"description":"[low,high] display Oklab lightness before local edits, black/white points and curve; multiply with shape."},
+            {"path":"luma_feather", "min":0.02,"max":0.5,"default":0.05,"description":"Soft lightness transitions outside low/high; endpoints 0 and 1 remain fully selected."},
+            {"path":"exposure", "min":-3,"max":3,"default":0,"description":"Scene-linear brightness offset in EV, weighted by mask."},
+            {"path":"saturation", "min":-100,"max":100,"default":0,"description":"Oklab chroma offset, same multiplier as global saturation."},
+            {"path":"contrast", "min":-100,"max":100,"default":0,"description":"Offset to global filmic contrast, clamped to -100..100; mask blends tone and colour rendering."},
+            {"path":"shadows", "min":-100,"max":100,"default":0,"description":"Masked shadow brightness using the global edge-aware log-luma base."},
+            {"path":"highlights", "min":-100,"max":100,"default":0,"description":"Masked highlight brightness using the global edge-aware log-luma base; cannot recover clipped detail."}
+        ]
     })
 }
 

@@ -51,6 +51,10 @@ fn preview_and_comparison_resize_the_finished_export() {
             "highlights": -20, "shadows": 30, "rotate": 3.0,
             "crop": {"top": 0.07, "bottom": 0.93, "left": 0.11},
             "vignette": -15,
+            "masks": [
+                {"shape":"radial","center":[0.4,0.6],"radii":[0.3,0.2],"rotation":35,"exposure":0.7,"shadows":20,"contrast":15,"saturation":-20},
+                {"from":[0.5,0],"to":[0.5,0.7],"luma":[0.65,1],"highlights":-30}
+            ],
             "gradients": [{"from": [0.5, 0.0], "to": [0.5, 0.7], "exposure": -0.4}]
         }))
         .unwrap(),
@@ -150,5 +154,28 @@ fn preview_and_comparison_resize_the_finished_export() {
             assert!((p[c] - q[c]).abs() <= 1.5 / 65535.0);
         }
     }
+    let diagnostic = |out: &Path, extra: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_rawsmith"))
+            .arg("render")
+            .arg(&raw)
+            .arg("--recipe")
+            .arg(&recipe)
+            .args(["--show-mask", "1", "-o"])
+            .arg(out)
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    };
+    diagnostic(&full, &[]);
+    let mask = read_png(&full);
+    diagnostic(&small, &["--size", "83"]);
+    let preview = read_png(&small);
+    let expected = mask.resized(preview.width, preview.height);
+    for (p, q) in preview.data.iter().zip(expected.data) {
+        assert!((p[0] - q[0]).abs() <= 1.5 / 65535.0);
+    }
+    diagnostic(&small, &["--region", "0.25,0.25,0.75,0.75"]);
+    assert_eq!(read_png(&small).data, mask.crop(mask.width / 4, mask.height / 4, mask.width / 2, mask.height / 2).data);
     std::fs::remove_dir_all(dir).unwrap();
 }

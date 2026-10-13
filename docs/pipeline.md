@@ -170,7 +170,37 @@ the reduced automatic analysis path remains an approximation.
 
 - `exposure` scales scene light.
 - `gradients` apply graduated exposure and saturation adjustments in the
-  upright, cropped frame; `vignette` then brightens or darkens its corners.
+  upright, cropped frame, preserving their original arithmetic.
+- `masks` (up to eight, in addition to four legacy gradients) multiply a
+  finished-frame linear/radial shape by an optional luminance selection.
+  All entries use one immutable guide after exposure and legacy gradients:
+  Oklab lightness of globally filmic-mapped RGB, before new masks and other
+  finishing controls. A full-native-resolution self-guided filter (radius
+  128 pixels, regularisation 0.0064 in squared lightness) refines that
+  lightness before soft range selection. Window means truncate at the frame
+  boundary rather than replicating noisy corner pixels, and accumulate in
+  f64. A radius-two native detail gate restores strong thin edges that the
+  broad luminance regression could attenuate. This suppresses noise-driven mask
+  speckle without downsampling away thin branches. Weights are bounded 0–1.
+  Shape rotation is in pixel coordinates before dividing by the ellipse's
+  semi-axes (fractions of frame width/height). Feather lies inside the outer
+  ellipse; inversion affects the shape, or the selection for luma alone.
+  Masked exposure offsets add in stops. Masked shadows/highlights use the
+  existing log-luminance base and response, sharing a base across entries
+  after masked exposure. Scene gains are bounded to ±32 stops and a largest
+  absolute RGB channel of 65536 with a common gain, preventing nonfinite
+  pixels from extreme valid overlapping entries. These bounds apply only to
+  new mask gains; the legacy path is unchanged. These precede vignette and
+  the global local-tone stage.
+  Contrast blends the global filmic and colour rendering with the curve at
+  global contrast plus offset (clamped), in entry order. Local saturation
+  multiplies Oklab chroma after global colour adjustments. White balance stays
+  global; no approximate post-demosaic temperature/tint is exposed.
+  `render --show-mask N` uses the same selection and geometry at native
+  resolution, outputs encoded grey weights, and resizes/extracts a region last.
+  It bypasses local adjustments and final sharpening. No-local recipes retain
+  the existing operations and pixels; legacy gradient arithmetic is unchanged.
+- `vignette` brightens or darkens the corners after local masks.
 - `dehaze` removes airlight with the dark channel prior.
 - `highlights`, `shadows` and `clarity` work on a base/detail split of log
   luminance. The base layer is an edge-aware (guided) smoothing computed at
@@ -278,7 +308,8 @@ original executable with the original RAW and recipe.
 
 `rawsmith auto` keeps white balance, lens settings, framing, sharpening and
 non-zero additional defringe strength and explicit denoise amount from its
-base recipe, and replaces global tone and colour values. Unset denoise uses
+base recipe, and replaces tone and colour values, clearing manual gradients,
+masks and vignette. Unset denoise uses
 the same measured default policy as rendering. Tone and colour candidate
 measurements run through the current default curve and gamut mapping, so
 old tone/colour settings do not stack on the new base.
@@ -404,7 +435,7 @@ can reduce an adjustment. White balance is reported, never guessed from blue
 shade or warm light. Every guard and unresolved bound appears in decisions.
 
 The additional sampling and candidate work affects **auto analysis only**.
-Saved recipes render through the existing pipeline without new per-pixel
+Recipes without local masks render through the existing pipeline without new per-pixel
 stages. Exposure compensation and bounded camera/highlight/colour trials add
 small-image work; performance must be measured on the designated host, not
 inferred from these correctness runs.
