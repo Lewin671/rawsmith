@@ -78,8 +78,8 @@ pub fn prepare(raw: &RawImage, wb: [f32; 3]) -> Mosaic {
     Mosaic { width: crop.width, height: crop.height, data, cfa: raw.cfa, clip: wb }
 }
 
-/// Half-resolution demosaic: each 2x2 CFA tile becomes one pixel. Fast and
-/// free of interpolation artefacts; used for previews and analysis.
+/// Half-resolution demosaic: each 2x2 CFA tile becomes one pixel, with
+/// neutral CFA phase suppression; used only for automatic candidate analysis.
 pub fn half(m: &Mosaic) -> Image {
     let (w, h) = (m.width / 2, m.height / 2);
     let mut out = Image::new(w, h);
@@ -87,16 +87,38 @@ pub fn half(m: &Mosaic) -> Image {
         for (x, p) in row.iter_mut().enumerate() {
             let mut sum = [0.0f32; 3];
             let mut saturated = [false; 3];
+            let (mut green_lo, mut green_hi) = (f32::INFINITY, f32::NEG_INFINITY);
             for cell in 0..4 {
                 let c = m.cfa[cell] as usize;
                 let v = m.data[(y * 2 + cell / 2) * m.width + x * 2 + cell % 2];
                 sum[c] += v;
+                if c == 1 {
+                    green_lo = green_lo.min(v);
+                    green_hi = green_hi.max(v);
+                }
                 saturated[c] |= v >= m.clip[c] * CLIP_MARGIN;
             }
             // A green that averages one clipped and one unclipped sample must
             // still read as clipped for highlight reconstruction.
             let g = if saturated[1] { m.clip[1] } else { sum[1] * 0.5 };
             *p = [sum[0], g, sum[2]];
+            let lo = p.iter().copied().fold(f32::INFINITY, f32::min);
+            let hi = p.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            if !saturated.iter().any(|&v| v) && hi - lo > 0.02 && green_hi - green_lo > 0.1 * green_hi {
+                if let Some(smooth) = supported_chromaticity(m, x * 2, y * 2) {
+                    // A coloured line's faint outer pixels can be locally
+                    // near-neutral. Colour support one CFA tile away protects
+                    // that entire detail rather than desaturating its wings.
+                    if !neutral_neighbourhood(m, x * 2, y * 2, smooth) {
+                        continue;
+                    }
+                    // Neutral CFA phase differences are luminance, not colour.
+                    // Average all four photosites to retain their exposure.
+                    let level = (sum[0] + sum[1] + sum[2]) * 0.25;
+                    let mean = (smooth[0] + 2.0 * smooth[1] + smooth[2]) * 0.25;
+                    *p = smooth.map(|v| v * level / mean.max(1e-8));
+                }
+            }
         }
     });
     out
@@ -105,19 +127,80 @@ pub fn half(m: &Mosaic) -> Image {
 /// Mirror an index into `0..n`, preserving its parity (and so its CFA colour).
 #[inline]
 fn mirror(i: isize, n: usize) -> usize {
-    let n = n as isize;
-    (if i < 0 {
-        -i
-    } else if i >= n {
-        2 * n - 2 - i
+    if n <= 1 {
+        return 0;
+    }
+    let period = 2 * (n as isize - 1);
+    let i = i.rem_euclid(period);
+    if i < n as isize {
+        i as usize
     } else {
-        i
-    }) as usize
+        (period - i) as usize
+    }
+}
+
+/// Binomial low-pass samples each CFA plane with equal total weight. Its
+/// 7x7 footprint reduces Bayer phase bias on neutral fine structure without using
+/// interpolated RGB as evidence that a genuinely coloured line is neutral.
+fn colour_support(m: &Mosaic, x: usize, y: usize) -> [f32; 3] {
+    const WEIGHTS: [f32; 7] = [1.0, 6.0, 15.0, 20.0, 15.0, 6.0, 1.0];
+    let mut sum = [0.0f32; 3];
+    let mut weight = [0.0f32; 3];
+    for dy in -3isize..=3 {
+        for dx in -3isize..=3 {
+            let (nx, ny) = (mirror(x as isize + dx, m.width), mirror(y as isize + dy, m.height));
+            let colour = m.color(nx, ny);
+            let k = WEIGHTS[(dx + 3) as usize] * WEIGHTS[(dy + 3) as usize];
+            sum[colour] += m.data[ny * m.width + nx] * k;
+            weight[colour] += k;
+        }
+    }
+    std::array::from_fn::<_, 3, _>(|c| sum[c] / weight[c])
+}
+
+// Also permit a moderate, spatially constant cast: neutral dark structure
+// against coloured illumination should inherit that supported chromaticity,
+// not acquire a different hue from interpolation. A genuine coloured line
+// changes the CFA ratios nearby and is excluded.
+fn supported_chromaticity(m: &Mosaic, x: usize, y: usize) -> Option<[f32; 3]> {
+    let smooth = colour_support(m, x, y);
+    let scale = smooth.iter().copied().fold(0.0f32, f32::max).max(1e-8);
+    let chroma = (smooth[0] - smooth[1]).abs().max((smooth[2] - smooth[1]).abs()) / scale;
+    if is_neutral(smooth) {
+        return Some(smooth);
+    }
+    if chroma > 0.25 || smooth[1] <= 1e-8 {
+        return None;
+    }
+    let ratio = [smooth[0] / smooth[1], smooth[2] / smooth[1]];
+    let supported =
+        [(-2isize, -2isize), (0, -2), (2, -2), (-2, 0), (2, 0), (-2, 2), (0, 2), (2, 2)].into_iter().all(|(dx, dy)| {
+            let q = colour_support(m, mirror(x as isize + dx, m.width), mirror(y as isize + dy, m.height));
+            q[1] > 1e-8 && (q[0] / q[1] - ratio[0]).abs().max((q[2] / q[1] - ratio[1]).abs()) < 0.025
+        });
+    supported.then_some(smooth)
+}
+
+fn is_neutral(smooth: [f32; 3]) -> bool {
+    let scale = smooth.iter().copied().fold(0.0f32, f32::max).max(1e-8);
+    (smooth[0] - smooth[1]).abs().max((smooth[2] - smooth[1]).abs()) < 0.02 * scale
+}
+
+fn neutral_neighbourhood(m: &Mosaic, x: usize, y: usize, smooth: [f32; 3]) -> bool {
+    // Stable casts already require support in every neighbouring tile. Near
+    // neutral detail needs the extra check so coloured wings stay coloured.
+    if !is_neutral(smooth) {
+        return true;
+    }
+    [(-2isize, -2isize), (0, -2), (2, -2), (-2, 0), (2, 0), (-2, 2), (0, 2), (2, 2)].into_iter().all(|(dx, dy)| {
+        is_neutral(colour_support(m, mirror(x as isize + dx, m.width), mirror(y as isize + dy, m.height)))
+    })
 }
 
 /// Full-resolution demosaic: edge-directed green interpolation with Laplacian
 /// correction (Hamilton-Adams, soft-weighted), then red and blue from
-/// interpolated colour differences.
+/// interpolated colour differences. Neutral CFA support constrains green at
+/// thin high-contrast structures before those differences propagate.
 pub fn full(m: &Mosaic) -> Image {
     let (w, h) = (m.width, m.height);
     let at = |x: isize, y: isize| m.data[mirror(y, h) * w + mirror(x, w)];
@@ -145,6 +228,23 @@ pub fn full(m: &Mosaic) -> Image {
             // The Laplacian term can overshoot next to strong edges.
             let (lo, hi) = (l.min(r).min(u).min(d), l.max(r).max(u).max(d));
             *g = est.clamp(lo, hi);
+            // A neutral thin structure can make Hamilton-Adams misread
+            // luminance curvature as colour. Infer its green from the measured
+            // photosite only with neutral or spatially constant CFA colour support.
+            // Colour ratio changes protect genuinely coloured thin structures.
+            if (c - *g).abs() > 0.02
+                && hi - lo > 0.25 * hi
+                && c < m.clip[m.color(x, y)] * CLIP_MARGIN
+                && *g < m.clip[1] * CLIP_MARGIN
+            {
+                if let Some(smooth) = supported_chromaticity(m, x, y) {
+                    let constrained = c * smooth[1] / smooth[m.color(x, y)].max(1e-8);
+                    // Keep measured/clipped green available to reconstruction.
+                    if constrained < m.clip[1] * CLIP_MARGIN {
+                        *g = constrained;
+                    }
+                }
+            }
         }
     });
 
@@ -328,6 +428,90 @@ mod tests {
     use super::*;
     use crate::arw;
     use crate::synthetic::Synthetic;
+
+    #[test]
+    fn clipped_thin_structure_keeps_measured_green_for_reconstruction() {
+        let (w, h) = (80, 60);
+        let clip = [2.5, 1.0, 1.6];
+        let cfa = [0, 1, 1, 2];
+        let data = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                let d = (y as f32 - x as f32 - 1.0) / 2.0f32.sqrt();
+                let v = 1.2 - 1.15 * (-0.5 * (d / 0.85).powi(2)).exp();
+                v.min(clip[cfa[(y & 1) * 2 + (x & 1)] as usize])
+            })
+            .collect();
+        let mosaic = Mosaic { width: w, height: h, data, cfa, clip };
+        let mut image = full(&mosaic);
+        for y in 0..h {
+            for x in 0..w {
+                if mosaic.color(x, y) == 1 {
+                    assert_eq!(image.at(x, y)[1], mosaic.data[y * w + x]);
+                }
+            }
+        }
+        assert!(reconstruct_highlights(&mut image, clip) > 0.4);
+        for y in 0..h {
+            for x in 0..w {
+                if mosaic.color(x, y) == 1 && mosaic.data[y * w + x] >= clip[1] * CLIP_MARGIN {
+                    assert!(image.at(x, y)[1] >= mosaic.data[y * w + x]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn neutral_diagonal_does_not_acquire_purple_at_either_size() {
+        for cfa in [[0, 1, 1, 2], [2, 1, 1, 0], [1, 0, 2, 1], [1, 2, 0, 1]] {
+            let (w, h) = (160, 120);
+            let data = (0..w * h)
+                .map(|i| {
+                    let d = ((i / w) as f32 - (i % w) as f32 - 1.0) / 2.0f32.sqrt();
+                    0.9 - 0.86 * (-0.5 * (d / 0.85).powi(2)).exp()
+                })
+                .collect();
+            let mosaic = Mosaic { width: w, height: h, data, cfa, clip: [2.0; 3] };
+            for image in [full(&mosaic), half(&mosaic)] {
+                let mut sum = 0.0;
+                let mut n = 0;
+                for y in 8..image.height - 8 {
+                    for x in 8..image.width - 8 {
+                        let scale = w / image.width;
+                        if ((y as isize - x as isize) * scale as isize - 1).abs() <= 3 {
+                            let p = image.at(x, y);
+                            sum += (p[0].min(p[2]) - p[1]).max(0.0);
+                            n += 1;
+                        }
+                    }
+                }
+                assert!(sum / (n as f32) < 0.01, "CFA={cfa:?}, size={} excess={}", image.width, sum / n as f32);
+            }
+        }
+    }
+
+    #[test]
+    fn neutral_half_refinement_does_not_hide_sensor_clipping() {
+        let mosaic = Mosaic {
+            width: 8,
+            height: 8,
+            data: (0..64).map(|i| if i % 8 < 4 { 0.3 } else { 1.0 }).collect(),
+            cfa: [0, 1, 1, 2],
+            clip: [2.5, 1.0, 1.6],
+        };
+        let mut image = half(&mosaic);
+        assert_eq!(image.at(2, 2)[1], 1.0);
+        assert!(reconstruct_highlights(&mut image, mosaic.clip) > 0.0);
+    }
+
+    #[test]
+    fn refinement_handles_a_single_cfa_tile() {
+        let mosaic =
+            Mosaic { width: 2, height: 2, data: vec![0.9, 0.04, 0.04, 0.9], cfa: [0, 1, 1, 2], clip: [2.0; 3] };
+        for im in [full(&mosaic), half(&mosaic)] {
+            assert!(im.data.iter().flatten().all(|v| v.is_finite()));
+        }
+    }
 
     #[test]
     fn a_highlight_with_two_clipped_channels_follows_the_surviving_one() {

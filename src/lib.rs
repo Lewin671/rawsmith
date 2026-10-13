@@ -11,6 +11,7 @@ pub mod color;
 pub mod compare;
 pub mod demosaic;
 pub mod error;
+pub mod fringe;
 pub mod image;
 pub mod lens;
 pub mod output;

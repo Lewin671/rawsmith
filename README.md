@@ -143,7 +143,7 @@ The published recipe records the resulting edit:
   [CLI reference](docs/cli.md) for crash and rollback limits.
 - **The developing engine is here.** Rust modules implement RAW decoding,
   demosaicing, highlight reconstruction, lens corrections, colour, tone,
-  local contrast, dehaze, noise reduction and sharpening.
+  local contrast, dehaze, automatic neutral-edge colour protection, optional additional defringing, noise reduction and sharpening.
   [See the stages](docs/pipeline.md).
 
 ## Results

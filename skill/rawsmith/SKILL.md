@@ -151,11 +151,27 @@ safe to share without checking it.
 | Dull colour | `vibrance` first, `saturation` sparingly; nearly colourless scenes (snow, fog) only respond to `saturation` |
 | One colour wrong (sky too cyan, foliage too yellow) | `hsl.<band>.hue / saturation / luminance`, bands: red orange yellow green aqua blue purple magenta |
 | Only the sky, or only the foreground | `gradients` (see below) |
+| Residual thin purple/blue colour on strong edges | additional `defringe` (0–100, default 0); try with `render --set`, inspect at 100%, then save only if genuine colours survive |
 | Dark or bright corners | `vignette` (+ brightens corners) |
 | Mood | `grade.shadows` / `grade.highlights` (hue 0–360, saturation), `curve` |
 | Horizon, framing | `rotate` (degrees), `crop.left/top/right/bottom` |
 
-Sliders run −100…100 with 0 meaning "no change", like other raw developers.
+Tone and colour sliders generally run −100…100 with 0 meaning "no change".
+`dehaze`, `denoise`, `sharpen` and `defringe` run 0…100; use `schema` for
+each control's exact range and default.
+
+**Defringe** adds suppression of narrow, unsupported purple/blue colour at
+luminance edges and residual highlight fringes. Neutral thin-edge protection
+already runs automatically inside demosaicing, with no recipe control. Lens
+corrections already correct lateral CA; they do not remove every kind of
+fringe. `defringe` preserves luminance and supported purple surfaces, but can
+affect truly purple detail only a few sensor pixels wide. This additional
+filter is off by default; `defringe=0` leaves automatic demosaic protection on.
+Check purple lighting, flowers and fine coloured detail before saving; do not
+use global purple/magenta HSL desaturation as a substitute. It cannot restore
+lost branch shape, clipped highlight texture, a broad purple cast or wide
+out-of-focus halos. Previews resize the filtered native-resolution result
+and can hide damage to fine colour; use `--region` to decide the final strength.
 
 **Crop** values are edge positions, not amounts: `crop.top=0.1` removes
 the top tenth, `crop.bottom=0.9` removes the bottom tenth. Cropping

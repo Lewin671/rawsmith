@@ -7,6 +7,8 @@
 
 #![allow(clippy::needless_range_loop)]
 
+use rayon::prelude::*;
+
 use rawsmith::color::{self, Spaces};
 use rawsmith::demosaic::{self, Mosaic};
 use rawsmith::image::{Image, Plane};
@@ -153,6 +155,104 @@ fn mhc(m: &Mosaic) -> Image {
     out
 }
 
+fn unrefined_half(m: &Mosaic) -> Image {
+    let mut out = Image::new(m.width / 2, m.height / 2);
+    for y in 0..out.height {
+        for x in 0..out.width {
+            let mut p = [0.0; 3];
+            for cell in 0..4 {
+                let c = m.cfa[cell] as usize;
+                p[c] += m.data[(2 * y + cell / 2) * m.width + 2 * x + cell % 2];
+            }
+            p[1] *= 0.5;
+            out.data[y * out.width + x] = p;
+        }
+    }
+    out
+}
+
+fn expand_half(im: &Image) -> Image {
+    let mut out = Image::new(im.width * 2, im.height * 2);
+    for y in 0..out.height {
+        for x in 0..out.width {
+            out.data[y * out.width + x] = im.at(x / 2, y / 2);
+        }
+    }
+    out
+}
+
+/// Frozen pre-refinement Hamilton-Adams reference. Keeping the prior algorithm
+/// here makes per-scene regression checks independent of the production fix.
+fn unrefined_demosaic(m: &Mosaic) -> Image {
+    let colour = |x: usize, y: usize| m.cfa[(y & 1) * 2 + (x & 1)] as usize;
+    let mirror = |i: isize, n: usize| {
+        let period = 2 * (n as isize - 1);
+        let i = i.rem_euclid(period);
+        if i < n as isize {
+            i as usize
+        } else {
+            (period - i) as usize
+        }
+    };
+    let (w, h) = (m.width, m.height);
+    let at = |x: isize, y: isize| m.data[mirror(y, h) * w + mirror(x, w)];
+
+    let mut green = vec![0.0f32; w * h];
+    green.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        for (x, g) in row.iter_mut().enumerate() {
+            if colour(x, y) == 1 {
+                *g = m.data[y * w + x];
+                continue;
+            }
+            let (xi, yi) = (x as isize, y as isize);
+            let c = at(xi, yi);
+            let (l, r, u, d) = (at(xi - 1, yi), at(xi + 1, yi), at(xi, yi - 1), at(xi, yi + 1));
+            let lap_h = 2.0 * c - at(xi - 2, yi) - at(xi + 2, yi);
+            let lap_v = 2.0 * c - at(xi, yi - 2) - at(xi, yi + 2);
+            let grad_h = (l - r).abs() + lap_h.abs();
+            let grad_v = (u - d).abs() + lap_v.abs();
+            let est_h = (l + r) * 0.5 + lap_h * 0.25;
+            let est_v = (u + d) * 0.5 + lap_v * 0.25;
+            // Interpolate along the direction of least change; the squared
+            // weights make the choice decisive on edges and even in flat areas.
+            let (wh, wv) = (grad_v * grad_v + 1e-10, grad_h * grad_h + 1e-10);
+            let est = (est_h * wh + est_v * wv) / (wh + wv);
+            // The Laplacian term can overshoot next to strong edges.
+            let (lo, hi) = (l.min(r).min(u).min(d), l.max(r).max(u).max(d));
+            *g = est.clamp(lo, hi);
+        }
+    });
+
+    // Colour difference (own colour minus green) at red and blue sites.
+    let diff = |x: isize, y: isize| {
+        let (x, y) = (mirror(x, w), mirror(y, h));
+        m.data[y * w + x] - green[y * w + x]
+    };
+    let mut out = Image::new(w, h);
+    out.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        for (x, p) in row.iter_mut().enumerate() {
+            let g = green[y * w + x];
+            let (xi, yi) = (x as isize, y as isize);
+            let own = colour(x, y);
+            let mut rgb = [g; 3];
+            if own == 1 {
+                // Red and blue neighbours lie along one axis each.
+                let horizontal = colour(x ^ 1, y);
+                let vertical = 2 - horizontal;
+                rgb[horizontal] = g + (diff(xi - 1, yi) + diff(xi + 1, yi)) * 0.5;
+                rgb[vertical] = g + (diff(xi, yi - 1) + diff(xi, yi + 1)) * 0.5;
+            } else {
+                rgb[own] = m.data[y * w + x];
+                let diagonal =
+                    diff(xi - 1, yi - 1) + diff(xi + 1, yi - 1) + diff(xi - 1, yi + 1) + diff(xi + 1, yi + 1);
+                rgb[2 - own] = g + diagonal * 0.25;
+            }
+            *p = rgb;
+        }
+    });
+    out
+}
+
 /// Test scenes with detail up to the sensor's resolution limit.
 fn scenes() -> Vec<(&'static str, Image)> {
     let (w, h) = (512, 384);
@@ -251,21 +351,104 @@ fn scenes() -> Vec<(&'static str, Image)> {
     out
 }
 
+/// Real coloured detail at the same scale as the neutral fringe regression.
+/// Include violet/magenta, weak purple and blue, both bright and dark lines,
+/// several orientations, subpixel phases and Gaussian widths.
+fn purple_lines_section() -> Value {
+    let mut rows = Vec::new();
+    for (name, colour) in [
+        ("magenta", [0.65, 0.08, 0.6]),
+        ("violet", [0.3, 0.06, 0.7]),
+        ("muted_purple", [0.32, 0.28, 0.34]),
+        ("blue", [0.06, 0.1, 0.7]),
+    ] {
+        for background in [0.04, 0.9] {
+            for slope in [0.0f32, 0.45, 1.0, 2.0] {
+                for width in [0.65f32, 0.85, 1.3] {
+                    for intercept in [60.0f32, 60.3, 60.7] {
+                        let mut truth = Image::new(160, 120);
+                        for y in 0..truth.height {
+                            for x in 0..truth.width {
+                                let d =
+                                    (y as f32 - intercept - slope * (x as f32 - 80.0)) / (1.0 + slope * slope).sqrt();
+                                let cover = (-0.5 * (d / width).powi(2)).exp();
+                                truth.data[y * truth.width + x] = colour.map(|c| background + (c - background) * cover);
+                            }
+                        }
+                        let mosaic = mosaic_of(&truth);
+                        let developed = demosaic::full(&mosaic);
+                        let previous = unrefined_demosaic(&mosaic);
+                        let developed_half = expand_half(&demosaic::half(&mosaic));
+                        let previous_half = expand_half(&unrefined_half(&mosaic));
+                        // Integrated colour along the line rather than peak saturation:
+                        // interpolation spreads genuine subpixel colour spatially.
+                        let integrated = |im: &Image| {
+                            let mut sum = [0.0f64; 2];
+                            for y in 8..im.height - 8 {
+                                for x in 8..im.width - 8 {
+                                    let d = (y as f32 - intercept - slope * (x as f32 - 80.0))
+                                        / (1.0 + slope * slope).sqrt();
+                                    if d.abs() <= 5.0 {
+                                        let p = im.at(x, y);
+                                        sum[0] += (p[0] - p[1]) as f64;
+                                        sum[1] += (p[2] - p[1]) as f64;
+                                    }
+                                }
+                            }
+                            sum
+                        };
+                        let (a, b) = (integrated(&developed), integrated(&truth));
+                        let old = integrated(&previous);
+                        let (ah, bh) = (integrated(&developed_half), integrated(&previous_half));
+                        let half_kept = (ah[0] * b[0] + ah[1] * b[1]) / (b[0] * b[0] + b[1] * b[1]);
+                        let half_old_kept = (bh[0] * b[0] + bh[1] * b[1]) / (b[0] * b[0] + b[1] * b[1]);
+                        let old_kept = (old[0] * b[0] + old[1] * b[1]) / (b[0] * b[0] + b[1] * b[1]);
+                        let kept = (a[0] * b[0] + a[1] * b[1]) / (b[0] * b[0] + b[1] * b[1]);
+                        rows.push(json!({"colour":name, "background":background, "slope":slope, "sigma":width, "intercept":intercept,
+                        "chroma_kept_pct":kept*100.0, "previous_chroma_kept_pct":old_kept*100.0,
+                        "chroma_change_pct": (kept-old_kept)*100.0,
+                        "half_chroma_kept_pct":half_kept*100.0, "half_previous_chroma_kept_pct":half_old_kept*100.0,
+                        "half_chroma_change_pct":(half_kept-half_old_kept)*100.0,
+                        "half_psnr_change_db":psnr(&developed_half,&truth,8)-psnr(&previous_half,&truth,8), "psnr_change_db":psnr(&developed,&truth,8)-psnr(&previous,&truth,8), "psnr_db":psnr(&developed,&truth,8),
+                        "false_colour":false_colour(&developed,&truth,8)}));
+                    }
+                }
+            }
+        }
+    }
+    let minimum = rows
+        .iter()
+        .filter(|r| r["colour"] != "muted_purple")
+        .map(|r| r["chroma_kept_pct"].as_f64().unwrap())
+        .fold(f64::INFINITY, f64::min);
+    json!({"minimum_chroma_kept_pct":minimum,"scenes":rows})
+}
+
 fn demosaic_section() -> Value {
     let mut rows = Vec::new();
     let mut gains = [0.0, 0.0];
     let all = scenes();
     for (name, truth) in &all {
         let m = mosaic_of(truth);
-        let results = [demosaic::full(&m), mhc(&m), bilinear(&m)];
+        let results = [demosaic::full(&m), mhc(&m), bilinear(&m), unrefined_demosaic(&m)];
         let p: Vec<f64> = results.iter().map(|r| psnr(r, truth, 4)).collect();
         let f: Vec<f64> = results.iter().map(|r| false_colour(r, truth, 4)).collect();
+        let half_default = expand_half(&demosaic::half(&m));
+        let half_previous = expand_half(&unrefined_half(&m));
+        let half_p = psnr(&half_default, truth, 4);
+        let half_old_p = psnr(&half_previous, truth, 4);
+        let half_f = false_colour(&half_default, truth, 4);
+        let half_old_f = false_colour(&half_previous, truth, 4);
         gains[0] += (p[0] - p[2]) / all.len() as f64;
         gains[1] += (p[0] - p[1]) / all.len() as f64;
         rows.push(json!({
             "scene": name,
-            "psnr_db": {"rawsmith": round(p[0], 2), "malvar_he_cutler": round(p[1], 2), "bilinear": round(p[2], 2)},
-            "false_colour": {"rawsmith": round(f[0], 5), "malvar_he_cutler": round(f[1], 5), "bilinear": round(f[2], 5)},
+            "psnr_change_db":p[0]-p[3], "false_colour_change": f[0]-f[3],
+            "half_psnr_change_db":half_p-half_old_p,"half_false_colour_change":half_f-half_old_f,
+            "half_psnr_db":{"default":half_p,"previous_default":half_old_p},
+            "half_false_colour":{"default":half_f,"previous_default":half_old_f},
+            "psnr_db": {"rawsmith": round(p[0], 2), "previous_default":round(p[3],2), "malvar_he_cutler": round(p[1], 2), "bilinear": round(p[2], 2)},
+            "false_colour": {"rawsmith": round(f[0], 5), "previous_default":round(f[3],5), "malvar_he_cutler": round(f[1], 5), "bilinear": round(f[2], 5)},
         }));
     }
     json!({"scenes": rows, "mean_psnr_gain_db": {"over_bilinear": round(gains[0], 2), "over_malvar_he_cutler": round(gains[1], 2)}})
@@ -664,6 +847,141 @@ fn round(v: f64, places: i32) -> f64 {
     (v * k).round() / k
 }
 
+/// Lateral CA and subpixel-edge false colour are separate failure modes.
+/// The CA source is generated analytically, not by our resampler. A broad
+/// purple patch is a colour-preservation control.
+fn fringe_section() -> Value {
+    use rawsmith::{arw::LensTables, fringe, lens};
+    let (w, h) = (320, 240);
+    let (cx, cy) = ((w as f32 - 1.0) * 0.5, (h as f32 - 1.0) * 0.5);
+    let scene = |x: f32, y: f32| {
+        if (125.0..195.0).contains(&x) && (85.0..155.0).contains(&y) {
+            return [0.55, 0.08, 0.65];
+        }
+        // Anti-aliased, neutral thin dark lines on a bright field.
+        let d = ((y - 0.7 * x - 60.0) / 1.22).abs().min((y + 0.45 * x - 140.0).abs() / 1.1);
+        let v = 0.85 - 0.78 * (-0.5 * (d / 0.85).powi(2)).exp();
+        [v; 3]
+    };
+    let coefficients = [0.008, 0.0, -0.006];
+    let mut source = Image::new(w, h);
+    let mut truth = Image::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            truth.data[y * w + x] = scene(x as f32, y as f32);
+            for c in 0..3 {
+                let k = 1.0 + coefficients[c];
+                source.data[y * w + x][c] = scene(cx + (x as f32 - cx) / k, cy + (y as f32 - cy) / k)[c];
+            }
+        }
+    }
+    let tables = LensTables {
+        distortion: vec![0; 16],
+        vignetting: vec![0; 16],
+        ca_red: vec![(coefficients[0] * 2097152.0).round() as i16; 16],
+        ca_blue: vec![(coefficients[2] * 2097152.0).round() as i16; 16],
+    };
+    let corrected = lens::correct(&source, &tables).unwrap();
+    let ca_error = |im: &Image, edge_only: bool| {
+        let (mut sum, mut n) = (0.0f64, 0);
+        for y in 8..h - 8 {
+            for x in 8..w - 8 {
+                if (115..205).contains(&x) && (75..165).contains(&y) {
+                    continue;
+                }
+                let d = ((y as f32 - 0.7 * x as f32 - 60.0) / 1.22)
+                    .abs()
+                    .min((y as f32 + 0.45 * x as f32 - 140.0).abs() / 1.1);
+                if edge_only && d > 4.0 {
+                    continue;
+                }
+                let p = im.at(x, y);
+                sum += ((p[0] - p[1]).abs() + (p[2] - p[1]).abs()) as f64;
+                n += 2;
+            }
+        }
+        sum / n as f64
+    };
+    let ca_before = ca_error(&source, false);
+    let ca_after = ca_error(&corrected, false);
+    let mut developed = corrected.clone();
+    fringe::suppress(&mut developed, 1.0, 3);
+    // Compare the whole interior, excluding the resampled object boundary.
+    let mut purple_error = 0.0f32;
+    for y in 90..150 {
+        for x in 130..190 {
+            for (a, b) in developed.at(x, y).into_iter().zip(truth.at(x, y)) {
+                purple_error = purple_error.max((a - b).abs());
+            }
+        }
+    }
+
+    // No CA, no clipping: false colour solely from CFA sampling/demosaic.
+    let mut line = Image::new(160, 120);
+    for y in 0..line.height {
+        for x in 0..line.width {
+            let d = (y as f32 - x as f32 - 1.0) / 2.0f32.sqrt();
+            line.data[y * line.width + x] = [0.9 - 0.86 * (-0.5 * (d / 0.85).powi(2)).exp(); 3];
+        }
+    }
+    let mosaic = mosaic_of(&line);
+    let before = demosaic::full(&mosaic);
+    let previous = unrefined_demosaic(&mosaic);
+    let mut after = before.clone();
+    fringe::suppress(&mut after, 1.0, 3);
+    let purple_fringe = |im: &Image| {
+        let mut sum = 0.0f64;
+        let mut n = 0;
+        for y in 8..im.height - 8 {
+            for x in 8..im.width - 8 {
+                if (y as isize - x as isize - 1).abs() <= 3 {
+                    let p = im.at(x, y);
+                    sum += (p[0].min(p[2]) - p[1]).max(0.0) as f64;
+                    n += 1;
+                }
+            }
+        }
+        sum / n as f64
+    };
+    // A slightly wider neutral line under tinted illumination exercises
+    // the stable-ratio branch. The narrow 0.85-sigma tinted case remains
+    // ambiguous and is reported too rather than claiming universal removal.
+    let mut tinted_rows = Vec::new();
+    for width in [0.85f32, 1.3, 1.8] {
+        let mut tinted = line.clone();
+        let tint = [1.08, 1.0, 0.93];
+        for y in 0..tinted.height {
+            for x in 0..tinted.width {
+                let d = (y as f32 - x as f32 - 1.0) / 2.0f32.sqrt();
+                let v = 0.9 - 0.86 * (-0.5 * (d / width).powi(2)).exp();
+                tinted.data[y * tinted.width + x] = tint.map(|t| v * t);
+            }
+        }
+        let tinted_mosaic = mosaic_of(&tinted);
+        let mut developed = demosaic::full(&tinted_mosaic);
+        let mut previous = unrefined_demosaic(&tinted_mosaic);
+        // Remove only the known illumination tint when measuring false colour.
+        developed.map(|p| std::array::from_fn(|c| p[c] / tint[c]));
+        previous.map(|p| std::array::from_fn(|c| p[c] / tint[c]));
+        tinted.map(|p| std::array::from_fn(|c| p[c] / tint[c]));
+        tinted_rows.push(
+            json!({"sigma":width,"previous_default":purple_fringe(&previous),"default":purple_fringe(&developed),
+            "default_colour_error":false_colour(&developed,&tinted,8), "previous_colour_error":false_colour(&previous,&tinted,8),
+            "psnr_change_db":psnr(&developed,&tinted,8)-psnr(&previous,&tinted,8)}),
+        );
+    }
+    json!({
+        "lateral_ca_edge_chroma_error": {"uncorrected": ca_error(&source,true), "corrected": ca_error(&corrected,true)},
+        "lateral_ca_mean_chroma_error": {"uncorrected": ca_before, "corrected": ca_after},
+        "lateral_ca_error_reduction_pct": (1.0 - ca_after / ca_before) * 100.0,
+        "unclipped_diagonal_purple_excess": {"previous_default":purple_fringe(&previous), "default": purple_fringe(&before),
+            "half_previous_default":purple_fringe(&expand_half(&unrefined_half(&mosaic))),
+            "half_default":purple_fringe(&expand_half(&demosaic::half(&mosaic))), "defringe_100": purple_fringe(&after)},
+        "tinted_diagonals":tinted_rows,
+        "purple_object_interior_max_channel_error": purple_error,
+    })
+}
+
 /// Minimum quality the pipeline must keep. `--check` fails when a change
 /// regresses below any of these.
 fn failures(report: &Value) -> Vec<String> {
@@ -674,7 +992,14 @@ fn failures(report: &Value) -> Vec<String> {
     let ceiling = |path: &str, max: f64| {
         (number(path).is_nan() || number(path) > max).then(|| format!("{path} = {} is above {max}", number(path)))
     };
-    [
+    let mut failures: Vec<_> = [
+        floor("fringing.lateral_ca_error_reduction_pct", 70.0),
+        ceiling("fringing.lateral_ca_mean_chroma_error.corrected", 0.01),
+        ceiling("fringing.lateral_ca_edge_chroma_error.corrected", 0.02),
+        ceiling("fringing.unclipped_diagonal_purple_excess.default", 0.01),
+        ceiling("fringing.unclipped_diagonal_purple_excess.half_default", 0.01),
+        floor("purple_lines.minimum_chroma_kept_pct", 70.0),
+        ceiling("fringing.purple_object_interior_max_channel_error", 0.0001),
         floor("demosaic.mean_psnr_gain_db.over_bilinear", 4.0),
         floor("demosaic.mean_psnr_gain_db.over_malvar_he_cutler", 1.0),
         ceiling("highlight_reconstruction.mean_relative_error.rawsmith", 0.03),
@@ -701,13 +1026,45 @@ fn failures(report: &Value) -> Vec<String> {
     ]
     .into_iter()
     .flatten()
-    .collect()
+    .collect();
+    for section in ["demosaic", "purple_lines"] {
+        for row in report[section]["scenes"].as_array().unwrap() {
+            if row["psnr_change_db"].as_f64().unwrap() < -0.02 {
+                failures.push(format!("{section} PSNR regressed: {row}"));
+            }
+            if section == "demosaic"
+                && (row["false_colour_change"].as_f64().unwrap() > 0.00001
+                    || row["half_false_colour_change"].as_f64().unwrap() > 0.00001
+                    || row["half_psnr_change_db"].as_f64().unwrap() < -0.02)
+            {
+                failures.push(format!("{section} false colour regressed: {row}"));
+            }
+            if section == "purple_lines"
+                && (row["chroma_change_pct"].as_f64().unwrap() < -0.1
+                    || row["half_chroma_change_pct"].as_f64().unwrap() < -0.1
+                    || row["half_psnr_change_db"].as_f64().unwrap() < -0.02)
+            {
+                failures.push(format!("genuine thin colour lost: {row}"));
+            }
+        }
+    }
+    for row in report["fringing"]["tinted_diagonals"].as_array().unwrap() {
+        if row["psnr_change_db"].as_f64().unwrap() < -0.02
+            || row["default_colour_error"].as_f64().unwrap() > row["previous_colour_error"].as_f64().unwrap() + 0.00001
+            || (row["sigma"].as_f64().unwrap() > 1.0 && row["default"].as_f64().unwrap() > 0.01)
+        {
+            failures.push(format!("tinted neutral detail regressed: {row}"));
+        }
+    }
+    failures
 }
 
 fn main() {
     let report = json!({
         "rawsmith": env!("CARGO_PKG_VERSION"),
         "demosaic": demosaic_section(),
+        "purple_lines": purple_lines_section(),
+        "fringing": fringe_section(),
         "highlight_reconstruction": highlight_section(),
         "highlight_boundaries": highlight_boundary_section(),
         "colour_accuracy": colour_section(),

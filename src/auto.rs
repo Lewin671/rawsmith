@@ -81,8 +81,8 @@ pub struct Auto {
     pub notes: Vec<String>,
 }
 
-/// Proposes settings for `raw`. White balance, geometry and lens settings of
-/// `base` are kept; tone and colour settings are replaced.
+/// Proposes settings for `raw`. White balance, geometry, lens, sharpening and
+/// defringe settings of `base` are kept; tone and colour settings are replaced.
 pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
     // More noise reduction as the sensor gain rises.
     let iso = raw.meta.iso.unwrap_or(100).max(50) as f32;
@@ -93,6 +93,7 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
         rotate: base.rotate,
         crop: base.crop,
         sharpen: base.sharpen,
+        defringe: base.defringe,
         denoise: round_to((10.0 + 10.0 * (iso / 100.0).log2()).clamp(10.0, 60.0), 5.0),
         ..Params::default()
     };

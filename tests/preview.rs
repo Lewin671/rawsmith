@@ -36,14 +36,18 @@ fn preview_and_comparison_resize_the_finished_export() {
     let mut synthetic = Synthetic::from_camera_rgb(322, 214, |x, y| {
         let noise = ((x * 31 + y * 47) % 97) as f32 / 97.0 * 0.015;
         let v = if x < 161 { 0.015 } else { 0.14 } + noise;
-        [v * 0.8, v, v * 0.6]
+        if (159..161).contains(&x) {
+            [0.16, 0.025, 0.22]
+        } else {
+            [v * 0.8, v, v * 0.6]
+        }
     });
     synthetic.orientation = 6;
     std::fs::write(&raw, synthetic.to_bytes()).unwrap();
     std::fs::write(
         &recipe,
         serde_json::to_vec(&json!({
-            "denoise": 85, "sharpen": 65, "clarity": 20, "dehaze": 15,
+            "denoise": 85, "defringe": 100, "sharpen": 65, "clarity": 20, "dehaze": 15,
             "highlights": -20, "shadows": 30, "rotate": 3.0,
             "crop": {"top": 0.07, "bottom": 0.93, "left": 0.11},
             "vignette": -15,
@@ -69,6 +73,37 @@ fn preview_and_comparison_resize_the_finished_export() {
     };
     run("render", &full, None);
     let full_image = read_png(&full);
+    // The recipe must exercise suppression rather than merely accepting it.
+    let output = Command::new(env!("CARGO_BIN_EXE_rawsmith"))
+        .arg("render")
+        .arg(&raw)
+        .arg("--recipe")
+        .arg(&recipe)
+        .args(["--set", "defringe=0", "-o"])
+        .arg(&small)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_ne!(full_image.data, read_png(&small).data, "suppression must change this scene");
+    // Region extraction retains the full frame's filter support, including
+    // the opt-in fringe and high-strength low-frequency denoise stages.
+    let output = Command::new(env!("CARGO_BIN_EXE_rawsmith"))
+        .arg("render")
+        .arg(&raw)
+        .arg("--recipe")
+        .arg(&recipe)
+        .args(["--region", "0.25,0.25,0.75,0.75", "-o"])
+        .arg(&compare)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let expected = full_image.crop(
+        full_image.width / 4,
+        full_image.height / 4,
+        (full_image.width / 2).max(1),
+        (full_image.height / 2).max(1),
+    );
+    assert_eq!(read_png(&compare).data, expected.data);
     for size in [1, 83, 161, 240, 1000] {
         run("render", &small, Some(size));
         let small_image = read_png(&small);

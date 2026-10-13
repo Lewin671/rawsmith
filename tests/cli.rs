@@ -390,10 +390,35 @@ fn mistakes_produce_json_errors_and_change_nothing() {
 fn schema_lists_every_parameter() {
     let v = ok(&["schema"]);
     let paths: Vec<&str> = v["parameters"].as_array().unwrap().iter().map(|p| p["path"].as_str().unwrap()).collect();
-    for expected in ["exposure", "temperature", "hsl.aqua.luminance", "grade.balance", "crop.right"] {
+    for expected in [
+        "exposure",
+        "temperature",
+        "hsl.aqua.luminance",
+        "grade.balance",
+        "crop.right",
+        "defringe",
+        "denoise",
+        "sharpen",
+    ] {
         assert!(paths.contains(&expected), "{expected} missing");
     }
+    let unique: std::collections::HashSet<_> = paths.iter().collect();
+    assert_eq!(paths.len(), unique.len(), "schema paths must be unique");
     assert!(v["parameters"].as_array().unwrap().iter().all(|p| p["description"].as_str().unwrap().len() > 15));
+}
+
+#[test]
+fn auto_keeps_saved_defringe_and_allows_an_explicit_override() {
+    let f = Fixture::new("auto-defringe");
+    ok(&["edit", s(&f.raw), "--set", "defringe=65"]);
+    let report = ok(&["auto", s(&f.raw)]);
+    assert_eq!(report["recipe"]["defringe"], 65.0);
+    let saved: Value = serde_json::from_slice(&std::fs::read(f.recipe()).unwrap()).unwrap();
+    assert_eq!(saved["defringe"], 65.0);
+    let report = ok(&["auto", s(&f.raw), "--set", "defringe=0"]);
+    assert!(report["recipe"].get("defringe").is_none());
+    let saved: Value = serde_json::from_slice(&std::fs::read(f.recipe()).unwrap()).unwrap();
+    assert!(saved.get("defringe").is_none());
 }
 
 #[test]

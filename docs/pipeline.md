@@ -32,9 +32,27 @@ Full-resolution demosaicing is edge-directed: green is interpolated along
 the direction of least change with a Laplacian correction from the
 co-located colour (Hamilton–Adams, with soft direction weights), then red
 and blue from interpolated colour differences. Previews and exports use the
-same native-resolution demosaic. Automatic candidate analysis alone uses an
-approximate reduced scene: each 2×2 Bayer tile becomes one pixel. This
-analysis image is not an output preview.
+same native-resolution demosaic. At thin high-contrast structures, a 7×7
+binomial low-pass of the measured CFA planes checks for neutral colour
+support (channel differences below 2% of the local level). A moderate cast
+is also supported when its R/G and B/G ratios agree within 0.025 in all
+eight neighbouring CFA tiles; a coloured line changes those ratios. Only
+with this support, the measured red/blue photosite and supported channel
+ratio constrain green before false colour propagates through the
+differences. This retains the supported tint rather than desaturating it.
+Measured photosites and clipped green remain available to reconstruction.
+This protection is always on, uses the existing green buffer and has no
+recipe parameter.
+
+Automatic candidate analysis alone uses an approximate reduced scene:
+each 2×2 Bayer tile becomes one pixel. This analysis image is not an output
+preview. Strong green variation within a tile can also produce false
+colour from different channel sample positions. Neutral tiles use their
+four-photosite mean exposure and supported colour ratios; coloured support
+in neighbouring CFA tiles protects the wings of genuine coloured detail.
+Clipped tiles are excluded. This path adds no frame-sized buffer. Fine
+colour near the Bayer sampling limit remains ambiguous; this is a narrow
+neutral-structure correction, not a general removal of all false colour.
 
 ## 3. Highlight reconstruction — `demosaic.rs`
 
@@ -82,8 +100,13 @@ render reports identify its scope explicitly.
 
 Sony cameras store per-shot radial tables for distortion, lateral chromatic
 aberration and vignetting. rawsmith applies them in a single cubic
-resampling pass (each colour channel at its own radius) and scales the
-result to fill the frame exactly, matching the camera's own JPEG geometry.
+resampling pass (each colour channel at its own radius). Distortion and CA
+are interpolated separately at the radius after fill zoom. Positive Sony
+CA coefficients sample farther out in the source; red and blue use
+`1 + coefficient / 2^21`. The zoom fills the frame using the green-channel
+geometry. Correction precedes orientation, crop and output resizing in both
+full- and half-resolution paths. It corrects lateral channel displacement,
+not longitudinal CA, blooming or demosaic false colour.
 
 ## 5. Colour — `color.rs`
 
@@ -92,7 +115,25 @@ Rec.2020, with a per-camera matrix. The matrix is sensor characterisation
 data; cameras without one are rejected rather than rendered with wrong
 colour.
 
-## 6. Noise reduction and geometry — `pipeline.rs`
+## 6. Defringe, noise reduction and geometry — `fringe.rs`, `pipeline.rs`
+
+Additional `defringe` (0–100, default 0) reduces thin purple/blue chroma
+outliers after colour conversion, before noise reduction, crop and resize.
+It requires strong luminance contrast and lower chroma support on both sides
+within a square radius of three native-resolution pixels. The reduced
+automatic analysis scene uses two half-resolution pixels. Supported purple
+surfaces, including their corners, are protected. It changes chroma while
+preserving linear luminance, so it cannot reconstruct missing edge shape or
+highlight detail. The automatic demosaic protection above runs even at `defringe=0`.
+This control adds stronger post-processing for residual fringes; it does
+not disable the demosaic fix. Additional suppression is off by default
+because genuinely purple detail only a few sensor pixels wide can be affected.
+Previews resize the filtered native-resolution result; inspect a full-resolution
+region before keeping the setting, since resizing can hide residual fringes
+and damage to fine colour. Broad purple casts and wide out-of-focus halos
+are outside its scope. The filter uses 64-row stripes with original halos rather than
+an immutable full frame. At width 7008 and radius 3, the two reusable
+buffers hold at most 6.14 MB (5.85 MiB), independent of frame height.
 
 Chroma noise is smoothed in a square-root encoding where sensor noise is
 roughly uniform. A native-resolution guided filter follows luminance edges
@@ -114,6 +155,8 @@ the reduced automatic analysis path remains an approximation.
 ## 7. Tone — `tone.rs`
 
 - `exposure` scales scene light.
+- `gradients` apply graduated exposure and saturation adjustments in the
+  upright, cropped frame; `vignette` then brightens or darkens its corners.
 - `dehaze` removes airlight with the dark channel prior.
 - `highlights`, `shadows` and `clarity` work on a base/detail split of log
   luminance. The base layer is an edge-aware (guided) smoothing computed at
@@ -140,12 +183,15 @@ independently.
 Colours outside sRGB are brought inside by reducing chroma at constant
 lightness and hue. The result is encoded as sRGB, sharpened on encoded
 luminance with an unsharp mask limited to the local range (edges steepen,
-they do not halo), clamped, then dithered to 8 bits for JPEG or written as
-16-bit PNG. Output files carry no EXIF, GPS or serial numbers.
+they do not halo), then clamped.
 
-Only after tone, colour, gamut mapping, encoded-luminance sharpening and
-clamping is the finished sRGB image area-averaged to `--size`. This gives the
-same noise, sharpness and tone as resizing a full render with the same area
+Only after these native-resolution stages is the finished sRGB image
+area-averaged to `--size`. Alternatively, `--region` extracts native-resolution
+detail from the finished frame without changing filter support; the CLI
+rejects combining it with `--size`. Output pixels are finally dithered
+to 8 bits for JPEG or written as 16-bit PNG. Output files carry no EXIF,
+GPS or serial numbers. The resize gives the same noise, sharpness and tone
+as resizing a full render with the same area
 filter, rather than changing spatial radii or processing averaged linear
 pixels. Previews therefore do full-resolution work and use full-resolution
 working memory. `compare` uses this path for developed panels too.
@@ -177,6 +223,8 @@ sunset sky) without washing out midtones or adding clipping; shadows,
 highlights, contrast, black point and vibrance follow from the measured
 tone distribution. Every decision is reported in words and saved as
 ordinary recipe values.
+An existing recipe's white balance, geometry, lens corrections, sharpening
+and additional defringe strength are retained; denoise is chosen from ISO.
 
 ## Clipping in render reports — `stats.rs`
 
