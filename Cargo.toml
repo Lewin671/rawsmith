@@ -1,6 +1,6 @@
 [package]
 name = "rawsmith"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "AI-friendly RAW developing CLI: decode, develop and grade photos from a reproducible parameter file"
 license = "MIT OR Apache-2.0"

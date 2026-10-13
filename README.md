@@ -85,13 +85,18 @@ by passing options to `sh -s --`:
 
 ```sh
 curl -fsSL https://github.com/Lewin671/rawsmith/releases/latest/download/install.sh | sh -s -- --skills codex
-# Other options: --skills claude | --skills none | --version 0.1.0 | --bin-dir "$HOME/bin"
+# Other options: --skills claude | --skills none | --version 0.1.1 | --bin-dir "$HOME/bin"
 ```
 
 Re-running updates installer-managed skills. Locally customized skills
 are preserved; `--force` saves a backup before replacing them. See
 [release downloads](https://github.com/Lewin671/rawsmith/releases) or
 `install.sh --help` for all options.
+
+For a manual download, choose `rawsmith-<platform>-<architecture>.tar.gz`:
+`linux-x86_64`, `linux-arm64`, `macos-x86_64` (Intel), or `macos-arm64`
+(Apple Silicon). Linux binaries use static musl. The installer also
+supports `--version 0.1.0`, whose original downloads used Rust target names.
 
 To build from source instead:
 
@@ -132,7 +137,7 @@ differs from the defaults:
   "shadows": 35.0,
   "vibrance": 20.0,
   "hsl": { "blue": { "saturation": -15.0 } },
-  "rawsmith": "0.1.0"
+  "rawsmith": "0.1.1"
 }
 ```
 

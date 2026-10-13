@@ -10,8 +10,8 @@ out the resolved commit, not a moving branch.
 
    ```sh
    git push origin main
-   git tag -a v0.1.0 -m 'rawsmith v0.1.0'
-   git push origin v0.1.0
+   git tag -a v0.1.1 -m 'rawsmith v0.1.1'
+   git push origin v0.1.1
    ```
 
    Use the new version for later releases. Never move a published tag.
@@ -20,12 +20,12 @@ out the resolved commit, not a moving branch.
    Clippy, Rust and Python tests and the synthetic quality gate, then
    builds and tests each target on a native GitHub runner:
 
-   | Platform | Target |
-   |---|---|
-   | Linux x86_64 | `x86_64-unknown-linux-musl` |
-   | Linux ARM64 | `aarch64-unknown-linux-musl` |
-   | macOS Intel | `x86_64-apple-darwin` |
-   | macOS Apple Silicon | `aarch64-apple-darwin` |
+   | Platform | Download | Rust target |
+   |---|---|---|
+   | Linux x86_64 | `rawsmith-linux-x86_64.tar.gz` | `x86_64-unknown-linux-musl` |
+   | Linux ARM64 | `rawsmith-linux-arm64.tar.gz` | `aarch64-unknown-linux-musl` |
+   | macOS Intel | `rawsmith-macos-x86_64.tar.gz` | `x86_64-apple-darwin` |
+   | macOS Apple Silicon | `rawsmith-macos-arm64.tar.gz` | `aarch64-apple-darwin` |
 
    Linux binaries use static musl; macOS binaries target macOS 11 or
    later. Hosted jobs run correctness checks, not performance measurements.
@@ -37,6 +37,10 @@ out the resolved commit, not a moving branch.
 Each archive contains `bin/rawsmith`, `skill/rawsmith/SKILL.md`, VERSION,
 the two code licences and README.md. Photos, private renders, image
 metadata and repository development files are not packaged.
+
+Public download names describe the platform and CPU architecture; Rust
+target names remain internal build settings. The installer uses the old
+target-based names only for the already-published v0.1.0 release.
 
 After publication, test the README's curl command in a disposable install
 directory and run the installed binary's `--version` and `schema`. Check

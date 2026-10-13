@@ -8,7 +8,10 @@ target=$1
 tag=$2
 output=$3
 case "$target" in
-    x86_64-unknown-linux-musl|aarch64-unknown-linux-musl|x86_64-apple-darwin|aarch64-apple-darwin) ;;
+    x86_64-unknown-linux-musl) platform=linux-x86_64 ;;
+    aarch64-unknown-linux-musl) platform=linux-arm64 ;;
+    x86_64-apple-darwin) platform=macos-x86_64 ;;
+    aarch64-apple-darwin) platform=macos-arm64 ;;
     *) die "unsupported target: $target" ;;
 esac
 [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || die 'tag must be vMAJOR.MINOR.PATCH'
@@ -34,7 +37,7 @@ binary="$root/target/$target/release/rawsmith"
 
 mkdir -p "$output"
 output=$(cd "$output" && pwd)
-archive="$output/rawsmith-$target.tar.gz"
+archive="$output/rawsmith-$platform.tar.gz"
 [[ ! -e "$archive" ]] || die "archive already exists: $archive"
 stage=$(mktemp -d "$output/.rawsmith-package.XXXXXX")
 trap 'rm -rf "$stage"' EXIT

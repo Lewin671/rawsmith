@@ -14,6 +14,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = "x86_64-unknown-linux-musl"
+ARCHIVE = "rawsmith-linux-x86_64.tar.gz"
 
 
 class ReleasePackageTests(unittest.TestCase):
@@ -57,7 +58,7 @@ class ReleasePackageTests(unittest.TestCase):
     def test_archive_contains_only_distribution_files(self):
         result = self.package()
         self.assertEqual(result.returncode, 0, result.stderr)
-        archive = self.output / f"rawsmith-{TARGET}.tar.gz"
+        archive = self.output / ARCHIVE
         with tarfile.open(archive) as package:
             files = {entry.name for entry in package.getmembers() if entry.isfile()}
             self.assertEqual(files, {
@@ -70,10 +71,28 @@ class ReleasePackageTests(unittest.TestCase):
 
     def test_existing_archive_is_preserved(self):
         self.output.mkdir()
-        archive = self.output / f"rawsmith-{TARGET}.tar.gz"
+        archive = self.output / ARCHIVE
         archive.write_bytes(b"keep existing archive")
         self.assertNotEqual(self.package().returncode, 0)
         self.assertEqual(archive.read_bytes(), b"keep existing archive")
+
+    def test_all_targets_package_under_the_public_platform_name(self):
+        for target, name in (
+            (TARGET, "linux-x86_64"),
+            ("aarch64-unknown-linux-musl", "linux-arm64"),
+            ("x86_64-apple-darwin", "macos-x86_64"),
+            ("aarch64-apple-darwin", "macos-arm64"),
+        ):
+            with self.subTest(target=target):
+                binary = self.root / "target" / target / "release/rawsmith"
+                if binary != self.binary:
+                    binary.parent.mkdir(parents=True)
+                    shutil.copyfile(self.binary, binary)
+                    binary.chmod(0o755)
+                result = self.package(target=target)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue((self.output / f"rawsmith-{name}.tar.gz").is_file())
+        self.assertEqual(len(list(self.output.iterdir())), 4)
 
     def test_rejects_unsupported_target_and_nonstable_tags(self):
         for tag in ("main", "v01.2.3", "v1.2.3-rc.1", "v1.2.3\nextra", "v1.2.4"):

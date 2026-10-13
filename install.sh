@@ -134,10 +134,10 @@ main() {
     for tool in curl tar awk mktemp; do command -v "$tool" >/dev/null 2>&1 || fail "$tool is required"; done
     command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || fail "sha256sum or shasum is required"
     case "$(uname -s):$(uname -m)" in
-        Darwin:arm64|Darwin:aarch64) target=aarch64-apple-darwin ;;
-        Darwin:x86_64|Darwin:amd64) target=x86_64-apple-darwin ;;
-        Linux:arm64|Linux:aarch64) target=aarch64-unknown-linux-musl ;;
-        Linux:x86_64|Linux:amd64) target=x86_64-unknown-linux-musl ;;
+        Darwin:arm64|Darwin:aarch64) platform=macos-arm64; legacy_target=aarch64-apple-darwin ;;
+        Darwin:x86_64|Darwin:amd64) platform=macos-x86_64; legacy_target=x86_64-apple-darwin ;;
+        Linux:arm64|Linux:aarch64) platform=linux-arm64; legacy_target=aarch64-unknown-linux-musl ;;
+        Linux:x86_64|Linux:amd64) platform=linux-x86_64; legacy_target=x86_64-unknown-linux-musl ;;
         *) fail "unsupported system; use a macOS or Linux x86_64/ARM64 release, or build from source" ;;
     esac
     repository=https://github.com/Lewin671/rawsmith
@@ -155,10 +155,12 @@ main() {
     printf '%s\n' "$tag" | LC_ALL=C grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
         || fail "--version must be a stable version such as 0.1.0 or v0.1.0"
     version=${tag#v}
-    archive=rawsmith-$target.tar.gz
+    archive=rawsmith-$platform.tar.gz
+    # The first published release used Rust target triples as asset names.
+    if [ "$version" = 0.1.0 ]; then archive=rawsmith-$legacy_target.tar.gz; fi
     download_dir=$(mktemp -d "${TMPDIR:-/tmp}/rawsmith-install.XXXXXX")
     base=$repository/releases/download/$tag
-    printf 'Downloading rawsmith %s for %s\n' "$version" "$target"
+    printf 'Downloading rawsmith %s for %s\n' "$version" "$platform"
     download "$base/$archive" "$download_dir/$archive"
     download "$base/SHA256SUMS" "$download_dir/SHA256SUMS"
     expected=$(awk -v archive="$archive" '$2 == archive {print $1}' "$download_dir/SHA256SUMS")

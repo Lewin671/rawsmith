@@ -23,6 +23,12 @@ TARGETS = {
     ("Darwin", "x86_64"): "x86_64-apple-darwin",
     ("Darwin", "arm64"): "aarch64-apple-darwin",
 }
+PLATFORMS = {
+    ("Linux", "x86_64"): "linux-x86_64",
+    ("Linux", "aarch64"): "linux-arm64",
+    ("Darwin", "x86_64"): "macos-x86_64",
+    ("Darwin", "arm64"): "macos-arm64",
+}
 
 
 class InstallerTests(unittest.TestCase):
@@ -101,6 +107,7 @@ else:
 """,
         )
         self.release("0.1.0")
+        self.release("0.1.1")
         self.release("0.2.0")
 
     def write_tool(self, name, source):
@@ -132,8 +139,9 @@ else:
             "README.md": b"Synthetic release readme\n",
         }
         files.pop(missing, None)
-        for target in TARGETS.values():
-            archive = folder / f"rawsmith-{target}.tar.gz"
+        names = TARGETS.values() if version == "0.1.0" else PLATFORMS.values()
+        for name in names:
+            archive = folder / f"rawsmith-{name}.tar.gz"
             with tarfile.open(archive, "w:gz") as bundle:
                 for name, contents in files.items():
                     member = tarfile.TarInfo(name)
@@ -230,6 +238,27 @@ else:
         self.assertFalse(self.claude.exists())
         self.assertFalse(self.codex.exists())
         self.assertFalse(any(url.endswith("/releases/latest") for url in self.requests()))
+
+    def test_new_releases_use_friendly_names_on_every_platform(self):
+        for (system, arch), platform in PLATFORMS.items():
+            with self.subTest(system=system, arch=arch):
+                self.env.update(FAKE_OS=system, FAKE_ARCH=arch)
+                result = self.install("--version", "0.1.1", "--skills", "none")
+                self.assert_binary("0.1.1")
+                self.assertIn(f"for {platform}", result.stdout)
+                self.assertTrue(any(
+                    url.endswith(f"/v0.1.1/rawsmith-{platform}.tar.gz")
+                    for url in self.requests()
+                ))
+        self.assertFalse(any("unknown" in url or "apple-darwin" in url for url in self.requests()))
+
+    def test_latest_installs_the_renamed_release_and_both_skills(self):
+        self.env["FAKE_LATEST"] = "v0.1.1"
+        self.install()
+        self.assert_binary("0.1.1")
+        self.assert_skill(self.claude, "0.1.1")
+        self.assert_skill(self.codex, "0.1.1")
+        self.assertTrue(any(url.endswith("/v0.1.1/rawsmith-linux-x86_64.tar.gz") for url in self.requests()))
 
     def test_unprefixed_version_and_custom_directories_with_spaces(self):
         binary_dir = self.base / "custom bin directory"

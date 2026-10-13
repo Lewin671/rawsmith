@@ -87,6 +87,7 @@ jobs:
       - run: cargo run --locked --release --example quality -- --check
 
   build:
+    name: Build ${{ matrix.platform }}
     needs: [resolve, check]
     strategy:
       fail-fast: false
@@ -94,12 +95,16 @@ jobs:
         include:
           - runner: ubuntu-22.04
             target: x86_64-unknown-linux-musl
+            platform: linux-x86_64
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
+            platform: linux-arm64
           - runner: macos-15-intel
             target: x86_64-apple-darwin
+            platform: macos-x86_64
           - runner: macos-14
             target: aarch64-apple-darwin
+            platform: macos-arm64
     runs-on: ${{ matrix.runner }}
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: '-C link-self-contained=yes'
@@ -134,8 +139,8 @@ jobs:
         run: bash scripts/package-release.sh "$RELEASE_TARGET" "$RELEASE_TAG" dist
       - uses: actions/upload-artifact@v4
         with:
-          name: package-${{ matrix.target }}
-          path: dist/rawsmith-${{ matrix.target }}.tar.gz
+          name: package-${{ matrix.platform }}
+          path: dist/rawsmith-${{ matrix.platform }}.tar.gz
           if-no-files-found: error
 
   publish:
@@ -166,9 +171,8 @@ jobs:
           python3 - <<'PY'
           import hashlib, pathlib
           dist = pathlib.Path('dist')
-          names = {f'rawsmith-{target}.tar.gz' for target in (
-              'x86_64-unknown-linux-musl', 'aarch64-unknown-linux-musl',
-              'x86_64-apple-darwin', 'aarch64-apple-darwin')}
+          names = {f'rawsmith-{platform}.tar.gz' for platform in (
+              'linux-x86_64', 'linux-arm64', 'macos-x86_64', 'macos-arm64')}
           names.add('install.sh')
           if {p.name for p in dist.iterdir()} != names:
               raise SystemExit('Missing or unexpected release attachments')
