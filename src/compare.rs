@@ -98,7 +98,7 @@ fn camera(jpeg: &[u8], raw_file: &[u8]) -> Result<(Image, Value)> {
     let bytes = decoder.decode().map_err(|e| Error::Format(format!("cannot decode embedded JPEG: {e}")))?;
     let info = decoder.info().ok_or_else(|| Error::Format("embedded JPEG has no image information".into()))?;
     let data = match info.pixel_format {
-        PixelFormat::RGB24 => bytes.chunks_exact(3).map(|p| [p[0], p[1], p[2]].map(|v| v as f32 / 255.0)).collect(),
+        PixelFormat::RGB24 => bytes.as_chunks::<3>().0.iter().map(|p| p.map(|v| v as f32 / 255.0)).collect(),
         PixelFormat::L8 => bytes.iter().map(|&v| [v as f32 / 255.0; 3]).collect(),
         _ => return Err(Error::Unsupported("embedded JPEG must be 8-bit RGB or greyscale".into())),
     };

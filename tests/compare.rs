@@ -91,7 +91,7 @@ fn decoded_jpeg(jpeg: &[u8]) -> Image {
     Image {
         width: info.width as usize,
         height: info.height as usize,
-        data: bytes.chunks_exact(3).map(|p| [p[0], p[1], p[2]].map(|v| v as f32 / 255.0)).collect(),
+        data: bytes.as_chunks::<3>().0.iter().map(|p| p.map(|v| v as f32 / 255.0)).collect(),
     }
 }
 
@@ -106,7 +106,9 @@ fn png(path: &Path) -> (Image, bool) {
         width: info.width as usize,
         height: info.height as usize,
         data: bytes[..info.buffer_size()]
-            .chunks_exact(6)
+            .as_chunks::<6>()
+            .0
+            .iter()
             .map(|p| [0, 2, 4].map(|i| u16::from_be_bytes([p[i], p[i + 1]]) as f32 / 65535.0))
             .collect(),
     };

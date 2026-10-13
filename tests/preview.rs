@@ -16,7 +16,9 @@ fn read_png(path: &Path) -> Image {
         width: info.width as usize,
         height: info.height as usize,
         data: buffer[..info.buffer_size()]
-            .chunks_exact(6)
+            .as_chunks::<6>()
+            .0
+            .iter()
             .map(|p| [0, 2, 4].map(|i| u16::from_be_bytes([p[i], p[i + 1]]) as f32 / 65535.0))
             .collect(),
     }

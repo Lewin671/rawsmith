@@ -525,7 +525,9 @@ mod tests {
         let read_u32 = |bytes: &[u8]| u32::from_be_bytes(bytes.try_into().unwrap()) as usize;
         let tag_count = read_u32(&SRGB_PROFILE[128..132]);
         let description_entry = SRGB_PROFILE[132..132 + tag_count * 12]
-            .chunks_exact(12)
+            .as_chunks::<12>()
+            .0
+            .iter()
             .find(|entry| &entry[..4] == b"desc")
             .expect("ICC profile must have a description tag");
         let offset = read_u32(&description_entry[4..8]);
