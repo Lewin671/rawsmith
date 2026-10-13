@@ -60,7 +60,11 @@ keep a version.
    Camera settings, white balance, and how the sensor was exposed
    (`saturated_pct` is data gone for good; no edit brings it back).
 
-2. **See the starting points** —
+2. **See the starting points** — if the photo already has a recipe
+   (`photo.ARW.rawsmith.json`, or one the user points to), it holds an
+   earlier edit: render it and continue from there, or give a fresh start
+   its own `--recipe` file. `auto` replaces the tone, colour and local
+   settings of the recipe it writes to.
    `rawsmith auto photo.ARW -o start.jpg --size 1400 --brief` saves a measured
    starting recipe and explains each choice in `decisions`;
    `rawsmith compare photo.ARW -o cmp.jpg --size 1400` shows the camera's JPEG (left)
@@ -98,6 +102,15 @@ keep a version.
    `--size` bounds each panel's longest edge (default 1400), not the whole row.
    Keep a change only if the picture is better. Apply the test in
    "What finished means" here.
+   Read `losses_against_camera` in the report for your panel: it lists
+   what the edit gave up against the camera's rendering — a lifted black
+   point, flatter tones, new pure white or black, a colour gone weak and
+   pale. An edit that opens shadows and brightens a subject usually pays
+   for it there. For each line, either fix it (`blacks`, `contrast` or a
+   `curve` for a black anchor; a gradient or luma mask to hold the sky;
+   less `hsl` desaturation) or be able to say why this picture wants it.
+   An empty list is not a verdict; it only means these particular losses
+   were not measured.
 
 6. **Check at 100%** —
    `rawsmith render photo.ARW --region 0.4,0.4,0.6,0.6 -o detail.jpg --brief`
@@ -211,10 +224,20 @@ hue ranges are not available. Change framing first, then reposition masks.
 Strong lifting still exposes noise; darkening sensor-lost sky still makes grey.
 For a blurred foreground corner, start with a radial alone: a brightness
 threshold can reshape the soft edge.
+A radial lift over a smooth surface — a hazy hillside, sky, water, a plain
+wall — shows as a pale glow in the shape of the ellipse. Look for that shape
+in the preview. Keep such a lift small (about 0.2 stops), or restrict it to
+the subject's own brightness with `luma` so the surroundings stay put.
 
 **White balance** starts as shot. To nudge it, set a number first (the
 as-shot values are in rendered reports' `white_balance`);
 `--set temperature=null` returns to as shot.
+
+**Speed.** Renders of one photo reuse its developed frame, so changing
+tone, colour, crop, masks or the output size is quick. Changing
+`temperature`, `tint`, `denoise`, `defringe` or `lens_corrections`
+develops the photo again and takes a few seconds longer: settle white
+balance and noise early, then iterate on everything else.
 
 **Noise and detail.** With `denoise` unset the amount is measured from
 the file (`noise_reduction.strength` in the report); set a number to
@@ -253,6 +276,9 @@ full-resolution export's report as well.
 - Crop early. An empty sky or a distracting edge weakens everything else,
   and positions for gradients, masks and regions depend on the crop.
 - Light before colour: decide what is bright and what recedes first.
+- Lifting is not free: every stop of `shadows` and `exposure` takes depth
+  away. After opening a picture up, give it back a real dark (`blacks`,
+  `contrast`, an S-`curve`) so it does not turn grey and flat.
 - Subjects in shade want lifting; surroundings that compete want
   darkening. Use a radial for the subject or a corner, and luma to protect dark occluders.
 - A scene with one dominant colour (autumn leaves, a blue hour, a sunset)

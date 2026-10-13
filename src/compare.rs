@@ -188,6 +188,8 @@ pub fn row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result
     let camera = camera.map(|(image, report)| (image.resized(panel_width(&image), height), report));
     let mut images = Vec::new();
     let mut reports = Vec::new();
+    let mut looks = Vec::new();
+    let spaces = color::Spaces::new();
     let mut width = SEPARATOR.checked_mul(panels.len() - 1);
     for panel in panels {
         let (image, mut report, params) = if panel.kind == "camera" {
@@ -208,8 +210,23 @@ pub fn row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result
         report["width"] = json!(image.width);
         report["height"] = json!(height);
         width = width.and_then(|total| total.checked_add(image.width));
+        looks.push(crate::stats::look(&image, &spaces));
         images.push(image);
         reports.push(report);
+    }
+    // What each version gave up against the camera's rendering. Only the
+    // panel the camera was framed for, and only verified camera colour, can
+    // be compared pixel area for pixel area.
+    let camera_look = panels.iter().position(|p| p.kind == "camera").filter(|_| srgb);
+    let reports_framing: Vec<Value> = reports.iter().map(|report| report["framing"].clone()).collect();
+    for (index, report) in reports.iter_mut().enumerate() {
+        report["look"] = json!(looks[index]);
+        if panels[index].kind == "camera" {
+            continue;
+        }
+        if let Some(camera) = camera_look.filter(|&c| reports_framing[c] == reports_framing[index]) {
+            report["losses_against_camera"] = json!(crate::stats::losses(&looks[camera], &looks[index]));
+        }
     }
     let width = width.ok_or_else(|| Error::Params("comparison row is too wide".into()))?;
     let pixels = width.checked_mul(height).ok_or_else(|| Error::Params("comparison row is too large".into()))?;

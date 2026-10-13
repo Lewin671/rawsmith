@@ -159,6 +159,143 @@ pub fn image_stats(image: &Image, spaces: &Spaces) -> ImageStats {
     }
 }
 
+/// How one colour family is rendered: its share of the colourful pixels and
+/// their mean chroma and lightness (Oklab x 100).
+#[derive(Debug, Clone, Serialize)]
+pub struct BandLook {
+    pub share_pct: f64,
+    pub chroma: f64,
+    pub lightness: f64,
+}
+
+/// A compact description of a rendering for comparing two versions of the
+/// same framing: the tonal anchors, clipping and the colours that carry it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Look {
+    pub p1: f64,
+    pub p5: f64,
+    pub p50: f64,
+    pub p95: f64,
+    pub p99: f64,
+    pub spread: f64,
+    pub chroma_mean: f64,
+    pub clipped_highlights_pct: f64,
+    pub crushed_shadows_pct: f64,
+    /// Colour families holding at least 5% of the colourful pixels.
+    pub colours: std::collections::BTreeMap<String, BandLook>,
+}
+
+pub fn look(image: &Image, spaces: &Spaces) -> Look {
+    let stats = image_stats(image, spaces);
+    let step = ((image.width * image.height) as f32 / 400_000.0).sqrt().ceil().max(1.0) as usize;
+    // Weight, chroma and lightness sums per band, on the same grid as the tones.
+    let mut bands = [[0.0f64; 3]; 8];
+    for y in (0..image.height).step_by(step) {
+        for x in (0..image.width).step_by(step) {
+            let lab = spaces.to_oklab(apply(&spaces.srgb_to_work, image.at(x, y).map(srgb_decode)));
+            let c = (lab[1] * lab[1] + lab[2] * lab[2]).sqrt();
+            if c > 0.04 {
+                let (i, j, t) = band_weights(lab[2].atan2(lab[1]).to_degrees());
+                for (band, weight) in [(i, 1.0 - t), (j, t)] {
+                    let weight = weight as f64;
+                    bands[band][0] += weight;
+                    bands[band][1] += weight * c as f64 * 100.0;
+                    bands[band][2] += weight * lab[0] as f64 * 100.0;
+                }
+            }
+        }
+    }
+    let total: f64 = bands.iter().map(|b| b[0]).sum::<f64>().max(1.0);
+    let tenth = |v: f64| (v * 10.0).round() / 10.0;
+    Look {
+        p1: stats.tones.p1,
+        p5: stats.tones.p5,
+        p50: stats.tones.p50,
+        p95: stats.tones.p95,
+        p99: stats.tones.p99,
+        spread: stats.tones.spread,
+        chroma_mean: stats.chroma_mean,
+        clipped_highlights_pct: stats.clipped_highlights_pct,
+        crushed_shadows_pct: stats.crushed_shadows_pct,
+        colours: HSL_BANDS
+            .iter()
+            .zip(bands)
+            .filter(|(_, [weight, ..])| *weight / total >= 0.05)
+            .map(|(name, [weight, chroma, lightness])| {
+                (
+                    name.to_string(),
+                    BandLook {
+                        share_pct: tenth(weight / total * 100.0),
+                        chroma: tenth(chroma / weight),
+                        lightness: tenth(lightness / weight),
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
+/// Where an edit gave something up against a reference rendering of the same
+/// framing. These are the losses an editor tends not to see while pursuing
+/// an idea: a lifted black point, flattened contrast, paled or thinned colour
+/// and new pure white. Each is an observation to check by eye, not a fault:
+/// fog is meant to be soft and a silhouette dark.
+pub fn losses(reference: &Look, edit: &Look) -> Vec<String> {
+    let mut notes = Vec::new();
+    if edit.p1 >= reference.p1 + 5.0 && edit.p1 >= 8.0 {
+        notes.push(format!(
+            "black point lifted: darkest tones at {:.0} against {:.0}; without a true dark the picture reads flat or hazy (blacks, contrast or a curve restore it)",
+            edit.p1, reference.p1
+        ));
+    }
+    if edit.spread < reference.spread * 0.8 && reference.spread >= 8.0 {
+        notes.push(format!(
+            "flatter: lightness spread {:.0} against {:.0}; lifted shadows and pulled highlights have closed the tonal range",
+            edit.spread, reference.spread
+        ));
+    }
+    if edit.clipped_highlights_pct >= reference.clipped_highlights_pct + 1.0 {
+        notes.push(format!(
+            "more pure white: {:.1}% against {:.1}%; a brightened sky or highlight has lost its tone",
+            edit.clipped_highlights_pct, reference.clipped_highlights_pct
+        ));
+    }
+    if edit.crushed_shadows_pct >= reference.crushed_shadows_pct + 2.0 {
+        notes.push(format!(
+            "more pure black: {:.1}% against {:.1}%",
+            edit.crushed_shadows_pct, reference.crushed_shadows_pct
+        ));
+    }
+    for (name, was) in &reference.colours {
+        if was.share_pct < 8.0 || was.chroma < 6.0 {
+            continue;
+        }
+        let Some(now) = edit.colours.get(name) else {
+            notes.push(format!(
+                "{name} has nearly gone: it held {:.0}% of the colour at chroma {:.0}",
+                was.share_pct, was.chroma
+            ));
+            continue;
+        };
+        let paler = now.lightness >= was.lightness + 6.0;
+        if now.chroma < was.chroma * 0.8 {
+            notes.push(format!(
+                "{name} is weaker{}: chroma {:.0} against {:.0}{}",
+                if paler { " and paler" } else { "" },
+                now.chroma,
+                was.chroma,
+                if paler { format!(", lightness {:.0} against {:.0}; a sky or water of this colour looks washed out", now.lightness, was.lightness) } else { String::new() }
+            ));
+        } else if now.chroma > was.chroma * 1.5 && now.chroma >= 20.0 {
+            notes.push(format!(
+                "{name} is much stronger: chroma {:.0} against {:.0}; check that it is still believable",
+                now.chroma, was.chroma
+            ));
+        }
+    }
+    notes
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RawStats {
     /// Percent of each colour's photosites that saturated on the sensor
