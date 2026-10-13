@@ -161,6 +161,11 @@ def cmd_render(args):
     exe = args.rawsmith or os.path.join(REPO, "target", "release", "rawsmith")
     if not os.path.exists(exe):
         die(f"{exe} not found; run `cargo build --release` first")
+    # render clears and rewrites the work directory: no input may live in it.
+    for label, path in (("--raws", args.raws), ("--recipes", args.recipes), ("--rawsmith", exe)):
+        if path and os.path.commonpath([os.path.realpath(path), work]) == work:
+            die(f"{label} is inside the benchmark work directory, whose contents render replaces; "
+                "keep inputs elsewhere (nothing was changed)")
     names = sorted(f for f in os.listdir(args.raws) if f.lower().endswith(".arw"))
     if not names:
         die(f"no .ARW files in {args.raws}")

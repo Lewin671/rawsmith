@@ -24,10 +24,11 @@ const MAGIC: &[u8; 8] = b"RSSCENE1";
 const HEADER: usize = MAGIC.len() + 16 + 16;
 /// Development of smaller frames is quicker than reading them back is worth.
 const MIN_PIXELS: usize = 1_000_000;
-/// Default bound on stored scenes: about seven 33 MP frames.
-const DEFAULT_LIMIT_MB: u64 = 3000;
+/// Default bound on stored scenes: about fifteen 33 MP frames, so a batch
+/// edited photo by photo or pass by pass keeps every frame it returns to.
+const DEFAULT_LIMIT_MB: u64 = 6000;
 /// Scenes nobody has rendered for this long are removed on the next store.
-const MAX_AGE: Duration = Duration::from_secs(3 * 24 * 3600);
+const MAX_AGE: Duration = Duration::from_secs(24 * 3600);
 
 #[derive(Clone, Debug)]
 pub struct Config {
