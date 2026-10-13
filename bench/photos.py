@@ -28,12 +28,16 @@ import math
 import os
 import random
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 EDGE = 1400  # long edge of the images the judge sees
 REPO = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+WORK_MARKER = ".rawsmith-benchmark.json"
+WORK_FORMAT = {"format": "rawsmith-photo-benchmark", "version": 1}
 COMPARISONS = [("neutral", "camera"), ("auto", "camera"), ("auto", "system"), ("auto", "neutral"),
                ("ai", "auto"), ("ai", "camera"), ("ai", "system")]
 # Deliberately bad recipes. A trustworthy judge must prefer the unspoiled picture.
@@ -65,11 +69,38 @@ def die(message):
 
 
 def work_dir(path):
+    if os.path.islink(os.path.abspath(path)):
+        die("the work directory must not be a symbolic link")
     # Resolve symlinks first: a link that points into the repository is inside it.
     path = os.path.realpath(path)
     if os.path.commonpath([path, REPO]) == REPO:
         die("the work directory must be outside the repository, so rendered photos can never be committed")
     os.makedirs(path, exist_ok=True)
+    marker = os.path.join(path, WORK_MARKER)
+    contents = os.listdir(path)
+    if WORK_MARKER not in contents:
+        if contents:
+            die("the work directory is not an empty or marked rawsmith benchmark directory; "
+                "choose a new empty directory (existing files have been left alone)")
+        with open(marker, "x") as f:
+            json.dump(WORK_FORMAT, f)
+    else:
+        if not stat.S_ISREG(os.stat(marker, follow_symlinks=False).st_mode):
+            die("the benchmark directory marker must be a regular file")
+        try:
+            owner = load(marker)
+        except (ValueError, OSError) as error:
+            die(f"invalid benchmark directory marker: {error}")
+        if owner != WORK_FORMAT or type(owner.get("version")) is not int:
+            die("unrecognised benchmark directory marker format or version; choose a new empty directory")
+    # Even an owned directory must not redirect scratch writes or blind image
+    # reads outside it. os.walk does not follow directory links.
+    def unreadable(error):
+        die(f"cannot inspect benchmark directory: {error}")
+    for root, dirs, files in os.walk(path, onerror=unreadable):
+        for name in dirs + files:
+            if os.path.islink(os.path.join(root, name)):
+                die("the benchmark work directory must not contain symbolic links")
     return path
 
 
@@ -82,9 +113,16 @@ def load(path, default=None):
 
 
 def save(path, value):
-    with open(path + ".tmp", "w") as f:
-        json.dump(value, f, indent=1)
-    os.replace(path + ".tmp", path)
+    # A fresh staging file also protects an explicitly chosen report path:
+    # an existing .tmp name must never redirect writes to someone else's file.
+    fd, staging = tempfile.mkstemp(prefix=".rawsmith-", dir=os.path.dirname(os.path.abspath(path)))
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(value, f, indent=1)
+        os.replace(staging, path)
+    finally:
+        if os.path.exists(staging):
+            os.remove(staging)
 
 
 def forget_judgements(work):

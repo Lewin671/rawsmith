@@ -173,3 +173,17 @@ bench/photos.py report --work ~/rawsmith-bench
 `--judge-cmd` takes any command that reads the prompt on standard input,
 can open the two image paths named in it, and prints a JSON verdict. The
 work directory must be outside the repository.
+
+Choose a new empty directory dedicated to this benchmark. The first command
+creates `.rawsmith-benchmark.json`, which identifies the directory's format
+and version. Later commands require that valid marker and reject symbolic
+links within the directory. Re-running `render` replaces its generated
+images and clears judging tasks and verdicts; `pairs` clears old tasks and
+verdicts. Keep your source RAWs and recipes elsewhere.
+
+Work directories from older versions have no marker and are rejected without
+changing their files. Keep the old directory for reference, choose a new
+empty `--work` directory, then run `render`, `pairs` and `judge` there. Pass
+your existing AI recipes with `render --recipes DIR` if needed. Do not add a
+marker to an existing directory to bypass this check: the benchmark deletes
+and replaces its own files on subsequent runs.
