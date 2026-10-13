@@ -1,0 +1,16 @@
+{
+  "blacks": -10.0,
+  "clarity": 10.0,
+  "contrast": 5.0,
+  "crop": {
+    "bottom": 0.98,
+    "top": 0.1
+  },
+  "dehaze": 12.0,
+  "exposure": -0.8,
+  "highlights": -35.0,
+  "rawsmith": "0.1.0",
+  "shadows": 30.0,
+  "vibrance": 25.0,
+  "whites": -10.0
+}

@@ -24,11 +24,39 @@ change parameters, look at the result, and repeat until it is right.
   against the camera's own JPEG and the system RAW converter. See
   [Results](#results).
 
+## Before and after
+
+The camera's embedded JPEG is on the left; the RAW developed with rawsmith
+is on the right. These are **AI-edited results**: `auto` provided the
+starting point, then an assistant refined the recipe while checking
+previews. The edits include cropping; both sides show their complete frame.
+
+**Snowman — brighten underexposed snow and bring out the subject's texture.**
+
+![Snowman: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snowman-comparison.jpg)
+
+**Sunset — deepen the warm sky, preserve the mountain layers and tighten the framing.**
+
+![Sunset: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/sunset-comparison.jpg)
+
+**Snow mountain — soften the blue cast in shade and lift the foreground while keeping the warm summit light.**
+
+![Snow mountain: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snow-mountain-comparison.jpg)
+
+Sony A7 IV photographs, reproduced with permission. The exact recipes are
+in [docs/recipes](docs/recipes); photo permissions are described in
+[docs/images/README.md](docs/images/README.md).
+
+<details>
+<summary>One-command auto example (CC0 sample)</summary>
+
 | Camera JPEG | `rawsmith auto` |
 |---|---|
 | ![The camera's own rendering](docs/images/demo-camera.jpg) | ![rawsmith auto rendering](docs/images/demo-rawsmith.jpg) |
 
-*A CC0 sample from [raw.pixls.us](https://raw.pixls.us) (Sony A7 IV), developed with one command.*
+A CC0 sample from [raw.pixls.us](https://raw.pixls.us) (Sony A7 IV), developed with one command.
+
+</details>
 
 ## Install
 
@@ -160,5 +188,6 @@ Licensed under either of [Apache License 2.0](LICENSE-APACHE) or
 the same terms.
 
 The camera colour matrix is sensor characterisation data as published in
-Adobe's DNG Converter and reproduced by open-source raw software. The demo
-photo is a CC0 sample from [raw.pixls.us](https://raw.pixls.us).
+Adobe's DNG Converter and reproduced by open-source raw software. The
+one-command demo photo is a CC0 sample from [raw.pixls.us](https://raw.pixls.us). Other
+photograph permissions are listed in [docs/images/README.md](docs/images/README.md).

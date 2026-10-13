@@ -1,5 +1,5 @@
 /target
-# Photos and anything rendered from them never belong in this repository.
+# Source RAWs and private renders stay outside this repository.
 *.ARW
 *.arw
 *.dng
@@ -14,7 +14,7 @@
 /local/
 .DS_Store
 
-# Documentation pictures: CC0 samples only (see CONTRIBUTING.md)
+# Documentation pictures: permission required (see docs/images/README.md)
 !docs/images/*.jpg
 
 # Python bytecode

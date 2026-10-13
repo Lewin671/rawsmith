@@ -39,13 +39,16 @@ Prefer one focused improvement with a measured effect over a broad rewrite.
 3. Render a file and compare it with the camera's embedded JPEG
    (`rawsmith extract-jpeg`) for geometry, colour and brightness.
 
-## Never commit photographs
+## Photograph permissions
 
 Do not add RAW files or pictures rendered from someone's photos to the
 repository, in tests, issues or documentation, unless they are published
-under a licence that allows it (for example CC0) and you say where they
-come from. `.gitignore` blocks common image extensions as a safety net;
-`bench/photos.py` refuses to write inside the repository.
+under a licence that allows it (for example CC0), or the owner explicitly
+authorizes their inclusion in this repository. Document the source and
+permission in `docs/images/README.md`; documentation photo permissions
+are separate from the code licence. `.gitignore` blocks common image
+extensions as a safety net; `bench/photos.py` refuses to write inside the
+repository.
 
 ## Style
 
@@ -59,4 +62,5 @@ come from. `.gitignore` blocks common image extensions as a safety net;
 ## Licence
 
 By contributing you agree that your work is licensed under the project's
-dual MIT / Apache-2.0 terms.
+dual MIT / Apache-2.0 terms, except photographs with separately documented
+permissions.
