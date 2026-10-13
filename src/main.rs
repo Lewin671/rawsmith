@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
@@ -17,7 +18,7 @@ use rawsmith::{arw, compare, output, stats};
     name = "rawsmith",
     version,
     about,
-    after_help = "Errors are JSON on stderr (exit status 1, empty stdout).\nRAWs are never written; outputs are replaced, so use a new output name to keep a version.\nValidation and staging failures preserve recipes and outputs; paired saves roll back commit failures unless interrupted or rollback fails."
+    after_help = "Errors are JSON on stderr (exit status 1, empty stdout).\nRAW, recipe and output paths must be valid UTF-8; invalid paths are rejected before any file is written.\nRAWs are never written; outputs are replaced, so use a new output name to keep a version.\nValidation and staging failures preserve recipes and outputs; paired saves roll back commit failures unless interrupted or rollback fails."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -119,10 +120,55 @@ struct Compare {
     output: PathBuf,
     /// Panel, repeat in left-to-right order: camera, saved, default, or recipe:FILE
     #[arg(long, value_name = "VERSION")]
-    panel: Vec<String>,
+    panel: Vec<OsString>,
     /// Bound each panel's longest edge; panels shrink to one shared height (at least 1)
     #[arg(long, default_value_t = 1400)]
     size: usize,
+}
+
+fn validate_report_path(path: &Path) -> Result<()> {
+    if path.to_str().is_none() {
+        return Err(Error::Params(format!(
+            "path {} is not valid UTF-8; JSON reports require UTF-8 paths",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+impl Command {
+    /// Validate every reported path before command execution can change files.
+    fn validate_report_paths(&self) -> Result<()> {
+        match self {
+            Self::Schema => Ok(()),
+            Self::Inspect { raw } => validate_report_path(raw),
+            Self::ExtractJpeg { raw, output } => {
+                validate_report_path(raw)?;
+                validate_report_path(output)
+            }
+            Self::Render(Render { source, target })
+            | Self::Edit(Edit { source, target, .. })
+            | Self::Auto(Auto { source, target }) => {
+                validate_report_path(&source.raw)?;
+                recipe_path(source)?;
+                if let Some(output) = &target.output {
+                    validate_report_path(output)?;
+                }
+                Ok(())
+            }
+            Self::Compare(args) => {
+                validate_report_path(&args.raw)?;
+                validate_report_path(&args.output)?;
+                recipe_path(&Source { raw: args.raw.clone(), recipe: None, set: vec![] })?;
+                // Keep panel arguments as OS strings so non-UTF-8 recipe names
+                // reach the same JSON params error as other path arguments.
+                for panel in &args.panel {
+                    validate_report_path(Path::new(panel))?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 impl Target {
@@ -146,6 +192,7 @@ fn recipe_path(source: &Source) -> Result<PathBuf> {
         name.push(".rawsmith.json");
         PathBuf::from(name)
     });
+    validate_report_path(&path)?;
     protect_raw(&source.raw, &path, "recipe")?;
     Ok(path)
 }
@@ -302,6 +349,7 @@ fn save_edit(raw: &arw::RawImage, recipe: &Path, params: &Params, target: &Targe
 }
 
 fn run(cli: Cli) -> Result<Value> {
+    cli.command.validate_report_paths()?;
     match cli.command {
         Command::Inspect { raw: path } => {
             let raw = read_raw(&path)?;
@@ -397,7 +445,8 @@ fn compare_versions(args: Compare) -> Result<Value> {
     let versions = if args.panel.is_empty() { vec!["camera".into(), "saved".into()] } else { args.panel };
     let mut panels = Vec::new();
     for version in versions {
-        let (kind, params, recipe_file) = match version.as_str() {
+        let version = version.to_str().expect("panel paths were validated before execution");
+        let (kind, params, recipe_file) = match version {
             "camera" => ("camera", Params::default(), None),
             "default" => ("default", Params::default(), None),
             "saved" => {

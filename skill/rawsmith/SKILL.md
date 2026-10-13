@@ -15,6 +15,9 @@ RAW is never modified. You edit by changing recipe parameters, rendering a
 preview, **looking at it**, and repeating. Successful subcommands print JSON
 on stdout; errors print JSON on stderr with exit status 1 and empty stdout.
 I/O errors name the path. `--help` and `--version` print plain text.
+RAW, recipe and output paths must be valid UTF-8. Invalid paths return a
+`params` JSON error before any file is written; the message names the path
+with invalid bytes replaced by the Unicode replacement character (lossy text).
 Outputs are replaced; RAWs never. Use a new output name to keep a version.
 `output_replaced` reports replacement (`null` when no image was written).
 

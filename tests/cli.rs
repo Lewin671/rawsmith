@@ -75,6 +75,101 @@ fn s(path: &Path) -> &str {
     path.to_str().unwrap()
 }
 
+#[cfg(unix)]
+#[test]
+fn non_utf8_paths_return_json_before_writing_and_preserve_existing_files() {
+    use std::ffi::{OsStr, OsString};
+    use std::os::unix::ffi::OsStringExt;
+
+    let f = Fixture::new("non-utf8-paths");
+    let image = rawsmith::image::Image::new(64, 48);
+    let jpeg = rawsmith::output::encode(Path::new("camera.jpg"), &image, 92).unwrap();
+    let mut raw = std::fs::read(&f.raw).unwrap();
+    embed_jpeg(&mut raw, &jpeg);
+    std::fs::write(&f.raw, &raw).unwrap();
+    let bad_raw = f.dir.join(OsString::from_vec(b"raw-\xff.ARW".to_vec()));
+    let bad_recipe = f.dir.join(OsString::from_vec(b"recipe-\xff.json".to_vec()));
+    let bad_output = f.dir.join(OsString::from_vec(b"output-\xff.jpg".to_vec()));
+    let mut sidecar = bad_raw.clone().into_os_string();
+    sidecar.push(".rawsmith.json");
+    let bad_sidecar = PathBuf::from(sidecar);
+    let preview = f.path("preview.jpg");
+    std::fs::write(f.recipe(), b"{\"exposure\":0.5}").unwrap();
+    std::fs::write(&preview, b"previous preview").unwrap();
+    let paths = vec![f.raw.clone(), f.recipe(), preview.clone()];
+    // macOS filesystems reject non-UTF-8 names themselves. Still exercise
+    // every invalid argument there and verify the existing UTF-8 companions.
+    // On other Unix systems also cover replacing existing non-UTF-8 files.
+    #[cfg(not(target_os = "macos"))]
+    let paths = {
+        let mut paths = paths;
+        for path in [&bad_recipe, &bad_sidecar] {
+            std::fs::write(path, b"{\"exposure\":0.5}").unwrap();
+        }
+        std::fs::write(&bad_raw, &raw).unwrap();
+        std::fs::write(&bad_output, b"previous preview").unwrap();
+        paths.extend([bad_raw.clone(), bad_recipe.clone(), bad_sidecar, bad_output.clone()]);
+        paths
+    };
+    #[cfg(target_os = "macos")]
+    let _ = bad_sidecar;
+    let before: Vec<_> = paths
+        .into_iter()
+        .map(|path| {
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
+    let check = |args: &[&OsStr], invalid: &Path| {
+        let out = Command::new(env!("CARGO_BIN_EXE_rawsmith")).args(args).output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        assert!(out.stdout.is_empty(), "{args:?}");
+        let error: Value = serde_json::from_slice(&out.stderr)
+            .unwrap_or_else(|_| panic!("not JSON: {}", String::from_utf8_lossy(&out.stderr)));
+        assert_eq!(error["error"]["kind"], "params", "{args:?}: {error}");
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(message.contains("UTF-8") && message.contains(invalid.to_string_lossy().as_ref()), "{error}");
+        for (path, bytes) in &before {
+            assert_eq!(std::fs::read(path).unwrap(), *bytes, "{args:?}: {path:?}");
+        }
+        assert_eq!(std::fs::read_dir(&f.dir).unwrap().count(), before.len(), "no staging files or new outputs");
+    };
+    for command in ["inspect", "render", "edit", "auto", "extract-jpeg", "compare"] {
+        let mut args = vec![OsStr::new(command), bad_raw.as_os_str()];
+        if command != "inspect" {
+            args.extend([OsStr::new("-o"), preview.as_os_str()]);
+        }
+        check(&args, &bad_raw);
+        if command == "inspect" {
+            continue;
+        }
+        check(&[OsStr::new(command), f.raw.as_os_str(), OsStr::new("-o"), bad_output.as_os_str()], &bad_output);
+        if matches!(command, "render" | "edit" | "auto") {
+            for output in [false, true] {
+                let mut args =
+                    vec![OsStr::new(command), f.raw.as_os_str(), OsStr::new("--recipe"), bad_recipe.as_os_str()];
+                if output {
+                    args.extend([OsStr::new("-o"), preview.as_os_str()]);
+                }
+                check(&args, &bad_recipe);
+            }
+        }
+    }
+    let mut panel = OsString::from("recipe:");
+    panel.push(&bad_recipe);
+    check(
+        &[
+            OsStr::new("compare"),
+            f.raw.as_os_str(),
+            OsStr::new("-o"),
+            preview.as_os_str(),
+            OsStr::new("--panel"),
+            &panel,
+        ],
+        &bad_recipe,
+    );
+}
+
 #[test]
 fn inspect_reports_camera_and_exposure() {
     let f = Fixture::new("inspect");

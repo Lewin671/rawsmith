@@ -3,6 +3,9 @@
 Successful subcommands print JSON on stdout. Errors print JSON on stderr
 with exit status 1 and nothing on stdout. The error object contains
 `error.kind` and `error.message`; I/O errors name the relevant path.
+RAW, recipe and output paths must be valid UTF-8. Invalid paths return a
+`params` JSON error before any file is written; the message names the path
+with invalid bytes replaced by the Unicode replacement character (lossy text).
 `--help` and `--version` print plain text.
 
 RAW files are only read. Validation, decoding, rendering, encoding and

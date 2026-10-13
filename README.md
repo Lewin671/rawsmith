@@ -130,6 +130,8 @@ The published recipe records the resulting edit:
   errors return JSON on stderr with exit status 1 and empty stdout. `--help` and
   `--version` print plain text. `rawsmith schema` gives parameter ranges
   and meanings, including `vignette` and graduated filters (`gradients`).
+  RAW, recipe and output paths must be valid UTF-8; invalid paths return a
+  `params` error before any file is written, with the path named lossily.
   Reports identify the recipe file, declared output colour space and RAW
   compression. Validation and staging failures leave recipes and outputs
   unchanged; paired saves roll back ordinary commit failures. See the
