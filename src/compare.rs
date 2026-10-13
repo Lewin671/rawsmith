@@ -93,10 +93,24 @@ fn has_icc_marker(jpeg: &[u8]) -> bool {
     false
 }
 
-fn camera(jpeg: &[u8], raw_file: &[u8]) -> Result<(Image, Value)> {
+/// `reduce_to` lets the decoder scale within its inverse transform to the
+/// smallest of its sizes whose long edge is still at least that many pixels:
+/// enough for tone measurements, and several times quicker than a full
+/// decode. A comparison panel is always decoded in full.
+fn camera(jpeg: &[u8], raw_file: &[u8], reduce_to: Option<usize>) -> Result<(Image, Value)> {
     let _stage = crate::profile::Stage::new("camera reference");
     let mut decoder = Decoder::new(Cursor::new(jpeg));
     decoder.set_max_decoding_buffer_size(128 * 1024 * 1024);
+    if let Some(edge) = reduce_to {
+        decoder.read_info().map_err(|e| Error::Format(format!("cannot decode embedded JPEG: {e}")))?;
+        let info = decoder.info().ok_or_else(|| Error::Format("embedded JPEG has no image information".into()))?;
+        let long = info.width.max(info.height).max(1) as f64;
+        let k = (edge as f64 / long).min(1.0);
+        let request = |v: u16| ((v as f64 * k).ceil() as u16).clamp(1, v.max(1));
+        decoder
+            .scale(request(info.width), request(info.height))
+            .map_err(|e| Error::Format(format!("cannot decode embedded JPEG: {e}")))?;
+    }
     let bytes = decoder.decode().map_err(|e| Error::Format(format!("cannot decode embedded JPEG: {e}")))?;
     let info = decoder.info().ok_or_else(|| Error::Format("embedded JPEG has no image information".into()))?;
     let data = match info.pixel_format {
@@ -139,6 +153,22 @@ fn framing(params: &Params) -> Value {
 
 /// Returns the row, its report, and whether every panel is established sRGB.
 pub fn row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result<(Image, Value, bool)> {
+    row_with(raw, file, panels, size, false)
+}
+
+/// The camera rendering for tone measurements: the same framing and colour
+/// handling as a comparison panel, decoded no larger than `size` needs.
+pub(crate) fn analysis_row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result<(Image, Value, bool)> {
+    row_with(raw, file, panels, size, true)
+}
+
+fn row_with(
+    raw: &RawImage,
+    file: &[u8],
+    panels: &[Panel],
+    size: usize,
+    reduce_camera: bool,
+) -> Result<(Image, Value, bool)> {
     if panels.is_empty() || size == 0 {
         return Err(Error::Params("compare needs at least one panel and --size at least 1".into()));
     }
@@ -159,7 +189,7 @@ pub fn row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result
             .checked_add(len)
             .and_then(|end| file.get(offset..end))
             .ok_or_else(|| Error::Format("embedded JPEG is out of bounds".into()))?;
-        let (image, report) = camera(jpeg, file)?;
+        let (image, report) = camera(jpeg, file, reduce_camera.then_some(size))?;
         Some((pipeline::framed(image, raw.meta.orientation, camera_params), report))
     } else {
         None
@@ -327,7 +357,7 @@ mod tests {
                 .checked_add(len)
                 .and_then(|end| file.get(offset..end))
                 .ok_or_else(|| Error::Format("embedded JPEG is out of bounds".into()))?;
-            let (image, report) = camera(jpeg, file)?;
+            let (image, report) = camera(jpeg, file, None)?;
             Some((pipeline::framed(image, raw.meta.orientation, camera_params), report))
         } else {
             None
@@ -516,13 +546,51 @@ mod tests {
         synthetic.exif_color_space = Some(65535);
         synthetic.interoperability_index = Some(*b"R03\0");
         let file = synthetic.to_bytes();
-        let (converted, report) = camera(&jpeg, &file).unwrap();
-        let (unconverted, _) = camera(&jpeg, &[]).unwrap();
+        let (converted, report) = camera(&jpeg, &file, None).unwrap();
+        let (unconverted, _) = camera(&jpeg, &[], None).unwrap();
         // Encoding a solid patch introduces at most a little JPEG rounding.
         for pixel in &converted.data {
             assert!(pixel.iter().zip([0.434_314_9, 0.295_039_6, 0.180_080_38]).all(|(a, b)| (a - b).abs() < 0.01));
         }
         assert!((converted.data[0][0] - unconverted.data[0][0]).abs() > 0.025);
         assert_eq!(report["color_space"], "sRGB");
+    }
+
+    #[test]
+    fn reduced_camera_decoding_keeps_tones_and_never_goes_below_the_requested_edge() {
+        // Smooth tones with a bright quarter, as a tone measurement sees them.
+        let (w, h) = (640, 400);
+        let mut image = Image::new(w, h);
+        image.map_xy(|x, y, _| {
+            let v = 0.15 + 0.5 * x as f32 / w as f32 + if y < h / 4 { 0.25 } else { 0.0 };
+            [v, v * 0.9, v * 0.8]
+        });
+        let jpeg =
+            crate::output::encode_with_color_space(std::path::Path::new("camera.jpg"), &image, 92, true).unwrap();
+        let (full, full_report) = camera(&jpeg, &[], None).unwrap();
+        assert_eq!((full.width, full.height), (w, h));
+        for (edge, expected) in [
+            (640, (640, 400)),
+            (2000, (640, 400)),
+            (321, (640, 400)),
+            (300, (320, 200)),
+            (161, (320, 200)),
+            (160, (160, 100)),
+            (80, (80, 50)),
+            (1, (80, 50)),
+        ] {
+            let (reduced, report) = camera(&jpeg, &[], Some(edge)).unwrap();
+            assert_eq!((reduced.width, reduced.height), expected, "edge {edge}");
+            assert_eq!(report, full_report);
+            // The same picture at the same size, within JPEG rounding.
+            let reference = full.resized(reduced.width, reduced.height);
+            let worst = reduced
+                .data
+                .iter()
+                .zip(&reference.data)
+                .flat_map(|(a, b)| (0..3).map(move |c| (a[c] - b[c]).abs()))
+                .fold(0.0, f32::max);
+            assert!(worst < 0.02, "edge {edge}: {worst}");
+        }
     }
 }
