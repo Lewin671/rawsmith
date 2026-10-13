@@ -4,12 +4,14 @@ blind pairwise comparisons.
 
 Works on any folder of RAW files; nothing here is specific to one photo set.
 Images are only ever written to the work directory you choose, which must be
-outside this repository. The report contains numbers only, never images,
-file names or paths.
+outside this repository. Reports contain metrics and evaluation provenance,
+never images, photo file names or private paths. Custom commands are published
+only as SHA-256 hashes.
 
     bench/photos.py render --raws DIR --work DIR [--recipes DIR]
     bench/photos.py pairs  --work DIR
-    bench/photos.py judge  --work DIR [--judge-cmd CMD] [--jobs N]
+    bench/photos.py judge  --work DIR [--model MODEL] [--jobs N]
+    bench/photos.py judge  --work DIR --judge-cmd CMD --model MODEL --name LABEL
     bench/photos.py report --work DIR [--json FILE]
 
 Variants compared (see docs/benchmark.md for what each comparison shows):
@@ -19,14 +21,22 @@ Variants compared (see docs/benchmark.md for what each comparison shows):
   auto     rawsmith after `rawsmith auto`
   ai       rawsmith with the recipe an AI assistant produced (--recipes DIR/<name>.json)
 
+The default judge is bench/judge-codex.py, using gpt-6-luna. Resume verifies
+configuration, exact prompts, task assignments and image bytes; configuration
+changes and legacy caches require a new --name (or archiving the old file).
+Custom commands must pin their actual model and declare it with --model.
+
 Python 3.8+, standard library only.
 """
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import math
 import os
 import random
+import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -38,6 +48,9 @@ EDGE = 1400  # long edge of the images the judge sees
 REPO = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 WORK_MARKER = ".rawsmith-benchmark.json"
 WORK_FORMAT = {"format": "rawsmith-photo-benchmark", "version": 1}
+JUDGE_FORMAT = {"format": "rawsmith-photo-verdicts", "version": 2}
+DEFAULT_JUDGE = shlex.quote(os.path.join(REPO, "bench", "judge-codex.py"))
+DEFAULT_MODEL = "gpt-6-luna"
 COMPARISONS = [("neutral", "camera"), ("auto", "camera"), ("auto", "system"), ("auto", "neutral"),
                ("ai", "auto"), ("ai", "camera"), ("ai", "system")]
 # Deliberately bad recipes. A trustworthy judge must prefer the unspoiled picture.
@@ -125,12 +138,11 @@ def save(path, value):
             os.remove(staging)
 
 
-def forget_judgements(work):
-    """Verdicts describe specific images in a specific order; once either
-    changes they must not be reused."""
-    for file in os.listdir(work):
-        if file == "tasks.json" or (file.startswith("verdicts-") and file.endswith(".json")):
-            os.remove(os.path.join(work, file))
+def reset_tasks(work):
+    """Remove generated tasks, retaining verdicts for fingerprinted resume."""
+    tasks = os.path.join(work, "tasks.json")
+    if os.path.exists(tasks):
+        os.remove(tasks)
     shutil.rmtree(os.path.join(work, "blind"), ignore_errors=True)
 
 
@@ -153,11 +165,12 @@ def cmd_render(args):
     sips = shutil.which("sips")
     # sips renders RAW into Display P3; convert so every variant is plain sRGB.
     srgb = ["-m", "/System/Library/ColorSync/Profiles/sRGB Profile.icc"]
-    forget_judgements(work)
+    rendering = rendering_identity(exe)
+    reset_tasks(work)
     images = os.path.join(work, "images")
     shutil.rmtree(images, ignore_errors=True)
     os.makedirs(images)
-    manifest = {"edge": EDGE, "photos": {}}
+    manifest = {"edge": EDGE, "photos": {}, "rendering": rendering}
     for index, name in enumerate(names):
         raw = os.path.join(args.raws, name)
         # Photos are known by index only from here on.
@@ -221,7 +234,7 @@ def cmd_pairs(args):
     work = work_dir(args.work)
     manifest = load(os.path.join(work, "manifest.json")) or die("run `render` first")
     rng = random.Random(args.seed)
-    forget_judgements(work)
+    reset_tasks(work)
     blind = os.path.join(work, "blind")
     os.makedirs(blind)
     tasks = []
@@ -243,6 +256,8 @@ def cmd_pairs(args):
         if list(manifest["photos"]).index(photo) % 4 == 0:
             add(photo, "identical", "auto", "auto")
     rng.shuffle(tasks)
+    manifest["task_seed"] = args.seed
+    save(os.path.join(work, "manifest.json"), manifest)
     save(os.path.join(work, "tasks.json"), tasks)
     print(f"{len(tasks)} judging tasks in {blind}")
 
@@ -259,36 +274,234 @@ def parse_verdict(text):
         raise ValueError("the judge's reply holds no text")
     start, end = text.find("{"), text.rfind("}")
     verdict = json.loads(text[start:end + 1])
+    if not isinstance(verdict, dict):
+        raise ValueError("the judge must reply with a JSON object")
     if verdict.get("winner") not in ("A", "B", "tie"):
         raise ValueError(f"unexpected winner {verdict.get('winner')!r}")
     return verdict
 
 
+def digest(value):
+    """Hash structured data unambiguously, independent of dictionary order."""
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def text_digest(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def file_digest(path):
+    sha = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1024 * 1024), b""):
+            sha.update(block)
+    return sha.hexdigest()
+
+
+def timestamp():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def rendering_identity(exe):
+    try:
+        version = subprocess.run([exe, "--version"], capture_output=True, text=True)
+    except OSError as error:
+        die(f"rawsmith --version failed: {error}")
+    if version.returncode or not version.stdout.strip():
+        die("rawsmith --version failed; rendering provenance cannot be recorded")
+    try:
+        commit = subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD"], capture_output=True, text=True)
+        revision = commit.stdout.strip() if commit.returncode == 0 else None
+    except OSError:
+        revision = None
+    return {"rawsmith_version": version.stdout.strip(), "repository_commit": revision}
+
+
+def task_inputs(work, task):
+    # A task file must not redirect image reads outside the marked directory.
+    if not re.fullmatch(r"t[0-9]+", task["task"]):
+        raise ValueError("invalid blind task identifier")
+    a, b = (os.path.join(work, "blind", f"{task['task']}-{side}.jpg") for side in "AB")
+    prompt = PROMPT.format(a=a, b=b)
+    return {"task": task, "prompt_sha256": text_digest(prompt),
+            "images": [file_digest(a), file_digest(b)]}, prompt
+
+
+def task_set_identity(manifest, tasks, inputs):
+    ordered = sorted(tasks, key=lambda t: t["task"])
+    return {"seed": manifest.get("task_seed"), "tasks": len(tasks),
+            "tasks_sha256": digest(ordered),
+            "blind_images_sha256": digest([(t["task"], inputs.get(t["task"], {}).get("images")) for t in ordered])}
+
+
+def current_inputs(work, tasks, strict=False):
+    inputs = {}
+    for task in tasks:
+        try:
+            inputs[task["task"]], _ = task_inputs(work, task)
+        except (OSError, ValueError, KeyError) as error:
+            if strict:
+                die(f"cannot fingerprint blind task: {error}; rerun `pairs`")
+    return inputs
+
+
+def verified_file(stored):
+    return (isinstance(stored, dict) and stored.get("format") == JUDGE_FORMAT["format"]
+            and type(stored.get("version")) is int and stored["version"] == JUDGE_FORMAT["version"]
+            and isinstance(stored.get("configuration"), dict)
+            and all(isinstance(stored["configuration"].get(key), str) for key in ("judge_command", "model", "prompt_sha256"))
+            and isinstance(stored["configuration"].get("harness"), dict)
+            and isinstance(stored.get("runs"), list)
+            and stored.get("configuration_sha256") == digest(stored["configuration"])
+            and isinstance(stored.get("verdicts"), dict))
+
+
+def valid_verdict(verdict, config_hash, inputs):
+    return (inputs is not None and isinstance(verdict, dict)
+            and verdict.get("winner") in ("A", "B", "tie")
+            and verdict.get("fingerprint") == digest({"configuration": config_hash, "inputs": inputs}))
+
+
 def cmd_judge(args):
     work = work_dir(args.work)
     tasks = load(os.path.join(work, "tasks.json")) or die("run `pairs` first")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", args.name):
+        die("--name must contain only letters, digits, underscores or hyphens")
+    if args.jobs < 1:
+        die("--jobs must be at least 1")
+    if args.model is not None and not args.model.strip():
+        die("--model must not be empty")
+    builtin = args.judge_cmd == DEFAULT_JUDGE
+    model = args.model or (DEFAULT_MODEL if builtin else None)
+    if not model:
+        die("custom --judge-cmd requires --model; pin that same model in the command")
+    command = args.judge_cmd + (" --model " + shlex.quote(model) if builtin else "")
+    configuration = {"judge_command": command, "model": model,
+                     "prompt_sha256": text_digest(PROMPT), "harness": JUDGE_FORMAT,
+                     "adapter_sha256": file_digest(os.path.join(REPO, "bench", "judge-codex.py")) if builtin else None,
+                     "builtin_adapter": builtin}
+    config_hash = digest(configuration)
     verdicts_path = os.path.join(work, f"verdicts-{args.name}.json")
-    verdicts = load(verdicts_path, {})
-    # A failed attempt (no winner) is not a verdict: try it again.
-    todo = [t for t in tasks if verdicts.get(t["task"], {}).get("winner") is None]
-    print(f"{len(todo)} of {len(tasks)} tasks to judge with: {args.judge_cmd}", flush=True)
+    stored = load_verdict_file(verdicts_path)
+    if os.path.exists(verdicts_path):
+        if not verified_file(stored):
+            die("existing verdict file is legacy or unverifiable and cannot be reused; "
+                "use a new --name or archive the old verdict file first (left unchanged)")
+        if stored["configuration"] != configuration:
+            die("judge command, model, prompt or harness configuration changed; "
+                "use a new --name or archive the old verdict file first (left unchanged)")
+    else:
+        stored = {**JUDGE_FORMAT, "configuration": configuration, "configuration_sha256": config_hash,
+                  "verdicts": {}, "runs": []}
+    inputs = current_inputs(work, tasks, strict=True)
+    manifest = load(os.path.join(work, "manifest.json"), {})
+    identity = task_set_identity(manifest, tasks, inputs)
+    verdicts = stored["verdicts"]
+    todo = [t for t in tasks if not valid_verdict(verdicts.get(t["task"]), config_hash, inputs[t["task"]])]
+    print(f"{len(todo)} of {len(tasks)} tasks to judge with: {command}", flush=True)
+    if not todo:
+        return
+    print("Changed/unverifiable task verdicts will be replaced; unchanged verdicts are retained.", flush=True)
+    run = {"started_at": timestamp(), "finished_at": None, "task_set": identity}
+    stored["runs"].append(run)
+    stored["task_set"] = identity
+    save(verdicts_path, stored)
 
     def judge(task):
-        a, b = (os.path.join(work, "blind", f"{task['task']}-{side}.jpg") for side in "AB")
-        prompt = PROMPT.format(a=a, b=b)
+        initial = inputs[task["task"]]
         for attempt in range(3):
-            out = subprocess.run(args.judge_cmd, shell=True, input=prompt, capture_output=True, text=True, cwd=os.path.join(work, "blind"))
+            out = None
             try:
-                return task["task"], parse_verdict(out.stdout)
-            except (ValueError, KeyError) as error:
-                last = f"{error}: {out.stdout[-300:]} {out.stderr[-300:]}"
+                latest, prompt = task_inputs(work, task)
+                if latest != initial:
+                    raise ValueError("task images changed before judging; rerun `judge`")
+                out = subprocess.run(command, shell=True, input=prompt, capture_output=True, text=True, cwd=os.path.join(work, "blind"))
+                if out.returncode:
+                    raise ValueError(f"judge exited with status {out.returncode}")
+                verdict = parse_verdict(out.stdout)
+                latest, _ = task_inputs(work, task)
+                if latest != initial:
+                    raise ValueError("task images changed during judging; rerun `judge`")
+                verdict.update(fingerprint=digest({"configuration": config_hash, "inputs": initial}),
+                               judged_at=timestamp(), run=len(stored["runs"]) - 1)
+                return task["task"], verdict
+            except (OSError, ValueError, KeyError) as error:
+                last = str(error) + (f": {out.stdout[-300:]} {out.stderr[-300:]}" if out else "")
         return task["task"], {"winner": None, "error": last}
 
+    def persist(result):
+        task, verdict = result
+        verdicts[task] = verdict
+        save(verdicts_path, stored)
+        print(f"[{len(todo) - len(pending)}/{len(todo)}] {task}: {verdict.get('winner')}", flush=True)
+
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
-        for done, (task, verdict) in enumerate(pool.map(judge, todo), 1):
-            verdicts[task] = verdict
-            save(verdicts_path, verdicts)
-            print(f"[{done}/{len(todo)}] {task}: {verdict.get('winner')}", flush=True)
+        pending = {pool.submit(judge, task) for task in todo}
+        try:
+            for future in concurrent.futures.as_completed(pending):
+                pending.remove(future)
+                persist(future.result())
+        except KeyboardInterrupt:
+            # Save already finished tasks even if the interrupted future was
+            # yielded first. Unstarted tasks need no retry until resume.
+            for future in list(pending):
+                pending.remove(future)
+                if future.done() and not future.cancelled() and future.exception() is None:
+                    persist(future.result())
+                else:
+                    future.cancel()
+            raise
+    run["finished_at"] = timestamp()
+    save(verdicts_path, stored)
+    if any(not valid_verdict(verdicts.get(t["task"]), config_hash, inputs[t["task"]]) for t in tasks):
+        die("some tasks failed; valid verdicts were saved, rerun `judge` to retry")
+
+
+def load_verdict_file(path):
+    try:
+        return load(path)
+    except ValueError:
+        # An unreadable cache is no evidence, and must not be overwritten.
+        return None
+
+
+def report_verdicts(stored, inputs, task_ids):
+    counts = {"valid": 0, "stale": 0, "failed": 0, "unverifiable": 0, "orphaned": 0}
+    if not verified_file(stored):
+        entries = stored.get("verdicts", stored) if isinstance(stored, dict) else stored
+        counts["unverifiable"] = len(entries) if isinstance(entries, dict) else 1
+        return {}, None, counts
+    configuration = stored["configuration"]
+    current = (configuration.get("prompt_sha256") == text_digest(PROMPT)
+               and configuration.get("harness") == JUDGE_FORMAT)
+    if configuration.get("builtin_adapter"):
+        try:
+            current = current and configuration.get("adapter_sha256") == file_digest(os.path.join(REPO, "bench", "judge-codex.py"))
+        except OSError:
+            current = False
+    valid = {}
+    for task, verdict in stored["verdicts"].items():
+        if task not in task_ids:
+            counts["orphaned"] += 1
+        elif task not in inputs:
+            counts["stale"] += 1
+        elif not isinstance(verdict, dict) or verdict.get("winner") not in ("A", "B", "tie"):
+            counts["failed"] += 1
+        elif not verdict.get("fingerprint"):
+            counts["unverifiable"] += 1
+        elif current and valid_verdict(verdict, stored["configuration_sha256"], inputs[task]):
+            valid[task] = verdict
+            counts["valid"] += 1
+        else:
+            counts["stale"] += 1
+    # Arbitrary shell commands may contain private paths or names. Publish only
+    # their exact hash; the local verdict file retains the literal command.
+    public = {"judge_command": {"sha256": text_digest(configuration["judge_command"]),
+                                "adapter": "bench/judge-codex.py" if configuration.get("builtin_adapter") else "custom"},
+              "model": configuration["model"], "prompt_sha256": configuration["prompt_sha256"],
+              "harness": configuration["harness"], "adapter_sha256": configuration.get("adapter_sha256"),
+              "task_set": stored.get("task_set"), "runs": stored.get("runs", [])}
+    return valid, public, counts
 
 
 def wilson(wins, n):
@@ -374,15 +587,21 @@ def cmd_report(args):
     mean = lambda values: round(sum(values) / len(values), 3) if values else None
     seconds = {key: mean([p["seconds"][key] for p in photos if key in p["seconds"]]) for key in ("neutral", "auto", "system", "full_resolution")}
     clipping = {v: mean([p["variants"][v]["clipped_highlights_pct"] for p in photos if p["variants"].get(v)]) for v in ("neutral", "auto", "ai")}
-    report = {"photos": len(manifest["photos"]), "preview_edge_px": manifest["edge"], "mean_seconds": seconds, "mean_clipped_highlights_pct": clipping, "judges": {}}
+    report = {"photos": len(manifest["photos"]), "preview_edge_px": manifest["edge"], "mean_seconds": seconds, "mean_clipped_highlights_pct": clipping, "rendering": manifest.get("rendering", {"rawsmith_version": None, "repository_commit": None}), "judges": {}}
+    inputs = current_inputs(work, tasks)
+    report["task_set"] = task_set_identity(manifest, tasks, inputs)
     for file in sorted(os.listdir(work)):
         if file.startswith("verdicts-") and file.endswith(".json"):
-            report["judges"][file[9:-5]] = summarise(tasks, load(os.path.join(work, file)))
+            verdicts, evaluation, counts = report_verdicts(load_verdict_file(os.path.join(work, file)), inputs, {t["task"] for t in tasks})
+            summary = summarise(tasks, verdicts)
+            summary.update(evaluation=evaluation, verdict_validation=counts)
+            report["judges"][file[9:-5]] = summary
     if args.json:
         save(os.path.abspath(args.json), report)
     print(f"Photos: {report['photos']}   mean seconds: {seconds}")
     for judge, summary in report["judges"].items():
         checks = summary["judge_checks"]
+        print(f"\nVerdict validation: {summary['verdict_validation']} (unverifiable/stale verdicts excluded)")
         print(f"\nJudge: {judge}   control accuracy {checks['control_accuracy']} over {checks['control_votes']} votes, "
               f"order consistency {checks['order_consistency']}, identical pairs called tie {checks['identical_pairs_called_tie']}, "
               f"position votes {checks['position_votes']}, pairs judged {checks['pairs_judged']}"
@@ -406,14 +625,16 @@ def main():
     p.add_argument("--work", required=True)
     p.add_argument("--seed", type=int, default=1)
     p.set_defaults(run=cmd_pairs)
-    p = sub.add_parser("judge", help="run an LLM judge over the tasks (resumable)")
+    p = sub.add_parser("judge", help="run an LLM judge over the tasks (resumable)",
+                       description="Resume verifies prompts, assignments and image bytes. Configuration changes or legacy verdict files require a new --name or archiving the old file.")
     p.add_argument("--work", required=True)
-    p.add_argument("--name", default="claude", help="label for this judge's verdict file")
-    p.add_argument("--judge-cmd", default="claude -p --allowedTools Read --output-format json",
-                   help="shell command that reads the prompt on stdin, can open the two image paths in it, and prints the reply")
+    p.add_argument("--name", default="codex", help="verdict label (default: codex); use a new label when configuration changes")
+    p.add_argument("--judge-cmd", default=DEFAULT_JUDGE,
+                   help="shell command reading the prompt on stdin and printing a verdict (default: bench/judge-codex.py); custom commands must pin --model")
+    p.add_argument("--model", help="actual judge model (default adapter: gpt-6-luna); required for custom commands")
     p.add_argument("--jobs", type=int, default=4)
     p.set_defaults(run=cmd_judge)
-    p = sub.add_parser("report", help="print the results; numbers only")
+    p = sub.add_parser("report", help="print validated results and provenance; no private photo paths")
     p.add_argument("--work", required=True)
     p.add_argument("--json", help="also write the report as JSON to this file")
     p.set_defaults(run=cmd_report)

@@ -33,9 +33,10 @@ Anything that changes pixels should come with evidence:
 Prefer one focused improvement with a measured effect over a broad rewrite.
 
 Project acceptance uses Codex for reviews, real-photo judging and the
-complete editing workflow. Pass a verified Codex adapter explicitly via
-`bench/photos.py judge --judge-cmd ... --name ...`; the harness's current
-default invokes Claude and must not be used for project acceptance.
+complete editing workflow. `bench/photos.py judge` defaults to the repository
+Codex adapter with `gpt-6-luna`; verify the adapter and its explicit `--model`
+configuration before using a run for acceptance. Synthetic tests exercise
+cache validation and adapter failures without calling a real judge.
 Published Claude results describe earlier development runs. Claude Code
 skill installation compatibility can be inspected by Codex.
 

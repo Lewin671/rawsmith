@@ -12,8 +12,9 @@ are in English.
 - Use Codex exclusively for acceptance: final code review, end-to-end
   editing, visual quality judging and release usability checks. Codex may
   inspect Claude Code installation compatibility, but do not run Claude
-  as an acceptance agent or judge. For photo benchmarks, explicitly pass
-  a verified Codex judge command; do not use the harness's Claude default.
+  as an acceptance agent or judge. Photo benchmarks default to the repository
+  Codex adapter with explicit gpt-6-luna model selection. Verify the adapter
+  and model configuration before using a run for acceptance.
   Existing Claude benchmark results are historical evidence, not new
   acceptance. Automated correctness checks remain part of validation.
 - Prioritize data loss, misleading success and unusable exports before
