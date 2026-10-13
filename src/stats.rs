@@ -284,7 +284,14 @@ pub fn losses(reference: &Look, edit: &Look) -> Vec<String> {
                 if paler { " and paler" } else { "" },
                 now.chroma,
                 was.chroma,
-                if paler { format!(", lightness {:.0} against {:.0}; a sky or water of this colour looks washed out", now.lightness, was.lightness) } else { String::new() }
+                if paler {
+                    format!(
+                        ", lightness {:.0} against {:.0}; a sky or water of this colour looks washed out",
+                        now.lightness, was.lightness
+                    )
+                } else {
+                    String::new()
+                }
             ));
         } else if now.chroma > was.chroma * 1.5 && now.chroma >= 20.0 {
             notes.push(format!(

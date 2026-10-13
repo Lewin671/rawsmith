@@ -266,6 +266,38 @@ pub fn row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stats::{look, losses};
+
+    #[test]
+    fn losses_name_what_an_edit_gave_up_and_stay_quiet_otherwise() {
+        let spaces = color::Spaces::new();
+        // A dark-to-bright ramp under a blue band; the "edit" variants change one thing each.
+        let picture = |black: f32, white: f32, blue: [f32; 3]| {
+            let mut image = Image::new(64, 64);
+            for y in 0..64 {
+                for x in 0..64 {
+                    let v = black + (white - black) * x as f32 / 63.0;
+                    image.data[y * 64 + x] = if y < 24 { blue } else { [v; 3] };
+                }
+            }
+            look(&image, &spaces)
+        };
+        let reference = picture(0.02, 0.9, [0.2, 0.4, 0.8]);
+        assert!(losses(&reference, &reference).is_empty());
+        assert!(
+            losses(&reference, &picture(0.0, 0.92, [0.18, 0.4, 0.85])).is_empty(),
+            "a slightly richer edit loses nothing"
+        );
+        let lifted = losses(&reference, &picture(0.25, 0.9, [0.2, 0.4, 0.8]));
+        assert!(lifted.iter().any(|n| n.starts_with("black point lifted")), "{lifted:?}");
+        assert!(lifted.iter().any(|n| n.starts_with("flatter")), "{lifted:?}");
+        let blown = losses(&reference, &picture(0.02, 1.4, [0.2, 0.4, 0.8]));
+        assert!(blown.iter().any(|n| n.starts_with("more pure white")), "{blown:?}");
+        let washed = losses(&reference, &picture(0.02, 0.9, [0.55, 0.65, 0.8]));
+        assert!(washed.iter().any(|n| n.starts_with("blue is weaker and paler")), "{washed:?}");
+        let grey = losses(&reference, &picture(0.02, 0.9, [0.45; 3]));
+        assert!(grey.iter().any(|n| n.starts_with("blue has nearly gone")), "{grey:?}");
+    }
 
     // Frozen pre-streaming implementation: render all panels at native size,
     // derive the height from actual images, then resize each panel once.
@@ -416,7 +448,13 @@ mod tests {
                 for size in [1, 19, 43, 100] {
                     let (expected, expected_report, expected_srgb) =
                         native_panels_reference(&raw, &file, &panels, size).unwrap();
-                    let (actual, report, srgb) = row(&raw, &file, &panels, size).unwrap();
+                    let (actual, mut report, srgb) = row(&raw, &file, &panels, size).unwrap();
+                    // The frozen reference predates the look descriptions.
+                    for panel in report["panels"].as_array_mut().unwrap() {
+                        let panel = panel.as_object_mut().unwrap();
+                        assert!(panel.remove("look").is_some());
+                        panel.remove("losses_against_camera");
+                    }
                     let context = format!("orientation {orientation}, panels {indices:?}, size {size}");
                     assert_eq!((actual.width, actual.height), (expected.width, expected.height), "{context}");
                     let bits = |image: &Image| image.data.iter().map(|p| p.map(f32::to_bits)).collect::<Vec<_>>();
