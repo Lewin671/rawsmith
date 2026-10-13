@@ -215,17 +215,20 @@ else:
         return [json.loads(line) for line in self.log.read_text().splitlines()]
 
     def assert_home_unmodified(self):
-        # macOS 12.6 system tools can create an empty Library directory tree
-        # under a fresh HOME. Allow only those directories, never files,
+        # macOS 12.6 system tools create a Library directory tree under a
+        # fresh HOME, and Apple's Python (used by the test doubles) caches
+        # bytecode in Library/Caches/com.apple.python. Allow only those:
+        # directories under Library and files in that one cache, never
         # symlinks or rawsmith paths; bin, skills and shell profiles still fail.
         library = self.home / "Library"
+        python_cache = library / "Caches" / "com.apple.python"
         unexpected = [
             path.relative_to(self.home)
             for path in self.home.rglob("*")
             if not (
                 sys.platform == "darwin"
                 and (path == library or library in path.parents)
-                and path.is_dir()
+                and (path.is_dir() or python_cache in path.parents)
                 and not path.is_symlink()
                 and "rawsmith" not in path.name.lower()
             )
