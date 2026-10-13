@@ -5,8 +5,11 @@ use std::path::Path;
 
 use rayon::prelude::*;
 
-use crate::error::{Error, Result};
+use crate::error::{io_at, Error, Result};
 use crate::image::Image;
+
+// Compact ICC Profiles, CC0-1.0; provenance and licence in assets/profiles/.
+const SRGB_PROFILE: &[u8] = include_bytes!("../assets/profiles/sRGB-v2-magic.icc");
 
 /// Deterministic per-sample noise in -0.5..0.5 with a triangular
 /// distribution; it breaks up banding in smooth gradients such as skies.
@@ -50,19 +53,37 @@ fn to_rgb16_be(image: &Image) -> Vec<u8> {
 /// interrupted write leaves the old file intact, and a destination that is a
 /// symlink or hard link to some other file (the RAW, say) is replaced as a
 /// name while that other file's contents stay untouched.
-pub fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Returns whether an existing destination name was replaced (including links).
+pub fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
     use std::io::Write;
     let mut name = path.as_os_str().to_owned();
     name.push(format!(".{}.tmp", std::process::id()));
     let staging = std::path::PathBuf::from(name);
     // `create_new` refuses an existing name without following it. If it
     // fails, whatever has that name is not ours and is left alone.
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&staging)?;
-    let written = file.write_all(bytes).and_then(|()| std::fs::rename(&staging, path));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staging)
+        .map_err(|e| io_at("stage output at", &staging, e))?;
+    let written = (|| {
+        file.write_all(bytes).map_err(|e| io_at("write staged output", &staging, e))?;
+        let replaced = destination_exists(path)?;
+        std::fs::rename(&staging, path).map_err(|e| io_at("replace output", path, e))?;
+        Ok(replaced)
+    })();
     if written.is_err() {
         let _ = std::fs::remove_file(&staging);
     }
     written
+}
+
+fn destination_exists(path: &Path) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(io_at("inspect destination", path, e)),
+    }
 }
 
 struct Temporary {
@@ -92,10 +113,14 @@ fn reserve_temporary<T>(path: &Path, create: impl Fn(&Path) -> std::io::Result<T
         match create(&candidate) {
             Ok(value) => return Ok((Temporary { path: candidate, remove_on_drop: true }, value)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
+            Err(e) => return Err(io_at("reserve temporary file beside", path, e)),
         }
     }
-    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "cannot reserve a temporary output name"))
+    Err(io_at(
+        "reserve temporary file beside",
+        path,
+        std::io::Error::new(std::io::ErrorKind::AlreadyExists, "temporary output names are occupied"),
+    ))
 }
 
 fn stage(path: &Path, bytes: &[u8]) -> std::io::Result<Temporary> {
@@ -103,7 +128,7 @@ fn stage(path: &Path, bytes: &[u8]) -> std::io::Result<Temporary> {
     let (temporary, mut file) =
         reserve_temporary(path, |candidate| std::fs::OpenOptions::new().write(true).create_new(true).open(candidate))?;
     // Keep the create_new handle: reopening the name could follow a swapped-in link.
-    file.write_all(bytes)?;
+    file.write_all(bytes).map_err(|e| io_at("write staged output", &temporary.path, e))?;
     Ok(temporary)
 }
 
@@ -111,14 +136,14 @@ fn backup(path: &Path) -> std::io::Result<Option<Temporary>> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e),
+        Err(e) => return Err(io_at("inspect destination", path, e)),
     };
     if metadata.is_file() {
         return reserve_temporary(path, |candidate| std::fs::hard_link(path, candidate))
             .map(|(temporary, ())| Some(temporary));
     }
     if metadata.is_symlink() {
-        let target = std::fs::read_link(path)?;
+        let target = std::fs::read_link(path).map_err(|e| io_at("read symbolic link", path, e))?;
         #[cfg(unix)]
         return reserve_temporary(path, |candidate| std::os::unix::fs::symlink(&target, candidate))
             .map(|(temporary, ())| Some(temporary));
@@ -126,7 +151,11 @@ fn backup(path: &Path) -> std::io::Result<Option<Temporary>> {
         return reserve_temporary(path, |candidate| std::os::windows::fs::symlink_file(&target, candidate))
             .map(|(temporary, ())| Some(temporary));
         #[cfg(not(any(unix, windows)))]
-        return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "cannot back up a symbolic link"));
+        return Err(io_at(
+            "back up symbolic link",
+            path,
+            std::io::Error::new(std::io::ErrorKind::Unsupported, "symbolic links are unsupported"),
+        ));
     }
     Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{} is not a file", path.display())))
 }
@@ -135,18 +164,23 @@ fn backup(path: &Path) -> std::io::Result<Option<Temporary>> {
 /// second fails. Both files are staged before either destination changes.
 /// This handles ordinary I/O failures; the two renames are not jointly atomic
 /// and do not provide recovery after process termination or power loss.
-pub fn replace_pair(first: (&Path, &[u8]), second: (&Path, &[u8])) -> std::io::Result<()> {
+/// Returns whether the first destination (the image) was replaced.
+pub fn replace_pair(first: (&Path, &[u8]), second: (&Path, &[u8])) -> std::io::Result<bool> {
     let resolved_name = |path: &Path| {
         let absolute = std::path::absolute(path).ok()?;
         Some(std::fs::canonicalize(absolute.parent()?).ok()?.join(absolute.file_name()?))
     };
     if first.0 == second.0 || resolved_name(first.0).is_some_and(|name| Some(name) == resolved_name(second.0)) {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "paired outputs must have different names"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("paired outputs {} and {} must have different names", first.0.display(), second.0.display()),
+        ));
     }
     let first_stage = stage(first.0, first.1)?;
     let second_stage = stage(second.0, second.1)?;
     let mut previous = backup(first.0)?;
-    std::fs::rename(&first_stage.path, first.0)?;
+    let replaced = previous.is_some();
+    std::fs::rename(&first_stage.path, first.0).map_err(|e| io_at("commit output", first.0, e))?;
     if let Err(commit_error) = std::fs::rename(&second_stage.path, second.0) {
         let restored = match &previous {
             Some(previous) => std::fs::rename(&previous.path, first.0),
@@ -174,7 +208,7 @@ pub fn replace_pair(first: (&Path, &[u8]), second: (&Path, &[u8])) -> std::io::R
             format!("cannot commit {}: {commit_error}; {} restored", second.0.display(), first.0.display()),
         ));
     }
-    Ok(())
+    Ok(replaced)
 }
 
 /// Encodes `image` (sRGB-encoded, 0..1). The path extension selects the
@@ -197,6 +231,7 @@ pub fn encode(path: &Path, image: &Image, quality: u8) -> Result<Vec<u8>> {
             // the assistant cannot see correctly defeats the purpose.
             encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
             encoder.set_optimized_huffman_tables(true);
+            encoder.add_icc_profile(SRGB_PROFILE).map_err(|e| failed(&e))?;
             encoder
                 .encode(&to_rgb8(image), w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
                 .map_err(|e| failed(&e))?;
@@ -221,7 +256,7 @@ pub fn encode(path: &Path, image: &Image, quality: u8) -> Result<Vec<u8>> {
 /// Encodes and replaces one image without opening an existing file for writing.
 pub fn write(path: &Path, image: &Image, quality: u8) -> Result<()> {
     let bytes = encode(path, image, quality)?;
-    replace(path, &bytes).map_err(|e| Error::Io(std::io::Error::other(format!("cannot write {}: {e}", path.display()))))
+    replace(path, &bytes).map(|_| ()).map_err(Error::Io)
 }
 
 #[cfg(test)]
@@ -434,14 +469,85 @@ mod tests {
     }
 
     #[test]
+    fn jpeg_embeds_only_srgb_metadata_without_changing_the_codestream_or_pixels() {
+        let image = picture(33, 21);
+        let profiled = encode(Path::new("synthetic.jpg"), &image, 92).unwrap();
+        let mut baseline = Vec::new();
+        let mut encoder = jpeg_encoder::Encoder::new(&mut baseline, 92);
+        encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
+        encoder.set_optimized_huffman_tables(true);
+        encoder.encode(&to_rgb8(&image), 33, 21, jpeg_encoder::ColorType::Rgb).unwrap();
+
+        let mut without_profile = profiled[..2].to_vec();
+        let mut at = 2;
+        let mut profiles = 0;
+        while profiled[at + 1] != 0xda {
+            assert_eq!(profiled[at], 0xff);
+            let marker = profiled[at + 1];
+            let len = u16::from_be_bytes([profiled[at + 2], profiled[at + 3]]) as usize;
+            let payload = &profiled[at + 4..at + 2 + len];
+            if marker == 0xe2 {
+                assert_eq!(&payload[..14], b"ICC_PROFILE\0\x01\x01");
+                assert_eq!(&payload[14..], SRGB_PROFILE);
+                profiles += 1;
+            } else {
+                // No EXIF, XMP, camera comments or other application metadata.
+                assert!(!(0xe1..=0xef).contains(&marker) && marker != 0xfe);
+                if marker == 0xe0 {
+                    assert!(payload.starts_with(b"JFIF\0"));
+                }
+                without_profile.extend_from_slice(&profiled[at..at + 2 + len]);
+            }
+            at += 2 + len;
+        }
+        without_profile.extend_from_slice(&profiled[at..]);
+        assert_eq!(profiles, 1);
+        assert_eq!(without_profile, baseline, "only the ICC segment may change");
+        let mut decoder = jpeg_decoder::Decoder::new(std::io::Cursor::new(&profiled));
+        let pixels = decoder.decode().unwrap();
+        assert_eq!(decoder.icc_profile().unwrap(), SRGB_PROFILE);
+        assert_eq!(pixels, jpeg_decoder::Decoder::new(std::io::Cursor::new(&baseline)).decode().unwrap());
+        assert_eq!(SRGB_PROFILE.len(), 736);
+        assert_eq!(&SRGB_PROFILE[8..12], &[2, 0x10, 0, 0], "ICC profile must be v2.1");
+        assert_eq!(&SRGB_PROFILE[36..40], b"acsp");
+        assert_eq!(&SRGB_PROFILE[16..20], b"RGB ");
+        // Read the ICC v2 description tag: a filename alone cannot identify sRGB.
+        let read_u32 = |bytes: &[u8]| u32::from_be_bytes(bytes.try_into().unwrap()) as usize;
+        let tag_count = read_u32(&SRGB_PROFILE[128..132]);
+        let description_entry = SRGB_PROFILE[132..132 + tag_count * 12]
+            .chunks_exact(12)
+            .find(|entry| &entry[..4] == b"desc")
+            .expect("ICC profile must have a description tag");
+        let offset = read_u32(&description_entry[4..8]);
+        let size = read_u32(&description_entry[8..12]);
+        let description = &SRGB_PROFILE[offset..offset + size];
+        assert_eq!(&description[..4], b"desc", "ICC v2 description type");
+        let ascii_len = read_u32(&description[8..12]);
+        assert_eq!(&description[12..12 + ascii_len], b"sRGB\0");
+    }
+
+    #[test]
     fn png_is_16_bit_and_exact() {
         let path = std::env::temp_dir().join(format!("rawsmith-png-{}.png", std::process::id()));
         let image = picture(33, 21);
         write(&path, &image, 90).unwrap();
         let mut reader = png::Decoder::new(std::fs::File::open(&path).unwrap()).read_info().unwrap();
+        assert_eq!(reader.info().srgb, Some(png::SrgbRenderingIntent::Perceptual));
         let mut buffer = vec![0; reader.output_buffer_size()];
         let info = reader.next_frame(&mut buffer).unwrap();
         assert_eq!((info.width, info.height, info.bit_depth), (33, 21, png::BitDepth::Sixteen));
+        assert_eq!(&buffer[..info.buffer_size()], to_rgb16_be(&image));
+        let bytes = std::fs::read(&path).unwrap();
+        let mut at = 8;
+        while at < bytes.len() {
+            let len = u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+            let kind = &bytes[at + 4..at + 8];
+            assert!(
+                [b"IHDR", b"sRGB", b"gAMA", b"cHRM", b"IDAT", b"IEND"].iter().any(|allowed| *allowed == kind),
+                "unexpected PNG metadata: {kind:?}"
+            );
+            at += 12 + len;
+        }
         for (got, want) in buffer.as_chunks::<6>().0.iter().zip(&image.data) {
             for c in 0..3 {
                 let value = u16::from_be_bytes([got[c * 2], got[c * 2 + 1]]) as f32 / 65535.0;

@@ -53,6 +53,12 @@ impl Drop for Fixture {
 
 fn run(args: &[&str]) -> (bool, Value) {
     let out = Command::new(env!("CARGO_BIN_EXE_rawsmith")).args(args).output().unwrap();
+    if out.status.success() {
+        assert!(out.stderr.is_empty(), "successful commands must leave stderr empty");
+    } else {
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        assert!(out.stdout.is_empty(), "failed commands must leave stdout empty: {args:?}");
+    }
     let text = if out.status.success() { &out.stdout } else { &out.stderr };
     let value = serde_json::from_slice(text)
         .unwrap_or_else(|_| panic!("output is not JSON: {}", String::from_utf8_lossy(text)));
@@ -74,6 +80,7 @@ fn inspect_reports_camera_and_exposure() {
     let f = Fixture::new("inspect");
     let v = ok(&["inspect", s(&f.raw)]);
     assert_eq!(v["camera"]["model"], "ILCE-7M4");
+    assert_eq!(v["compression"], "uncompressed");
     assert_eq!(v["sensor"]["width"], 320);
     assert!(v["exposure"]["saturated_pct"][1].as_f64().unwrap() > 1.0);
     let kelvin = v["white_balance"]["temperature"].as_f64().unwrap();
@@ -447,4 +454,265 @@ fn extracted_camera_jpeg_keeps_metadata_while_developed_images_do_not() {
         assert!(!std::fs::read(developed).unwrap().windows(metadata.len()).any(|bytes| bytes == metadata));
     }
     assert_eq!(std::fs::read(&f.raw).unwrap(), raw);
+}
+
+/// Append an IFD pointing at a synthetic JPEG without touching the RAW mosaic.
+fn embed_jpeg(raw: &mut Vec<u8>, jpeg: &[u8]) {
+    let ifd = raw.len() as u32;
+    raw[58..62].copy_from_slice(&ifd.to_le_bytes());
+    let offset = ifd + 2 + 2 * 12 + 4;
+    raw.extend(2u16.to_le_bytes());
+    for (tag, value) in [(0x0201u16, offset), (0x0202, jpeg.len() as u32)] {
+        raw.extend(tag.to_le_bytes());
+        raw.extend(4u16.to_le_bytes());
+        raw.extend(1u32.to_le_bytes());
+        raw.extend(value.to_le_bytes());
+    }
+    raw.extend(0u32.to_le_bytes());
+    raw.extend(jpeg);
+}
+
+#[test]
+fn extract_reports_orientation_without_rotating_or_changing_bytes() {
+    let f = Fixture::new("extract-orientation");
+    let image = rawsmith::image::Image::new(64, 48);
+    let jpeg = rawsmith::output::encode(Path::new("camera.jpg"), &image, 92).unwrap();
+    let output = f.path("camera.jpg");
+    for (orientation, rotation) in [(1, Some(0)), (3, Some(180)), (6, Some(90)), (8, Some(270)), (2, None), (9, None)] {
+        let mut file = Synthetic::new(64, 48, vec![2000; 64 * 48]);
+        file.orientation = orientation;
+        let mut raw = file.to_bytes();
+        embed_jpeg(&mut raw, &jpeg);
+        std::fs::write(&f.raw, &raw).unwrap();
+        let report = ok(&["extract-jpeg", s(&f.raw), "-o", s(&output)]);
+        assert_eq!(report["raw_orientation"], orientation);
+        assert_eq!(report["rotation_degrees_clockwise"], serde_json::json!(rotation));
+        assert_eq!(report["needs_rotation"], serde_json::json!(rotation.map(|degrees| degrees != 0)));
+        assert_eq!(report["output_replaced"], orientation != 1);
+        assert_eq!(std::fs::read(&output).unwrap(), jpeg);
+        assert_eq!(std::fs::read(&f.raw).unwrap(), raw);
+        if matches!(orientation, 6 | 8) {
+            let rendered = ok(&["render", s(&f.raw)]);
+            assert_eq!(
+                (rendered["stats"]["width"].as_u64(), rendered["stats"]["height"].as_u64()),
+                (Some(48), Some(64))
+            );
+        }
+    }
+}
+
+#[test]
+fn inspect_distinguishes_lossy_compression_from_uncompressed() {
+    let f = Fixture::new("compression");
+    let mut raw = Synthetic::new(64, 48, vec![2000; 64 * 48]).to_bytes();
+    // Change the sensor IFD's Compression tag; all-zero 16-byte blocks are
+    // valid Sony lossy blocks. No actual photo or new decoder is needed.
+    let raw_ifd = u32::from_le_bytes(raw[54..58].try_into().unwrap()) as usize;
+    let compression_value = raw_ifd + 2 + 3 * 12 + 8;
+    raw[compression_value..compression_value + 4].copy_from_slice(&32767u32.to_le_bytes());
+    let strip_entry = raw_ifd + 2 + 5 * 12 + 8;
+    let strip = u32::from_le_bytes(raw[strip_entry..strip_entry + 4].try_into().unwrap()) as usize;
+    raw[strip..].fill(0);
+    std::fs::write(&f.raw, &raw).unwrap();
+    assert_eq!(ok(&["inspect", s(&f.raw)])["compression"], "lossy-compressed");
+    // An unknown encoding must remain an error, not be labelled as lossy.
+    raw[compression_value..compression_value + 4].copy_from_slice(&65535u32.to_le_bytes());
+    std::fs::write(&f.raw, &raw).unwrap();
+    let (success, error) = run(&["inspect", s(&f.raw)]);
+    assert!(!success && error["error"]["kind"] == "unsupported", "{error}");
+}
+
+#[test]
+fn render_reports_the_loaded_recipe_and_trials_never_save_it() {
+    let f = Fixture::new("recipe-report");
+    let trial = ok(&["render", s(&f.raw), "--set", "exposure=0.25"]);
+    assert_eq!(trial.get("recipe_file"), Some(&Value::Null));
+    assert_eq!(trial["recipe"]["exposure"], 0.25);
+    assert!(!f.recipe().exists());
+    assert_eq!(ok(&["edit", s(&f.raw)])["recipe_file"], s(&f.recipe()));
+    let before = std::fs::read(f.recipe()).unwrap();
+    assert_eq!(ok(&["render", s(&f.raw), "--set", "exposure=0.5"])["recipe_file"], s(&f.recipe()));
+    assert_eq!(std::fs::read(f.recipe()).unwrap(), before);
+    let explicit = f.path("custom.json");
+    assert_eq!(ok(&["auto", s(&f.raw), "--recipe", s(&explicit)])["recipe_file"], s(&explicit));
+    assert_eq!(ok(&["render", s(&f.raw), "--recipe", s(&explicit)])["recipe_file"], s(&explicit));
+}
+
+#[test]
+fn developed_reports_declare_srgb_and_signal_output_replacement() {
+    let f = Fixture::new("replacement-report");
+    for command in ["render", "edit", "auto"] {
+        for format in ["jpg", "png"] {
+            let output = f.path(&format!("{command}.{format}"));
+            for replaced in [false, true] {
+                let report = ok(&[command, s(&f.raw), "-o", s(&output), "--size", "16"]);
+                assert_eq!(report["output_color_space"], "sRGB");
+                assert_eq!(report["output_replaced"], replaced);
+            }
+        }
+        let report = ok(&[command, s(&f.raw)]);
+        assert_eq!(report.get("output_color_space"), Some(&Value::Null));
+        assert_eq!(report.get("output_replaced"), Some(&Value::Null));
+    }
+    #[cfg(unix)]
+    {
+        for command in ["render", "edit", "auto"] {
+            let output = f.path(&format!("{command}-dangling.jpg"));
+            std::os::unix::fs::symlink("missing.jpg", &output).unwrap();
+            assert_eq!(ok(&[command, s(&f.raw), "-o", s(&output), "--size", "16"])["output_replaced"], true);
+            assert!(!f.path("missing.jpg").exists());
+        }
+    }
+}
+
+#[test]
+fn io_errors_name_paths_and_preserve_recipes_outputs_and_raws() {
+    let f = Fixture::new("io-paths");
+    let preview = f.path("preview.jpg");
+    ok(&["edit", s(&f.raw), "--set", "exposure=0.5", "-o", s(&preview), "--size", "16"]);
+    let raw = std::fs::read(&f.raw).unwrap();
+    let recipe = std::fs::read(f.recipe()).unwrap();
+    let image = std::fs::read(&preview).unwrap();
+    let missing_output = f.path("missing/preview.jpg");
+    let missing_recipe = f.path("missing/recipe.json");
+    let missing_raw = f.path("missing.ARW");
+    let directory = f.path("directory.jpg");
+    std::fs::create_dir(&directory).unwrap();
+    // Recipe reads must name their path too, including non-file destinations.
+    for path in [&missing_recipe, &directory] {
+        let (success, error) = run(&["render", s(&f.raw), "--recipe", s(path), "-o", s(&preview)]);
+        assert!(!success && error["error"]["kind"] == "io", "{error}");
+        assert!(error["error"]["message"].as_str().unwrap().contains(s(path)), "{error}");
+    }
+    for command in ["render", "edit", "auto"] {
+        for path in [&missing_output, &directory] {
+            let (success, error) = run(&[command, s(&f.raw), "-o", s(path), "--size", "16"]);
+            assert!(!success && error["error"]["kind"] == "io", "{error}");
+            assert!(error["error"]["message"].as_str().unwrap().contains(s(path)), "{error}");
+        }
+    }
+    for command in ["edit", "auto"] {
+        for output in [false, true] {
+            let mut args = vec![command, s(&f.raw), "--recipe", s(&missing_recipe)];
+            if output {
+                args.extend(["-o", s(&preview), "--size", "16"]);
+            }
+            let (_, error) = run(&args);
+            assert!(error["error"]["message"].as_str().unwrap().contains(s(&missing_recipe)), "{error}");
+        }
+    }
+    for command in ["inspect", "render", "edit", "auto", "extract-jpeg"] {
+        let mut args = vec![command, s(&missing_raw)];
+        if command == "extract-jpeg" {
+            args.extend(["-o", s(&preview)]);
+        }
+        let (_, error) = run(&args);
+        assert!(error["error"]["message"].as_str().unwrap().contains(s(&missing_raw)), "{error}");
+    }
+    // Extraction has its own write path, and must preserve an old output on failure.
+    let mut with_jpeg = raw.clone();
+    embed_jpeg(&mut with_jpeg, &image);
+    let camera_raw = f.path("camera.ARW");
+    std::fs::write(&camera_raw, &with_jpeg).unwrap();
+    for path in [&missing_output, &directory] {
+        let (_, error) = run(&["extract-jpeg", s(&camera_raw), "-o", s(path)]);
+        assert!(error["error"]["message"].as_str().unwrap().contains(s(path)), "{error}");
+    }
+    assert_eq!(std::fs::read(&f.raw).unwrap(), raw);
+    assert_eq!(std::fs::read(f.recipe()).unwrap(), recipe);
+    assert_eq!(std::fs::read(&preview).unwrap(), image);
+    assert!(!missing_recipe.exists() && !missing_output.exists());
+    assert!(std::fs::read_dir(&f.dir).unwrap().all(|entry| !entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .ends_with(".tmp")));
+}
+
+#[test]
+fn help_explains_overwrites_colour_orientation_and_error_contract() {
+    for command in [None, Some("render"), Some("edit"), Some("auto"), Some("extract-jpeg")] {
+        let mut args = Vec::new();
+        if let Some(command) = command {
+            args.push(command);
+        }
+        args.push("--help");
+        let output = Command::new(env!("CARGO_BIN_EXE_rawsmith")).args(&args).output().unwrap();
+        assert!(output.status.success() && output.stderr.is_empty());
+        let help = String::from_utf8(output.stdout).unwrap();
+        if command.is_some() {
+            assert!(!help.contains("keep a version") && !help.contains("RAWs"), "{help}");
+            assert_eq!(help.matches("output_replaced").count(), 1, "{help}");
+            assert!(help.contains("reports whether a file was replaced"), "{help}");
+        } else {
+            assert_eq!(help.matches("outputs are replaced").count(), 1, "{help}");
+            assert_eq!(help.matches("keep a version").count(), 1, "{help}");
+            assert_eq!(help.matches("RAWs are never written").count(), 1, "{help}");
+        }
+        if command == Some("extract-jpeg") {
+            assert!(
+                help.contains("raw_orientation")
+                    && help.contains("needs_rotation")
+                    && help.contains("not rotated")
+                    && help.contains("output_replaced")
+            );
+        } else if command.is_some() {
+            assert!(help.contains("sRGB") && help.contains("output_color_space") && help.contains("output_replaced"));
+        } else {
+            assert!(help.contains("exit status 1") && help.contains("empty stdout"));
+        }
+    }
+}
+
+#[test]
+fn failures_before_commit_preserve_existing_recipes_and_outputs() {
+    let f = Fixture::new("failure-contract");
+    let preview = f.path("preview.jpg");
+    let recipe_path = f.recipe();
+    ok(&["edit", s(&f.raw), "--set", "exposure=0.5", "-o", s(&preview), "--size", "16"]);
+    let raw = std::fs::read(&f.raw).unwrap();
+    let recipe = std::fs::read(f.recipe()).unwrap();
+    let image = std::fs::read(&preview).unwrap();
+    let invalid_raw = f.path("invalid.ARW");
+    let mut damaged = raw.clone();
+    damaged[..4].fill(0);
+    std::fs::write(&invalid_raw, &damaged).unwrap();
+    let unsupported_output = f.path("preview.bmp");
+    std::fs::write(&unsupported_output, b"previous unsupported output").unwrap();
+
+    for command in ["render", "edit", "auto"] {
+        for (source, output, settings, kind) in [
+            (&f.raw, &preview, vec!["--set", "exposure=99"], "params"),
+            (&invalid_raw, &preview, vec![], "format"),
+            (&f.raw, &preview, vec!["--set", "temperature=2000", "--set", "tint=150"], "params"),
+            (&f.raw, &unsupported_output, vec![], "params"),
+        ] {
+            let mut args = vec![command, s(source), "--recipe", s(&recipe_path), "-o", s(output), "--size", "16"];
+            args.extend(settings);
+            let (success, error) = run(&args);
+            assert!(!success && error["error"]["kind"] == kind, "{args:?}: {error}");
+            assert_eq!(std::fs::read(f.recipe()).unwrap(), recipe);
+            assert_eq!(std::fs::read(&preview).unwrap(), image);
+            assert_eq!(std::fs::read(&unsupported_output).unwrap(), b"previous unsupported output");
+        }
+    }
+    let (success, error) = run(&["extract-jpeg", s(&f.raw), "-o", s(&preview)]);
+    assert!(!success && error["error"]["kind"] == "unsupported", "{error}");
+    assert_eq!(std::fs::read(&preview).unwrap(), image);
+    assert_eq!(std::fs::read(&f.raw).unwrap(), raw);
+    assert_eq!(std::fs::read(&invalid_raw).unwrap(), damaged);
+    assert!(std::fs::read_dir(&f.dir).unwrap().all(|entry| !entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .ends_with(".tmp")));
+}
+
+#[test]
+fn small_preview_clipping_statistics_can_differ_from_the_full_export() {
+    let f = Fixture::new("preview-clipping");
+    let full = ok(&["render", s(&f.raw), "--set", "exposure=2", "-o", s(&f.path("full.png"))]);
+    let preview = ok(&["render", s(&f.raw), "--set", "exposure=2", "--size", "1", "-o", s(&f.path("preview.png"))]);
+    assert!(full["stats"]["clipped_highlights_pct"].as_f64().unwrap() > 0.0, "{full}");
+    assert_eq!(preview["stats"]["clipped_highlights_pct"], 0.0, "{preview}");
 }

@@ -21,6 +21,7 @@ Default skill directories:
 
 The installer does not edit shell profiles. Add the binary directory to PATH
 if necessary. Only macOS and Linux, on x86_64 or ARM64, are supported.
+Downloads are staged under TMPDIR (default: /tmp) and cleaned up on exit.
 EOF
 }
 
@@ -217,7 +218,10 @@ main() {
         *":$bin_dir:"*) ;;
         *) printf 'Add this directory to PATH: %s\n' "$bin_dir" ;;
     esac
-    printf 'Ask your agent to edit a RAW photo with rawsmith. If the skill is missing, reload skills or restart the agent.\n'
+    case "$skills" in
+        none) printf 'No agent skill was installed (--skills none). Run rawsmith --help to get started.\n' ;;
+        *) printf 'Ask your agent to edit a RAW photo with rawsmith. If the installed skill is missing, reload skills or restart the agent.\n' ;;
+    esac
 }
 
 # Defining main first prevents a truncated curl response from installing anything.

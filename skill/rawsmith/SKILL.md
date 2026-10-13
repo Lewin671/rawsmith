@@ -13,7 +13,10 @@ description: >-
 `rawsmith` turns a RAW file plus a small JSON *recipe* into a picture. The
 RAW is never modified. You edit by changing recipe parameters, rendering a
 preview, **looking at it**, and repeating. Successful subcommands print JSON
-on stdout; errors print JSON on stderr. `--help` and `--version` print plain text.
+on stdout; errors print JSON on stderr with exit status 1 and empty stdout.
+I/O errors name the path. `--help` and `--version` print plain text.
+Outputs are replaced; RAWs never. Use a new output name to keep a version.
+`output_replaced` reports replacement (`null` when no image was written).
 
 ## The loop
 
@@ -26,7 +29,8 @@ photos.
 1. **Inspect** — `rawsmith inspect photo.ARW`
    Camera settings, as-shot white balance, and how the sensor was exposed
    (`saturated_pct`: data that is gone for good; `headroom_stops`: unused
-   highlight room).
+   highlight room). `compression` distinguishes `uncompressed` from
+   `lossy-compressed`; lossless-compressed ARW remains unsupported.
 
 2. **Start from auto** — `rawsmith auto photo.ARW -o preview.jpg --size 1400`
    Analyses the scene, saves a starting recipe next to the RAW
@@ -46,8 +50,16 @@ photos.
    (highlights, shadows, contrast), then colour, then local finishing.
 
 5. **Compare with the previous preview** (write each round to a new file
-   name while you are deciding). Keep the change only if the picture is
-   better. If not, set the values back. Stop when another round would not
+   name while you are deciding).
+   For a camera reference, use `rawsmith extract-jpeg photo.ARW -o camera.jpg`.
+   It copies bytes unchanged: check `raw_orientation`, `needs_rotation`
+   and `rotation_degrees_clockwise` before comparing with an upright render.
+   Stored pixels may need 90°, 180° or 270° clockwise rotation. A viewer
+   may already apply JPEG orientation metadata, so avoid rotating twice.
+   Derived rotation fields are `null` for orientations other than 1/3/6/8;
+   check for mirroring or unsupported orientation before comparing.
+   Keep the change only if the picture is better. If not, set the values
+   back. Stop when another round would not
    visibly improve the picture — usually after 3 to 6 rounds. More rounds
    tend to over-process.
 
@@ -60,7 +72,10 @@ photos.
    small preview; that is perception, not a different rendering.
 
 7. **Export** — `rawsmith render photo.ARW -o final.jpg` (full resolution;
-   `.png` gives 16-bit). Report what you changed and why, in plain words.
+   `.png` gives 16-bit). Both declare sRGB: an ICC v2 profile in JPEG, the
+   standard sRGB chunk in PNG. `output_color_space` reports `"sRGB"`
+   (`null` without an image output). Read the full-resolution clipping
+   numbers too. Report what you changed and why, in plain words.
 
 `rawsmith schema` lists every parameter with range and meaning. Use
 `rawsmith render ... --set k=v` to try something without saving it (the
@@ -79,6 +94,16 @@ keep several versions of one photo, pass the same `--recipe FILE` to every
 `edit` and `auto` can create that file; `render` reports an error if an
 explicit recipe file does not exist. Even without a preview, edits check
 the RAW and white balance before saving.
+`recipe_file` reports the file read by `render` (`null` when a missing
+default sidecar means defaults), or the file saved by `edit`/`auto`.
+
+Validation, decoding, rendering, encoding and staging failures preserve
+existing recipes and outputs; no final image or recipe is created. An
+image and recipe are staged before either is replaced, and ordinary commit
+failures roll back the first replacement. The pair is not jointly atomic:
+process termination, power loss, concurrent destination changes or a failed
+rollback are not covered. If rollback fails, read the error's recovery
+path for the retained old output backup, when one exists.
 
 Rendering is deterministic: the same binary, RAW, recipe and render options
 give a byte-identical file, so re-rendering a restored recipe reproduces the
@@ -141,6 +166,11 @@ values are in every render's `white_balance`). Setting only one of the two
 keeps the other as shot; `--set temperature=null` returns to as shot.
 
 ## Reading the stats
+
+Statistics describe that render's size and region. Small clipped patches
+can average away in a small preview, so clipping percentages can differ
+slightly from the full-resolution export. Check detail and read the final
+export report before deciding that highlight or shadow detail is safe.
 
 - `tones.p50` is the median lightness (0–100). Typical daylight scenes sit
   around 45–60; snow and fog higher; dusk lower. It is a description, not

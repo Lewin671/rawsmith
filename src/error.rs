@@ -13,6 +13,11 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Preserve the OS error category while naming the operation and its path.
+pub fn io_at(operation: &str, path: &std::path::Path, error: std::io::Error) -> std::io::Error {
+    std::io::Error::new(error.kind(), format!("cannot {operation} {}: {error}", path.display()))
+}
+
 impl Error {
     /// Stable machine-readable category, reported in JSON errors.
     pub fn kind(&self) -> &'static str {

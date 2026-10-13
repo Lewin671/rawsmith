@@ -12,6 +12,10 @@ static musl binaries). Requires `curl`, `tar`, `awk`, `mktemp` and
 `sha256sum` or `shasum`.
 No Rust toolchain or `sudo` is needed. Downloads are pinned to one release
 and checked against its SHA-256 manifest before installation.
+Downloads are staged under `TMPDIR` (default `/tmp`) and cleaned up on exit.
+Choose a writable directory with enough space by setting `TMPDIR` for the
+installer process, for example `| TMPDIR=/path/to/scratch sh` in the
+pipeline above (the directory must already exist).
 
 The binary goes in `~/.local/bin`. If that directory is not already on
 your PATH, add it to your shell configuration and reload your shell:
@@ -33,6 +37,8 @@ Re-running updates installer-managed skills. Locally customized skills
 are preserved; `--force` saves a backup before replacing them. See
 [release downloads](https://github.com/Lewin671/rawsmith/releases) or
 `install.sh --help` for all options.
+With `--skills none`, the installer prints CLI getting-started guidance;
+skill reload/restart guidance is printed only when a skill was installed.
 
 For a manual download, choose `rawsmith-<platform>-<architecture>.tar.gz`:
 `linux-x86_64`, `linux-arm64`, `macos-x86_64` (Intel), or `macos-arm64`

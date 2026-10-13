@@ -6,14 +6,19 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
 
 use rawsmith::color::Spaces;
-use rawsmith::error::{Error, Result};
+use rawsmith::error::{io_at, Error, Result};
 use rawsmith::params::{self, Params};
 use rawsmith::pipeline::{self, Size};
 use rawsmith::{arw, output, stats};
 
-/// Develop RAW photos from a JSON recipe. Every command prints JSON on stdout.
+/// Develop RAW photos from a JSON recipe. Successful subcommands print JSON on stdout.
 #[derive(Parser)]
-#[command(name = "rawsmith", version, about)]
+#[command(
+    name = "rawsmith",
+    version,
+    about,
+    after_help = "Errors are JSON on stderr (exit status 1, empty stdout).\nRAWs are never written; outputs are replaced, so use a new output name to keep a version.\nValidation and staging failures preserve recipes and outputs; paired saves roll back commit failures unless interrupted or rollback fails."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -21,7 +26,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Describe a RAW file: camera settings, white balance and exposure of the sensor data
+    /// Describe a RAW file: compression, camera settings, white balance and sensor exposure
     Inspect { raw: PathBuf },
     /// List every recipe parameter with its range, default and meaning
     Schema,
@@ -31,9 +36,13 @@ enum Command {
     Edit(Edit),
     /// Analyse the scene, save an automatic starting recipe, and optionally render a preview
     Auto(Auto),
-    /// Save the camera's embedded JPEG unchanged, including any metadata, for reference
+    /// Copy the embedded JPEG unchanged, including metadata; report RAW orientation and needed rotation
+    #[command(
+        after_help = "The stored JPEG pixels are not rotated. raw_orientation reports the RAW's EXIF orientation; needs_rotation and rotation_degrees_clockwise describe the rotation of stored pixels for orientations 1, 3, 6 and 8 (null for others). A viewer may already apply embedded orientation metadata; do not rotate twice."
+    )]
     ExtractJpeg {
         raw: PathBuf,
+        /// Output JPEG; output_replaced reports whether a file was replaced.
         #[arg(short, long)]
         output: PathBuf,
     },
@@ -41,9 +50,9 @@ enum Command {
 
 #[derive(Args)]
 struct Source {
-    /// The RAW file. It is only ever read.
+    /// The RAW file
     raw: PathBuf,
-    /// Recipe file [default: <raw>.rawsmith.json next to the RAW]
+    /// Recipe file [default: <raw>.rawsmith.json next to the RAW]. Render reports recipe_file=null when defaults are used without a sidecar.
     #[arg(long)]
     recipe: Option<PathBuf>,
     /// Parameter assignment (repeatable): exposure=0.5 or hsl.blue.saturation=-20 sets a
@@ -54,7 +63,7 @@ struct Source {
 
 #[derive(Args)]
 struct Target {
-    /// Output image (.jpg or 16-bit .png)
+    /// Output image (sRGB ICC JPEG or sRGB 16-bit PNG, reported as output_color_space); output_replaced reports whether a file was replaced.
     #[arg(short, long)]
     output: Option<PathBuf>,
     /// Longest edge in pixels (at least 1) [default: full resolution]. Small sizes render much faster.
@@ -121,7 +130,7 @@ fn recipe_path(source: &Source) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn load_recipe(path: &Path, allow_missing: bool) -> Result<Params> {
+fn load_recipe(path: &Path, allow_missing: bool) -> Result<(Params, bool)> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
             let mut value: Value = serde_json::from_str(&text)
@@ -129,10 +138,10 @@ fn load_recipe(path: &Path, allow_missing: bool) -> Result<Params> {
             if let Some(object) = value.as_object_mut() {
                 object.remove("rawsmith");
             }
-            Params::from_value(value)
+            Params::from_value(value).map(|params| (params, true))
         }
-        Err(e) if allow_missing && e.kind() == std::io::ErrorKind::NotFound => Ok(Params::default()),
-        Err(e) => Err(Error::Io(std::io::Error::new(e.kind(), format!("cannot read recipe {}: {e}", path.display())))),
+        Err(e) if allow_missing && e.kind() == std::io::ErrorKind::NotFound => Ok((Params::default(), false)),
+        Err(e) => Err(Error::Io(io_at("read recipe", path, e))),
     }
 }
 
@@ -143,10 +152,12 @@ fn recipe_bytes(params: &Params) -> Vec<u8> {
     (text + "\n").into_bytes()
 }
 
+fn read_file(path: &Path) -> Result<Vec<u8>> {
+    std::fs::read(path).map_err(|e| Error::Io(io_at("read", path, e)))
+}
+
 fn read_raw(path: &Path) -> Result<arw::RawImage> {
-    let file = std::fs::read(path)
-        .map_err(|e| Error::Io(std::io::Error::new(e.kind(), format!("cannot read {}: {e}", path.display()))))?;
-    arw::decode(&file)
+    arw::decode(&read_file(path)?)
 }
 
 fn parse_region(text: &str) -> Result<[f32; 4]> {
@@ -224,6 +235,8 @@ fn prepare_render(raw: &arw::RawImage, params: &Params, target: &Target) -> Resu
     Ok((
         json!({
             "output": target.output,
+            "output_color_space": target.output.as_ref().map(|_| "sRGB"),
+            "output_replaced": null,
             "recipe": params.to_sparse(),
             "white_balance": scene.white_balance,
             "sensor_clipped_pct": scene.sensor_clipped_pct,
@@ -241,7 +254,7 @@ fn render(raw_path: &Path, params: &Params, target: &Target) -> Result<Value> {
     }
     let (mut report, bytes) = prepare_render(&read_raw(raw_path)?, params, target)?;
     if let (Some(out), Some(bytes)) = (&target.output, bytes) {
-        output::replace(out, &bytes)?;
+        report["output_replaced"] = json!(output::replace(out, &bytes)?);
     }
     report["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
     Ok(report)
@@ -252,14 +265,14 @@ fn save_edit(raw: &arw::RawImage, recipe: &Path, params: &Params, target: &Targe
     let started = Instant::now();
     let recipe_data = recipe_bytes(params);
     let mut report = if let Some(out) = &target.output {
-        let (report, bytes) = prepare_render(raw, params, target)?;
+        let (mut report, bytes) = prepare_render(raw, params, target)?;
         let bytes = bytes.expect("an output path always produces encoded bytes");
-        output::replace_pair((out, &bytes), (recipe, &recipe_data))?;
+        report["output_replaced"] = json!(output::replace_pair((out, &bytes), (recipe, &recipe_data))?);
         report
     } else {
         pipeline::white_balance(raw, params)?;
         output::replace(recipe, &recipe_data)?;
-        json!({"recipe": params.to_sparse()})
+        json!({"recipe": params.to_sparse(), "output_color_space": null, "output_replaced": null})
     };
     if target.output.is_some() {
         report["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
@@ -276,6 +289,7 @@ fn run(cli: Cli) -> Result<Value> {
             Ok(json!({
                 "file": path,
                 "camera": raw.meta,
+                "compression": raw.compression,
                 "sensor": {
                     "width": raw.crop.width,
                     "height": raw.crop.height,
@@ -292,8 +306,11 @@ fn run(cli: Cli) -> Result<Value> {
             target.validate()?;
             let path = recipe_path(&source)?;
             distinct(&path, &target)?;
-            let params = load_recipe(&path, source.recipe.is_none())?.with_assignments(&source.set)?;
-            render(&source.raw, &params, &target)
+            let (params, loaded) = load_recipe(&path, source.recipe.is_none())?;
+            let params = params.with_assignments(&source.set)?;
+            let mut report = render(&source.raw, &params, &target)?;
+            report["recipe_file"] = if loaded { json!(path) } else { Value::Null };
+            Ok(report)
         }
         Command::Edit(Edit { source, target, reset }) => {
             target.validate()?;
@@ -302,7 +319,7 @@ fn run(cli: Cli) -> Result<Value> {
             if let Some(out) = &target.output {
                 protect_raw(&source.raw, out, "output")?;
             }
-            let base = if reset { Params::default() } else { load_recipe(&path, true)? };
+            let base = if reset { Params::default() } else { load_recipe(&path, true)?.0 };
             let params = base.with_assignments(&source.set)?;
             save_edit(&read_raw(&source.raw)?, &path, &params, &target)
         }
@@ -314,7 +331,7 @@ fn run(cli: Cli) -> Result<Value> {
                 protect_raw(&source.raw, out, "output")?;
             }
             // White balance, crop and other non-tone settings of an existing recipe are kept.
-            let base = load_recipe(&path, true)?;
+            let base = load_recipe(&path, true)?.0;
             let raw = read_raw(&source.raw)?;
             let proposal = rawsmith::auto::auto(&raw, &base)?;
             let params = proposal.params.with_assignments(&source.set)?;
@@ -324,12 +341,24 @@ fn run(cli: Cli) -> Result<Value> {
         }
         Command::ExtractJpeg { raw: path, output } => {
             protect_raw(&path, &output, "output")?;
-            let file = std::fs::read(&path)?;
+            let file = read_file(&path)?;
             let raw = arw::decode(&file)?;
             let (offset, len) =
                 raw.embedded_jpeg.ok_or_else(|| Error::Unsupported("this file has no embedded JPEG".into()))?;
-            output::replace(&output, &file[offset..offset + len])?;
-            Ok(json!({"output": output, "bytes": len}))
+            let replaced = output::replace(&output, &file[offset..offset + len])?;
+            let rotation: Option<u16> = match raw.meta.orientation {
+                1 => Some(0),
+                3 => Some(180),
+                6 => Some(90),
+                8 => Some(270),
+                _ => None,
+            };
+            Ok(json!({
+                "output": output, "bytes": len, "output_replaced": replaced,
+                "raw_orientation": raw.meta.orientation,
+                "needs_rotation": rotation.map(|degrees| degrees != 0),
+                "rotation_degrees_clockwise": rotation,
+            }))
         }
     }
 }

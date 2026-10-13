@@ -49,6 +49,8 @@ pub struct Crop {
 }
 
 pub struct RawImage {
+    /// Encoding of the sensor samples, not of the embedded JPEG.
+    pub compression: Compression,
     /// Full sensor mosaic, `width * height` samples.
     pub data: Vec<u16>,
     pub width: usize,
@@ -66,6 +68,13 @@ pub struct RawImage {
     pub meta: Metadata,
     /// Byte range of the largest embedded JPEG, if any.
     pub embedded_jpeg: Option<(usize, usize)>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Compression {
+    Uncompressed,
+    LossyCompressed,
 }
 
 fn i16s(tiff: &Tiff, ifd: &Ifd, tag: u16) -> Option<Vec<i16>> {
@@ -278,6 +287,7 @@ pub fn decode(file: &[u8]) -> Result<RawImage> {
     }
 
     Ok(RawImage {
+        compression: if compression == 1 { Compression::Uncompressed } else { Compression::LossyCompressed },
         data,
         width,
         height,

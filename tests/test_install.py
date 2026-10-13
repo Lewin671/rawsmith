@@ -285,13 +285,41 @@ else:
         self.assertFalse(self.codex.exists())
 
     def test_codex_only_does_not_install_claude_skill(self):
-        self.install("--version", "0.1.0", "--skills", "codex")
+        result = self.install("--version", "0.1.0", "--skills", "codex")
         self.assert_skill(self.codex)
         self.assertFalse(self.claude.exists())
+        self.assertIn("reload skills or restart the agent", result.stdout)
+
+    def test_no_skills_prints_binary_guidance_and_stages_under_tmpdir(self):
+        staging = self.base / "download staging"
+        staging.mkdir()
+        self.env["TMPDIR"] = str(staging)
+        # Record the actual output paths passed to the offline curl fixture.
+        curl = self.tools / "curl"
+        source = curl.read_text().replace(
+            "if output:\n    shutil.copyfile(source, output)",
+            "if output:\n    with open(os.environ['FAKE_STAGE_LOG'], 'a') as log:\n"
+            "        log.write(output + '\\n')\n    shutil.copyfile(source, output)",
+        )
+        curl.write_text(source)
+        log = self.base / "stage paths"
+        self.env["FAKE_STAGE_LOG"] = str(log)
+        result = self.install("--version", "0.1.1", "--skills", "none")
+        self.assert_binary("0.1.1")
+        self.assertFalse(self.claude.exists() or self.codex.exists())
+        self.assertIn("No agent skill was installed", result.stdout)
+        self.assertIn("rawsmith --help", result.stdout)
+        self.assertNotIn("reload skills", result.stdout)
+        self.assertNotIn("restart the agent", result.stdout)
+        paths = log.read_text().splitlines()
+        self.assertEqual(len(paths), 2)
+        self.assertTrue(all(Path(path).is_relative_to(staging) for path in paths))
+        self.assertEqual(list(staging.iterdir()), [])
 
     def test_help_does_not_download_or_modify_home(self):
         result = self.install("--help")
         self.assertIn("--skills", result.stdout + result.stderr)
+        self.assertIn("TMPDIR (default: /tmp)", result.stdout)
         self.assertFalse(self.log.exists())
         self.assertEqual(list(self.home.iterdir()), [])
 

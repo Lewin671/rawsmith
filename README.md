@@ -85,6 +85,9 @@ It checks full-resolution detail for noise, sharpening halos and lost texture.
 rawsmith render sunset.ARW -o sunset-final.jpg
 ```
 It exports the full-resolution JPEG; `.png` would give 16-bit output.
+Both declare sRGB (ICC in JPEG, a standard sRGB chunk in PNG).
+Outputs are replaced; RAWs never. Use a new output name to keep a version;
+the report's `output_replaced` field signals replacement.
 
 The published recipe records the resulting edit:
 
@@ -119,9 +122,13 @@ The published recipe records the resulting edit:
   the same file, bit for bit ([exact terms](docs/cli.md)).
   Separate recipes keep separate versions.
 - **A discoverable CLI.** Successful subcommands return JSON on stdout;
-  errors return JSON on stderr with a nonzero exit code. `--help` and
+  errors return JSON on stderr with exit status 1 and empty stdout. `--help` and
   `--version` print plain text. `rawsmith schema` gives parameter ranges
   and meanings, including `vignette` and graduated filters (`gradients`).
+  Reports identify the recipe file, declared output colour space and RAW
+  compression. Validation and staging failures leave recipes and outputs
+  unchanged; paired saves roll back ordinary commit failures. See the
+  [CLI reference](docs/cli.md) for crash and rollback limits.
 - **The developing engine is here.** Rust modules implement RAW decoding,
   demosaicing, highlight reconstruction, lens corrections, colour, tone,
   local contrast, dehaze, noise reduction and sharpening.
@@ -164,6 +171,9 @@ matrix and a test file; see [CONTRIBUTING.md](CONTRIBUTING.md).
 Local edits are graduated filters. There are no brushes, subject masks,
 spot removal or dust removal. Output is sRGB JPEG or 16-bit PNG, without
 camera metadata.
+JPEG embeds a compact ICC v2 sRGB profile; PNG uses its standard sRGB chunk.
+Preview clipping statistics can differ slightly from the full-resolution
+export, as small clipped areas average away in small previews.
 
 ## Privacy
 
@@ -171,6 +181,9 @@ rawsmith develops photos locally without network access. Images produced
 by `render`, `edit` and `auto` contain no EXIF, GPS or serial numbers.
 `extract-jpeg` copies the camera JPEG unchanged, including its metadata;
 check or remove it before sharing.
+It also leaves stored pixels unrotated and reports `raw_orientation`,
+`needs_rotation` and `rotation_degrees_clockwise` for upright comparison.
+Check whether your viewer already applies orientation before rotating.
 
 If a cloud-hosted assistant views your previews, those images are sent to
 its provider, like any other image you show it.
@@ -180,6 +193,8 @@ its provider, like any other image you show it.
 Choose [Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT).
 Contributions use the same terms. Photographs have
 [separate permissions](docs/images/README.md).
+The embedded sRGB profile is CC0; see its
+[source and licence](assets/profiles/README.md).
 
 The camera colour matrix is sensor characterisation data published in
 Adobe's DNG Converter and reproduced by open-source RAW software. The
