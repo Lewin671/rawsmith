@@ -453,8 +453,9 @@ fn run(cli: Cli) -> Result<Value> {
             }
             // White balance, crop and other non-tone settings of an existing recipe are kept.
             let (base, origin) = load_recipe(&path, true)?;
-            let raw = read_raw(&source.raw)?;
-            let proposal = rawsmith::auto::auto(&raw, &base)?;
+            let file = read_file(&source.raw)?;
+            let raw = arw::decode(&file)?;
+            let proposal = rawsmith::auto::auto_with_file(&raw, &base, &file)?;
             let params = proposal.params.with_assignments(&source.set)?;
             let mut report = save_edit(&raw, &path, &params, &target)?;
             report["decisions"] = json!(proposal.notes);

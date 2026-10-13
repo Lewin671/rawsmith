@@ -15,7 +15,7 @@ fn vivid_subject_in_neutral_frame_does_not_get_colour_boost() {
     let result =
         propose(|x, y| if x < 32 && y < 48 { [0.15, 0.02, 0.12] } else { grey(0.10 + 0.03 * y as f32 / 96.0) });
     println!("vivid: {:?}", result.params.to_sparse());
-    assert!(result.params.vibrance <= 5.0, "a vivid subject must not be hidden by the frame mean");
+    assert_eq!(result.params.vibrance, 0.0, "a vivid subject must not be hidden by the frame mean");
 }
 
 #[test]
@@ -162,4 +162,243 @@ fn lost_white_background_is_not_evidence_for_a_high_key_lift() {
     );
     assert_eq!(result.params.whites, 0.0);
     assert!(result.notes.iter().any(|n| n.contains("occupies the median")));
+}
+
+fn rendered(raw: &arw::RawImage, params: &Params) -> rawsmith::stats::ImageStats {
+    let spaces = rawsmith::color::Spaces::new();
+    let scene = rawsmith::pipeline::scene(raw, params, rawsmith::pipeline::Size::default()).unwrap();
+    rawsmith::stats::image_stats(&rawsmith::pipeline::finish(&scene.image, params, &spaces), &spaces)
+}
+
+#[test]
+fn small_recoverable_highlight_does_not_darken_frame() {
+    let raw = arw::decode(
+        &Synthetic::from_camera_rgb(128, 96, |x, y| {
+            if x < 8 && y < 32 {
+                grey(0.95)
+            } else {
+                grey(0.07 + 0.03 * y as f32 / 96.0)
+            }
+        })
+        .to_bytes(),
+    )
+    .unwrap();
+    let result = auto::auto(&raw, &Params::default()).unwrap();
+    let baseline = rendered(&raw, &Params::default());
+    let finished = rendered(&raw, &result.params);
+    assert!(result.params.exposure >= 0.0, "2% recoverable highlight must not set negative global EV");
+    assert!(finished.tones.p50 >= baseline.tones.p50 - 1.0);
+    result.params.validate().unwrap();
+}
+
+#[test]
+fn muted_scene_gets_finished_contrast_and_colour() {
+    let raw = arw::decode(
+        &Synthetic::from_camera_rgb(128, 96, |x, y| {
+            let level = 0.045 + 0.05 * y as f32 / 96.0;
+            let tint = if x < 64 { 1.08 } else { 0.92 };
+            [level * tint / (2600.0 / 1024.0), level, level / (1600.0 / 1024.0)]
+        })
+        .to_bytes(),
+    )
+    .unwrap();
+    let result = auto::auto(&raw, &Params::default()).unwrap();
+    let baseline = rendered(&raw, &Params::default());
+    let finished = rendered(&raw, &result.params);
+    println!("muted {:?}; {:?} -> {:?}", result.params.to_sparse(), baseline, finished);
+    assert!(result.params.contrast >= 10.0);
+    assert!(result.params.vibrance >= 10.0);
+    assert!(finished.tones.p75 - finished.tones.p25 > baseline.tones.p75 - baseline.tones.p25 + 0.5);
+    assert!(finished.chroma_mean > baseline.chroma_mean);
+    assert!(finished.tones.p50 >= baseline.tones.p50 - 1.0);
+}
+
+#[test]
+fn small_near_clipped_area_does_not_veto_muted_subject_colour() {
+    let result = propose(|x, y| {
+        if x < 8 && y < 32 {
+            [1.0; 3]
+        } else {
+            let level = 0.06 + 0.025 * y as f32 / 96.0;
+            [level * 1.08 / (2600.0 / 1024.0), level, level / (1600.0 / 1024.0)]
+        }
+    });
+    assert!(result.params.vibrance >= 10.0, "a 2% white region must not veto colour in the other 98%");
+}
+
+#[test]
+fn backlit_subject_in_shade_is_visibly_opened() {
+    let raw = arw::decode(
+        &Synthetic::from_camera_rgb(
+            128,
+            96,
+            |_, y| {
+                if y < 24 {
+                    [1.0; 3]
+                } else {
+                    grey(0.012 + 0.005 * y as f32 / 96.0)
+                }
+            },
+        )
+        .to_bytes(),
+    )
+    .unwrap();
+    let result = auto::auto(&raw, &Params::default()).unwrap();
+    let baseline = rendered(&raw, &Params::default());
+    let finished = rendered(&raw, &result.params);
+    println!("shade {:?}; {:?}; {:?} -> {:?}", result.params.to_sparse(), result.notes, baseline.zones, finished.zones);
+    assert!(result.params.shadows > 0.0);
+    assert!(finished.zones[2][1] >= baseline.zones[2][1] + 4.0, "test the shaded subject, not the sky");
+    assert!(result.params.exposure >= 0.0);
+}
+
+fn camera_file(pixel: impl Fn(usize, usize) -> [f32; 3], jpeg: &[u8], space: Option<u16>) -> Vec<u8> {
+    let mut synthetic = Synthetic::from_camera_rgb(128, 96, pixel);
+    synthetic.exif_color_space = space;
+    synthetic.embedded_jpeg = Some(jpeg.to_vec());
+    synthetic.to_bytes()
+}
+
+fn camera_jpeg(pixel: impl Fn(usize, usize) -> [f32; 3]) -> Vec<u8> {
+    let mut image = rawsmith::image::Image::new(128, 96);
+    for y in 0..96 {
+        for x in 0..128 {
+            image.data[y * 128 + x] = pixel(x, y);
+        }
+    }
+    let mut bytes = Vec::new();
+    jpeg_encoder::Encoder::new(&mut bytes, 100)
+        .encode(&rawsmith::output::to_rgb8(&image), 128, 96, jpeg_encoder::ColorType::Rgb)
+        .unwrap();
+    bytes
+}
+
+#[test]
+fn camera_brightness_floor_changes_exposure_and_is_explained() {
+    let jpeg = camera_jpeg(|_, y| [0.40 + 0.25 * y as f32 / 96.0; 3]);
+    let file = camera_file(|_, y| grey(0.035 + 0.035 * y as f32 / 96.0), &jpeg, Some(1));
+    let raw = arw::decode(&file).unwrap();
+    let fallback = auto::auto(&raw, &Params::default()).unwrap();
+    let result = auto::auto_with_file(&raw, &Params::default(), &file).unwrap();
+    let camera = rawsmith::compare::row(
+        &raw,
+        &file,
+        &[rawsmith::compare::Panel { kind: "camera", params: Params::default(), recipe_file: None }],
+        128,
+    )
+    .unwrap()
+    .0;
+    let reference = rawsmith::stats::image_stats(&camera, &rawsmith::color::Spaces::new());
+    let finished = rendered(&raw, &result.params);
+    println!("camera bound {:?}; {:?}", result.params.to_sparse(), result.notes);
+    assert!(result.params.exposure > fallback.params.exposure);
+    assert!(finished.tones.p50 >= reference.tones.p50 - 2.1);
+    assert!(result.notes.iter().any(|n| n.contains("camera sanity bound raised brightness bounds")));
+    result.params.validate().unwrap();
+    let again = auto::auto_with_file(&raw, &Params::default(), &file).unwrap();
+    assert_eq!(result.params.to_sparse(), again.params.to_sparse());
+    assert_eq!(result.notes, again.notes);
+}
+
+#[test]
+fn unknown_or_corrupt_camera_colour_uses_explained_finished_fallback() {
+    for (jpeg, space) in [(camera_jpeg(|_, _| [0.8; 3]), None), (vec![1, 2, 3], Some(1))] {
+        let file = camera_file(|_, y| grey(0.05 + 0.01 * y as f32 / 96.0), &jpeg, space);
+        let raw = arw::decode(&file).unwrap();
+        let baseline = auto::auto(&raw, &Params::default()).unwrap();
+        let result = auto::auto_with_file(&raw, &Params::default(), &file).unwrap();
+        assert_eq!(result.params.to_sparse(), baseline.params.to_sparse());
+        assert!(result.notes.iter().any(|n| n.contains("camera tone bound unavailable")));
+    }
+}
+
+#[test]
+fn adobe_rgb_camera_is_converted_before_setting_tone_floor() {
+    let jpeg = camera_jpeg(|_, y| [0.48, 0.36 + 0.12 * y as f32 / 96.0, 0.32]);
+    let mut synthetic = Synthetic::from_camera_rgb(128, 96, |_, y| grey(0.04 + 0.02 * y as f32 / 96.0));
+    synthetic.exif_color_space = Some(65535);
+    synthetic.interoperability_index = Some(*b"R03\0");
+    synthetic.embedded_jpeg = Some(jpeg);
+    let file = synthetic.to_bytes();
+    let raw = arw::decode(&file).unwrap();
+    let result = auto::auto_with_file(&raw, &Params::default(), &file).unwrap();
+    assert!(result
+        .notes
+        .iter()
+        .any(|n| n.contains("camera tone bound: verified sRGB") && n.contains("Adobe RGB (1998) to sRGB")));
+    let (camera, _, srgb) = rawsmith::compare::row(
+        &raw,
+        &file,
+        &[rawsmith::compare::Panel { kind: "camera", params: Params::default(), recipe_file: None }],
+        128,
+    )
+    .unwrap();
+    assert!(srgb);
+    let reference = rawsmith::stats::image_stats(&camera, &rawsmith::color::Spaces::new());
+    let finished = rendered(&raw, &result.params);
+    assert!(finished.tones.p50 >= reference.tones.p50 - 2.1);
+    assert!(finished.tones.p75 >= reference.tones.p75 - 2.1);
+}
+
+#[test]
+fn camera_tone_floor_respects_recipe_crop_and_orientation() {
+    let jpeg = camera_jpeg(|x, _| if x < 64 { [0.3; 3] } else { [0.9; 3] });
+    let mut synthetic = Synthetic::from_camera_rgb(128, 96, |_, y| grey(0.04 + 0.02 * y as f32 / 96.0));
+    synthetic.orientation = 6;
+    synthetic.exif_color_space = Some(1);
+    synthetic.embedded_jpeg = Some(jpeg);
+    let file = synthetic.to_bytes();
+    let raw = arw::decode(&file).unwrap();
+    let mut base = Params::default();
+    // Clockwise orientation puts the dark left half at the top.
+    base.crop.bottom = 0.45;
+    let result = auto::auto_with_file(&raw, &base, &file).unwrap();
+    assert_eq!(result.params.crop.bottom, base.crop.bottom);
+    let bound = result.notes.iter().find(|n| n.starts_with("camera tone bound:")).unwrap();
+    assert!(bound.contains("median 41."), "wrong framing lets the bright excluded half set the floor: {bound}");
+    assert!(!result.notes.iter().any(|n| n.contains("bound remains unresolved")));
+}
+
+#[test]
+fn camera_contrast_bound_is_bounded_and_explains_unreachable_floor() {
+    let jpeg = camera_jpeg(|_, y| if y < 60 { [0.46; 3] } else { [0.8; 3] });
+    let file = camera_file(|_, y| grey(0.07 + 0.025 * y as f32 / 96.0), &jpeg, Some(1));
+    let raw = arw::decode(&file).unwrap();
+    let result = auto::auto_with_file(&raw, &Params::default(), &file).unwrap();
+    println!("contrast bound {:?}; {:?}", result.params.to_sparse(), result.notes);
+    assert!(result.params.contrast >= 10.0 && result.params.contrast <= 30.0);
+    assert!(result.notes.iter().any(|n| n.contains("requested brightness floor unreachable")));
+    assert!(result.params.exposure <= 1.2);
+    assert!(result
+        .notes
+        .iter()
+        .any(|n| n.contains("camera upper-midtone contrast bound") && n.contains("unresolved:")));
+    result.params.validate().unwrap();
+}
+
+#[test]
+fn camera_upper_midtone_gap_can_raise_contrast() {
+    let jpeg = camera_jpeg(|_, y| if y < 60 { [0.46; 3] } else { [0.60; 3] });
+    let file = camera_file(
+        |_, y| {
+            let level = 0.03 + 0.10 * y as f32 / 96.0;
+            [level * 1.25 / (2600.0 / 1024.0), level, level * 0.8 / (1600.0 / 1024.0)]
+        },
+        &jpeg,
+        Some(1),
+    );
+    let raw = arw::decode(&file).unwrap();
+    let fallback = auto::auto(&raw, &Params::default()).unwrap();
+    let result = auto::auto_with_file(&raw, &Params::default(), &file).unwrap();
+    let baseline = rendered(&raw, &fallback.params);
+    let finished = rendered(&raw, &result.params);
+    println!(
+        "camera contrast {:?} -> {:?}; {:?}",
+        fallback.params.to_sparse(),
+        result.params.to_sparse(),
+        result.notes
+    );
+    assert!(result.params.contrast > fallback.params.contrast);
+    assert!(finished.tones.p75 - finished.tones.p50 > baseline.tones.p75 - baseline.tones.p50 + 0.1);
+    assert!(result.params.contrast <= 30.0);
 }

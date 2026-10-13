@@ -40,8 +40,8 @@ photos.
 2. **Start from auto** — `rawsmith auto photo.ARW -o preview.jpg --size 1400`
    Analyses the scene, saves a starting recipe next to the RAW
    (`photo.ARW.rawsmith.json`) and explains each decision. Auto proposes a
-   measured starting point. Read its evidence and bounds;
-   ambiguous scenes and local lighting still need visual editing.
+   finished starting point with contrast and colour defaults. Read its
+   evidence and bounds; local lighting still needs visual review.
    Its median floor allows positive exposure after highlight compression;
    compression yields if necessary, and later tone trials back off the
    control that breaches the floor or clipping bounds.
