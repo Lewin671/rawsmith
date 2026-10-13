@@ -65,10 +65,11 @@ keep a version.
    starting recipe and explains each choice in `decisions`;
    `rawsmith compare photo.ARW -o cmp.jpg` shows the camera's JPEG (left)
    beside the saved recipe (right), upright and in the same framing.
-   Open both images. `auto` corrects; it does not interpret, and it
-   never crops, changes white balance or adds local adjustments. It can
-   come out flatter than the camera's JPEG. Use it for its measurements
-   and as a base to build on; the camera's JPEG is the bar to beat.
+   Open both images. `auto` aims for a sound, finished-looking base —
+   brightness, contrast, colour and noise reduction from what it
+   measured — but it does not interpret, and it never crops, changes
+   white balance or adds local adjustments. Build on it; the camera's
+   JPEG is the bar to beat.
 
 3. **Decide the picture.** State the intent sentence. Then list what
    stands between the current render and that picture: framing first

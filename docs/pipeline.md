@@ -324,40 +324,44 @@ The measurements and policy are:
   and clear shaded snow are ambiguous. The classifier describes a tonal
   distribution, not semantic recognition of a subject. Confidence values
   are heuristic gate strengths, not calibrated probabilities.
-- **Exposure and highlight cost:** local shadow/highlight adjustments
-  precede exposure. The ordinary median target stays within two lightness
-  points of the metered rendering; high-key evidence permits up to 18
-  additional points. When complete loss occupies at least half the frame,
-  the median cannot meter the rest: global exposure stays at zero and its
-  search is skipped. Exposure otherwise searches up to +0.5 EV (up to +1.2 with
-  strong high-key evidence). Bright limits are L90 90, reduced by up to
-  eight points for colourful highlights, and L99 96 to retain tonal room.
-  A wide bright/median separation (35–60 points) establishes backlight.
-  Sensor loss in its bright area relaxes highlight targets and reduces
-  highlight suppression: darkening lost information does not restore it.
-  Where sampled complete loss covers at least 1% of the frame, p99 is no
-  longer constrained below white; at 10%, the same holds for p90. These
-  cutoffs follow percentile coverage: such percentiles can be occupied by
-  sensor-lost pixels and cannot establish recoverable highlight texture.
-  Regardless of highlight limits, the median may not fall more than four
-  lightness points below the metered default. The additional negative EV
-  bound moves from −0.8 towards −0.25 as backlight and sensor loss become
-  certain. The foreground floor can require positive exposure after initial
-  compression; compression is weakened if that floor cannot fit within the
-  exposure ceiling. Seven bisections find the foreground floor, seven search for
-  exposure. Pure-white clipping growth is limited to 0.2 percentage
-  points where feasible; any-channel output clipping is also bounded by
-  sampled any-site sensor loss +0.2 points. This permits irretrievable
-  lamps/sun but detects otherwise recoverable coloured highlights. If
-  exposure reaches its foreground floor, additional local highlight trials
-  (five-point steps, down to −50) are accepted only if highlight measurements
-  improve and the same median floor still holds. Where channel clipping
-  requires action, it must itself decrease: an sRGB gamut-boundary colour
-  can pin a channel even at moderate lightness and is not necessarily a
-  recoverable highlight. Do not repeatedly flatten such colours. An unresolved target is
-  reported when
-  the foreground floor takes precedence. A starting point cannot separate
-  a bright sky from a dark subject as a local edit can.
+- **Exposure and highlight cost:** local shadow/highlight adjustments precede
+  exposure. Shadow lifting also uses backlight confidence and a dark median,
+  rather than just p10, to open a shaded subject (up to +50). Small bright
+  regions cannot justify negative global EV. Only a broadly bright median
+  (L50 > 85), weak high-key evidence (< 0.35) and < 1% complete sensor loss
+  permit negative EV, bounded at −0.3; this reason is reported. The default
+  median floor is one point below the metered rendering, raised by up to four
+  points for backlight. The ordinary median ceiling is two points above the
+  default, with additional room for high-key and backlit scenes. Exposure
+  searches up to +0.5 EV, or +1.2 with strong high-key/camera brightness
+  evidence. Complete sensor loss occupying the median holds exposure at zero.
+  Seven bisections find the brightness floor and seven search for exposure;
+  values stay on a 0.05 EV grid within the ceiling.
+  Highlight limits are L90 96 and L99 99, relaxed by backlit sensor loss;
+  complete loss occupying those percentiles removes their limits (10% / 1%
+  coverage). Output channels pinned at an sRGB gamut boundary below L90 are
+  not evidence of highlight overexposure. Bright-channel clipping (L > 90,
+  any encoded channel >= 0.998) is compared with sampled any-site sensor
+  loss +0.2 percentage points; pure-white clipping growth is limited to 0.2.
+  Local highlight trials require improved highlight measurements without
+  violating brightness floors. Suppression is capped at −30, weakened
+  towards zero by weighted sensor loss in the brightest fifth. Unresolved
+  targets are reported instead of burying the foreground or endlessly
+  flattening irrecoverable sky.
+- **Camera tone sanity bound:** the library entry `auto_with_file` accepts
+  original RAW bytes and reuses `compare`'s verified sRGB/Adobe RGB conversion.
+  Median and upper-midtone L75 are lower bounds with a two-point tolerance,
+  after orientation and recipe framing; L75 is skipped when complete sensor
+  loss covers at least 25%. L75−L50 supplies an additional contrast floor,
+  tried up to +30 contrast. This constrains brightness/flatness without copying
+  camera colour, white balance or local rendering. Decisions identify the
+  measurements, raised bounds and any unresolved limit. Unattainable floors
+  fall back to attainable brightness at the exposure ceiling with one point
+  of room for finishing; the original unmet bound is still reported.
+  Missing, corrupt or unverified JPEG colour uses the finished fallback with
+  a reason. The existing `auto(raw, base)` entry has no original bytes and
+  reports that the camera bound is unavailable; CLI integration must supply
+  those bytes to `auto_with_file` to enable it.
 - **Haze evidence:** an 8×8 grid must contain raised dark channels with
   muted colour and subdued but nonzero texture, alongside blocks with
   firmer contrast. Per-block p90–p10 ranges of 2–20 lightness points,
@@ -367,41 +371,38 @@ The measurements and policy are:
   confidence suppresses dehaze. Uniform grey, smooth coloured sky and
   a raised global black level alone cannot justify it. With evidence,
   dehaze is capped at 15; atmospheric depth can intentionally remain soft.
-- **Contrast and points:** contrast is at most +10 and fades for both
-  flat and already contrasty distributions. Black deepening is capped at
-  −5 and suppressed for backlight and high-key subjects. High-key whites
-  are capped at +30, scaled by squared confidence to avoid whitening
-  ambiguous fog; trial renders reduce them in steps of five if L99
-  exceeds 96 or pure-white clipping grows by more than 0.2 points. This
-  leaves bright snow room rather than forcing black/white endpoints.
+- **Contrast and points:** uncertain or flat distributions get +15 to +20
+  contrast, fading only for established broad contrast (spread 22–32) and
+  reduced by up to half for high-key evidence. Black deepening remains capped
+  at −5 and suppressed for backlight/high-key subjects. High-key whites are
+  capped at +30 and scaled by squared confidence; trials reduce them in steps
+  of five if L99 exceeds 96 or pure-white clipping grows by over 0.2 points.
 - **Final tone headroom:** dehaze, contrast, blacks and whites are trialled
-  individually in that order against the exposure/local-highlight rendering,
-  keeping the same median floor and limiting any-channel clipping growth to
-  0.05 percentage points and pure white to 0.2 points.
-  A failed trial backs off only that control towards zero in steps of five,
-  including negative black-point shifts, and reports the accepted settings.
-  This guard does not remove clipping already present at the foreground/local-compression bounds.
-- **Colour:** the upper tenth of relative Oklab chroma C/L (excluding
-  L <= 20) detects vivid subjects even among grey or dark surroundings.
-  A boost of at most +20 fades from C/L 0.07 to 0.16 and as pixels with
-  any sRGB channel >= 0.98 rise from 0.1% to 1%. Nearly neutral frames
-  get no boost. Trials reduce vibrance in steps of five if any-channel
-  clipping (>= 0.998) grows by more than 0.05 percentage points or near
-  clipping grows by 0.2 points. Pure-white clipping alone misses vivid
-  colours and lamps. Clarity stays at zero: global statistics cannot
-  reliably separate helpful texture from skin, noise and optical blur.
+  separately. A trial may compensate exposure within its existing ceiling
+  to preserve median/L75 floors, rather than discarding contrast merely
+  because it darkened a low median. Each trial keeps bright-channel and
+  pure-white clipping growth within 0.2 percentage points of the initial
+  exposure/local-highlight rendering. Failed controls back off in steps of
+  five. Camera contrast trials use the same guards and report unmet bounds.
+- **Colour:** p90 relative Oklab chroma C/L, excluding L <= 20, detects vivid
+  subjects among neutral surroundings. A +20 vibrance budget fades from
+  C/L 0.14 to 0.30; nearly achromatic frames receive no boost (mean chroma
+  ramp 0.5–1.5). A small near-clipped region no longer vetoes colour for the
+  whole picture. Trials reduce vibrance in steps of five if brightness
+  floors fail or bright-channel clipping grows by more than 0.2 percentage
+  points. Already-vivid subjects retain zero boost. Clarity remains zero:
+  global statistics cannot separate helpful texture from skin, noise or blur.
 
-These bounds express conservative perceptual changes, output headroom and
-sensor/filter behaviour; they are not fitted to individual photo recipes.
-Weak or conflicting evidence yields less adjustment. White balance is
-reported, never guessed from blue shade or warm light.
+These are bounded finishing defaults with measured exceptions, not individual
+photo recipes. Weak evidence falls back to a finished look; strong evidence
+can reduce an adjustment. White balance is reported, never guessed from blue
+shade or warm light. Every guard and unresolved bound appears in decisions.
 
-The added native sampling, grid statistics, colour percentile sorting and
-candidate passes affect **auto analysis only**. Saved recipes render through
-the existing pipeline with no additional per-pixel stages. Auto does more
-small-image candidate work (14 exposure trials versus seven, plus bounded
-highlight/white/colour trials); performance must be measured on the designated host,
-not inferred from these correctness runs.
+The additional sampling and candidate work affects **auto analysis only**.
+Saved recipes render through the existing pipeline without new per-pixel
+stages. Exposure compensation and bounded camera/highlight/colour trials add
+small-image work; performance must be measured on the designated host, not
+inferred from these correctness runs.
 
 ## Clipping in render reports — `stats.rs`
 

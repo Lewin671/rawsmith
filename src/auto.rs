@@ -1,4 +1,4 @@
-//! Automatic starting point: analyses the scene and proposes tone and colour
+//! Automatic finished starting point: analyses the scene and proposes tone and colour
 //! settings. It is a closed loop: candidate settings are rendered on a small
 //! copy of the picture and measured, rather than predicted from the raw data.
 //!
@@ -30,6 +30,7 @@ struct Measure {
     p1: f32,
     p10: f32,
     p50: f32,
+    p75: f32,
     p90: f32,
     p99: f32,
     spread: f32,
@@ -37,6 +38,8 @@ struct Measure {
     saturation_p90: f32,
     channel_near: f32,
     channel_clipped: f32,
+    /// Gamut-boundary colours below L90 are not highlight overexposure.
+    highlight_clipped: f32,
     neutral_bright_share: f32,
     /// Mean chroma x 100 of the whole picture and of its brightest fifth.
     chroma: f32,
@@ -52,12 +55,16 @@ fn measure(image: &Image, spaces: &Spaces) -> Measure {
     let mut cast = (0.0f64, 0.0f64, 0usize);
     let mut saturation = Vec::new();
     let mut neutral_bright = 0usize;
+    let mut highlight_clipped = 0usize;
     let mut samples: Vec<(f32, f32)> = image
         .data
         .iter()
         .map(|p| {
             let lab = spaces.to_oklab(apply(&spaces.srgb_to_work, p.map(srgb_decode)));
             let sample = (lab[0] * 100.0, (lab[1] * lab[1] + lab[2] * lab[2]).sqrt() * 100.0);
+            if sample.0 > 90.0 && p.iter().any(|&v| v >= 0.998) {
+                highlight_clipped += 1;
+            }
             if sample.0 > 20.0 {
                 saturation.push(sample.1 / sample.0);
             }
@@ -81,9 +88,11 @@ fn measure(image: &Image, spaces: &Spaces) -> Measure {
         channel_near: image.data.iter().filter(|p| p.iter().any(|&v| v >= 0.98)).count() as f32 * 100.0 / n as f32,
         channel_clipped: image.data.iter().filter(|p| p.iter().any(|&v| v >= 0.998)).count() as f32 * 100.0 / n as f32,
         neutral_bright_share: neutral_bright as f32 / n as f32,
+        highlight_clipped: highlight_clipped as f32 * 100.0 / n as f32,
         p1: at(0.01),
         p10: at(0.10),
         p50: at(0.50),
+        p75: at(0.75),
         p90: at(0.90),
         p99: at(0.99),
         spread: (samples.iter().map(|s| (s.0 - mean).powi(2)).sum::<f32>() / n as f32).sqrt(),
@@ -248,6 +257,39 @@ fn haze_evidence(image: &Image, spaces: &Spaces) -> f32 {
 /// Proposes settings for `raw`. White balance, geometry and lens settings of
 /// `base` are kept; tone and colour settings are replaced.
 pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
+    propose(raw, base, None, "camera tone bound unavailable: original file bytes not supplied".into())
+}
+
+/// Uses the embedded JPEG as a tone sanity bound, after the same verified
+/// colour conversion as `compare`. Missing, corrupt or unverified camera
+/// colour falls back to the finished policy, with the reason in decisions.
+pub fn auto_with_file(raw: &RawImage, base: &Params, file: &[u8]) -> Result<Auto> {
+    let panels = [crate::compare::Panel { kind: "camera", params: Params::default(), recipe_file: None }];
+    match crate::compare::row(raw, file, &panels, ANALYSIS_EDGE) {
+        Ok((image, report, true)) => {
+            // The single camera panel is already upright. Apply the recipe's
+            // rotation/crop once, without running developing controls on it.
+            let image = pipeline::framed(image, 1, base);
+            let camera = measure(&image, &Spaces::new());
+            let note = format!(
+                "camera tone bound: verified sRGB; conversion {}; matched framing; median {:.1}, upper midtone L75 {:.1}, L75-L50 {:.1}; two-point lightness tolerance, not a look to copy",
+                report["panels"][0]["color_conversion"], camera.p50, camera.p75, camera.p75 - camera.p50
+            );
+            propose(raw, base, Some(camera), note)
+        }
+        Ok(_) => propose(
+            raw,
+            base,
+            None,
+            "camera tone bound unavailable: colour space unverified; no unconverted JPEG measurements used".into(),
+        ),
+        Err(error) => {
+            propose(raw, base, None, format!("camera tone bound unavailable: {error}; using finished fallback"))
+        }
+    }
+}
+
+fn propose(raw: &RawImage, base: &Params, camera: Option<Measure>, camera_note: String) -> Result<Auto> {
     let mut params = Params {
         temperature: base.temperature,
         tint: base.tint,
@@ -283,6 +325,7 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
         "measured at default settings: lightness p10 {:.0}, median {:.0}, p90 {:.0}, p99 {:.0}; chroma {:.1} overall, {:.1} in bright areas; saturation C/L p90 {:.3}; channels near clipping {:.2}%",
         neutral.p10, neutral.p50, neutral.p90, neutral.p99, neutral.chroma, neutral.chroma_bright, neutral.saturation_p90, neutral.channel_near
     )];
+    notes.push(camera_note);
     notes.push(format!(
         "defringe {:.0}: sensor-loss edges {:.2}% of framed native tiles (all tiles aggregated per sampling interval; any-site loss >= 98%, neighbouring sqrt-green difference >= {FRINGE_EDGE:.2}); threshold > {FRINGE_EDGE_PCT:.2}%; {defringe_reason}; risk proxy, not proof of purple fringing",
         params.defringe, sensor.fringe_edge_pct
@@ -294,39 +337,63 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
     let high_key = smoothstep(0.35, 0.65, usable_neutral_share)
         * smoothstep(12.0, 24.0, neutral.p90 - neutral.p10)
         * (1.0 - smoothstep(3.0, 6.0, neutral.chroma_bright));
-    let colourful = smoothstep(2.5, 6.0, neutral.chroma_bright);
     let backlit = smoothstep(35.0, 60.0, neutral.p90 - neutral.p50);
     notes.push(format!(
         "high-key confidence {high_key:.2}: bright neutral area {:.1}% / usable proxy {:.1}%, p90-p10 range {:.0}; sensor sample any-channel loss {:.2}%, all-channel loss {:.2}%, weighted loss in brightest fifth {:.1}% (partial loss has half weight)",
         neutral.neutral_bright_share * 100.0, usable_neutral_share * 100.0, neutral.p90 - neutral.p10, sensor.any_pct, sensor.all_pct, sensor.lost_bright * 100.0
     ));
-    params.shadows = round_to((35.0 - neutral.p10).clamp(0.0, 30.0) * (1.0 - high_key), 5.0);
-    params.highlights = round_to(
-        -((neutral.p90 - 78.0) * 1.2).clamp(0.0, 25.0) * (1.0 - high_key) * (1.0 - 0.75 * sensor.lost_bright)
-            - 10.0 * colourful,
-        5.0,
-    );
+    let shadow_lift = (35.0 - neutral.p10).clamp(0.0, 30.0);
+    let subject_lift = backlit * (55.0 - neutral.p50).clamp(0.0, 50.0);
+    params.shadows = round_to(shadow_lift.max(subject_lift) * (1.0 - high_key), 5.0);
+    params.highlights =
+        round_to(-((neutral.p90 - 90.0) * 1.5).clamp(0.0, 20.0) * (1.0 - high_key) * (1.0 - sensor.lost_bright), 5.0);
     notes.push(format!(
-        "shadows {:+.0}, highlights {:+.0}: p10 {:.0}, p90 {:.0}; reduce highlight suppression where sensor samples have lost information",
-        params.shadows, params.highlights, neutral.p10, neutral.p90
+        "shadows {:+.0}, highlights {:+.0}: p10 {:.0}, median {:.0}, p90 {:.0}, backlight confidence {backlit:.2}; open shaded subjects, use local compression for recoverable highlights and leave sensor-lost sky alone",
+        params.shadows, params.highlights, neutral.p10, neutral.p50, neutral.p90
     ));
 
-    // A highlight limit cannot demand unlimited foreground darkening.
-    // Even with recoverable highlights, retain the metered midtones within
-    // four perceptual lightness points. For lost sky in backlight, also
-    // impose a quarter-stop bound; leave local separation to the editor.
-    let floor_ev = -0.8 + 0.55 * backlit * sensor.lost_bright;
-    let floor_light = neutral.p50 - 4.0;
-    let mid_limit = neutral.p50 + 2.0 + 18.0 * high_key;
-    let bright_limit = 90.0 - 8.0 * colourful;
+    // A small bright region is not evidence that the whole exposure is wrong.
+    // Only a broadly bright non-high-key frame can justify negative EV; snow
+    // and sensor-saturated sky cannot. The shoulder/local control carries the
+    // ordinary highlight cost, rather than four points of foreground light.
+    let broad_overexposure = neutral.p50 > 85.0 && high_key < 0.35 && sensor.all_pct < 1.0;
+    let floor_ev = if broad_overexposure { -0.3 } else { 0.0 };
+    let lost_median = sensor.all_pct >= 50.0;
+    // A feasible foreground floor must also fit on the 0.05 EV recipe grid.
+    let camera_lift = camera.as_ref().is_some_and(|m| m.p50 > neutral.p50 + 2.0 || m.p75 > neutral.p75 + 2.0);
+    let max_exposure = ((if lost_median {
+        0.0
+    } else if camera_lift {
+        1.2
+    } else {
+        0.5 + 0.7 * high_key
+    }) * 20.0)
+        .floor()
+        / 20.0;
+    let default_floor = neutral.p50 - 1.0 + 4.0 * backlit;
+    let requested_floor_light = camera.as_ref().map_or(default_floor, |m| default_floor.max(m.p50 - 2.0));
+    // L75 checks upper midtones rather than a p90 occupied by sky. If sensor
+    // loss itself occupies this percentile, it cannot meter the subject.
+    let requested_floor_upper = camera.as_ref().filter(|_| sensor.all_pct < 25.0).map(|m| m.p75 - 2.0);
+    let ceiling = look(&Params { exposure: max_exposure as f64, highlights: 0.0, ..params.clone() });
+    // An impossible camera floor must not veto every finished-look trial.
+    // Keep a point of room below the attainable ceiling, and disclose the
+    // unmet original bound instead of claiming that the fallback matched it.
+    let floor_light = requested_floor_light.min(ceiling.p50 - 1.0);
+    let floor_upper = requested_floor_upper.map(|v| v.min(ceiling.p75 - 1.0));
+    if floor_light < requested_floor_light || floor_upper != requested_floor_upper {
+        notes.push(format!(
+            "requested brightness floor unreachable at {max_exposure:+.2} EV: median {requested_floor_light:.1}, L75 {}; using attainable median {floor_light:.1}, L75 {} to preserve a finished fallback; original camera bound still reported",
+            requested_floor_upper.map_or_else(|| "not used".into(), |v| format!("{v:.1}")), floor_upper.map_or_else(|| "not used".into(), |v| format!("{v:.1}"))
+        ));
+    }
+    let foreground_ok = |m: &Measure| m.p50 >= floor_light && floor_upper.is_none_or(|floor| m.p75 >= floor);
+    let mid_limit = (neutral.p50 + 2.0 + 18.0 * high_key + 6.0 * backlit).max(floor_light + 2.0);
     let lost = backlit * sensor.lost_bright;
-    // A percentile inside completely lost sensor highlights cannot describe
-    // recoverable texture. The cutoffs follow the percentile's area, not a
-    // scene class: 1% all-channel loss can occupy p99, 10% can occupy p90.
-    let p90_limit = if sensor.all_pct >= 10.0 { 100.0 } else { bright_limit + (100.0 - bright_limit) * lost };
-    let p99_limit = if sensor.all_pct >= 1.0 { 100.0 } else { 96.0 + 4.0 * lost };
+    let p90_limit = if sensor.all_pct >= 10.0 { 100.0 } else { 96.0 + 4.0 * lost };
+    let p99_limit = if sensor.all_pct >= 1.0 { 100.0 } else { 99.0 + lost };
     notes.push(format!(
-        "highlight targets L90 <= {p90_limit:.0}, L99 <= {p99_limit:.0}: do not darken percentiles occupied by completely sensor-saturated samples"
+        "highlight targets L90 <= {p90_limit:.0}, L99 <= {p99_limit:.0}: small bright areas use the shoulder/local control; negative EV allowed only for broad non-high-key overexposure ({broad_overexposure}); do not darken completely sensor-saturated percentiles"
     ));
     let limits = |m: &Measure| {
         [
@@ -334,15 +401,12 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
             (m.p90 > p90_limit, "recoverable bright areas"),
             (m.p99 > p99_limit, "highlight tonal room"),
             (m.clipped > neutral.clipped + 0.2, "new pure-white clipping"),
-            (m.channel_clipped > sensor.any_pct + 0.2, "output channel clipping beyond sampled sensor loss"),
+            (m.highlight_clipped > sensor.any_pct + 0.2, "bright output channel clipping beyond sampled sensor loss"),
         ]
     };
-    let lost_median = sensor.all_pct >= 50.0;
-    // A feasible foreground floor must also fit on the 0.05 EV recipe grid.
-    let max_exposure = ((if lost_median { 0.0 } else { 0.5 + 0.7 * high_key }) * 20.0).floor() / 20.0;
     let proposed_highlights = params.highlights;
     params.exposure = max_exposure as f64;
-    while look(&params).p50 < floor_light && params.highlights < 0.0 {
+    while !foreground_ok(&look(&params)) && params.highlights < 0.0 {
         params.highlights = (params.highlights + 5.0).min(0.0);
     }
     if params.highlights != proposed_highlights {
@@ -365,7 +429,7 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
     for _ in 0..searches {
         params.exposure = (lo + hi) as f64 * 0.5;
         let m = look(&params);
-        if m.p50 < floor_light {
+        if !foreground_ok(&m) {
             lo = params.exposure as f32;
         } else {
             hi = params.exposure as f32;
@@ -387,24 +451,26 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
         }
     }
     // Round toward the safe side of the foreground floor.
-    params.exposure = round_to(lo, 0.05).max((cost_floor as f64 * 20.0).ceil() / 20.0);
+    params.exposure =
+        round_to(lo, 0.05).max(((cost_floor as f64 - 1e-6) * 20.0).ceil() / 20.0).min(round_to(max_exposure, 0.05));
     let mut exposed = look(&params);
     let initial_highlights = params.highlights;
     // When global exposure hits its foreground floor, try local highlight
     // compression instead. Accept it only while the metered midtones stay
     // within the same cost bound and a highlight measurement improves.
-    while params.highlights > -50.0 && limits(&exposed).iter().skip(1).any(|(over, _)| *over) {
-        let trial = Params { highlights: (params.highlights - 5.0).max(-50.0), ..params.clone() };
+    let highlight_floor = round_to(-30.0 * (1.0 - sensor.lost_bright), 5.0);
+    while params.highlights > highlight_floor && limits(&exposed).iter().skip(1).any(|(over, _)| *over) {
+        let trial = Params { highlights: (params.highlights - 5.0).max(highlight_floor), ..params.clone() };
         let m = look(&trial);
         // A gamut-boundary colour can pin a channel without losing sensor
         // highlight information. Do not flatten it when tone trials cannot
         // reduce that clipping.
-        let needs_channel_room = exposed.channel_clipped > sensor.any_pct + 0.2;
-        if m.p50 < floor_light
-            || (needs_channel_room && m.channel_clipped >= exposed.channel_clipped - 0.05)
+        let needs_channel_room = exposed.highlight_clipped > sensor.any_pct + 0.2;
+        if !foreground_ok(&m)
+            || (needs_channel_room && m.highlight_clipped >= exposed.highlight_clipped - 0.05)
             || (m.p90 >= exposed.p90 - 0.1
                 && m.p99 >= exposed.p99 - 0.1
-                && m.channel_clipped >= exposed.channel_clipped - 0.05)
+                && m.highlight_clipped >= exposed.highlight_clipped - 0.05)
         {
             break;
         }
@@ -412,7 +478,7 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
         exposed = m;
     }
     notes.push(format!(
-        "highlight refinement {initial_highlights:+.0} -> {:+.0}: trial local compression when exposure cannot darken the foreground further; median must remain >= {floor_light:.1}",
+        "highlight refinement {initial_highlights:+.0} -> {:+.0}: trial local compression when exposure cannot darken the foreground further; median must remain >= {floor_light:.1}; local suppression bounded at {highlight_floor:+.0} by recoverable sensor evidence",
         params.highlights
     ));
     if limits(&exposed).iter().any(|(over, _)| *over) {
@@ -430,10 +496,12 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
         params.dehaze
     ));
     let toned = look(&params);
-    // Flat scenes may be deliberately soft; do not force every distribution
-    // to a fixed spread or stretch atmospheric blacks to zero.
+    // Ambiguous/flat distributions get a modest finished default. Only
+    // established broad contrast or high-key evidence reduces it.
     params.contrast = round_to(
-        10.0 * smoothstep(8.0, 16.0, toned.spread) * (1.0 - smoothstep(18.0, 26.0, toned.spread)) * (1.0 - high_key),
+        (15.0 + 5.0 * (1.0 - smoothstep(10.0, 18.0, toned.spread)))
+            * (1.0 - smoothstep(22.0, 32.0, toned.spread))
+            * (1.0 - 0.5 * high_key),
         5.0,
     );
     params.blacks = round_to(-5.0 * smoothstep(8.0, 18.0, toned.p1) * (1.0 - backlit) * (1.0 - high_key), 5.0);
@@ -452,10 +520,30 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
     // the foreground floor may be undone by later tone adjustments.
     let additions = (params.dehaze, params.contrast, params.blacks, params.whites);
     (params.dehaze, params.contrast, params.blacks, params.whites) = (0.0, 0.0, 0.0, 0.0);
+    // Contrast can need a little exposure back. Trial the pair rather than
+    // rejecting all punch just because the curve lowered a dark median.
+    let compensate = |trial: &mut Params| {
+        if foreground_ok(&look(trial)) || lost_median {
+            return;
+        }
+        let (mut lo, mut hi) = (trial.exposure as f32, max_exposure);
+        trial.exposure = hi as f64;
+        if !foreground_ok(&look(trial)) {
+            return;
+        }
+        for _ in 0..7 {
+            let mid = (lo + hi) * 0.5;
+            trial.exposure = mid as f64;
+            if foreground_ok(&look(trial)) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        trial.exposure = (((hi as f64 - 1e-6) * 20.0).ceil() / 20.0).min(round_to(max_exposure, 0.05));
+    };
     let safe_tone = |m: &Measure| {
-        m.p50 >= floor_light
-            && m.channel_clipped <= exposed.channel_clipped + 0.05
-            && m.clipped <= exposed.clipped + 0.2
+        foreground_ok(m) && m.highlight_clipped <= exposed.highlight_clipped + 0.2 && m.clipped <= exposed.clipped + 0.2
     };
     for (control, mut value) in
         [("dehaze", additions.0), ("contrast", additions.1), ("blacks", additions.2), ("whites", additions.3)]
@@ -469,6 +557,7 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
                 "whites" => trial.whites = value,
                 _ => unreachable!(),
             }
+            compensate(&mut trial);
             let m = look(&trial);
             if safe_tone(&m) && (control != "whites" || m.p99 <= 96.0) {
                 params = trial;
@@ -477,28 +566,49 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
             value -= value.signum() * 5.0;
         }
     }
+    if let Some(camera) = camera.as_ref().filter(|_| sensor.all_pct < 25.0) {
+        let gap_floor = (camera.p75 - camera.p50 - 2.0).max(0.0);
+        let mut current = look(&params);
+        let before = params.contrast;
+        let mut contrast_bound = "+30 contrast ceiling";
+        while current.p75 - current.p50 < gap_floor && params.contrast < 30.0 {
+            let mut trial = Params { contrast: params.contrast + 5.0, ..params.clone() };
+            compensate(&mut trial);
+            let m = look(&trial);
+            if !safe_tone(&m) {
+                contrast_bound = "foreground/bright-clipping guard";
+                break;
+            }
+            if m.p75 - m.p50 <= current.p75 - current.p50 + 0.1 {
+                contrast_bound = "global contrast cannot improve upper-midtone separation at this brightness";
+                break;
+            }
+            params = trial;
+            current = m;
+        }
+        notes.push(format!(
+            "camera upper-midtone contrast bound: L75-L50 >= {gap_floor:.1}; contrast {before:.0}->{:.0}, resulting gap {:.1}; {}",
+            params.contrast, current.p75 - current.p50,
+            if current.p75 - current.p50 >= gap_floor { "met".into() } else { format!("unresolved: {contrast_bound}") }
+        ));
+    }
     let coloured = look(&params);
     if additions != (params.dehaze, params.contrast, params.blacks, params.whites) {
         notes.push(format!(
-            "tone headroom/foreground guard: dehaze {:.0}->{:.0}, contrast {:.0}->{:.0}, blacks {:.0}->{:.0}, whites {:.0}->{:.0}; each control must keep median >= {floor_light:.1}, channel clipping growth <= 0.05 percentage points and pure-white growth <= 0.2; resulting median {:.1}",
+            "tone headroom/foreground guard: dehaze {:.0}->{:.0}, contrast {:.0}->{:.0}, blacks {:.0}->{:.0}, whites {:.0}->{:.0}; each control must keep median >= {floor_light:.1}, bright-channel clipping growth <= 0.2 percentage points and pure-white growth <= 0.2; resulting median {:.1}",
             additions.0, params.dehaze, additions.1, params.contrast, additions.2, params.blacks, additions.3, params.whites, coloured.p50
         ));
     }
     notes.push(format!(
-        "contrast {:+.0}, blacks {:+.0}, whites {:+.0}: spread {:.0}, p1 {:.0}, p99 {:.0}; retain soft scenes, backlit foreground and highlight room",
+        "contrast {:+.0}, blacks {:+.0}, whites {:+.0}: spread {:.0}, p1 {:.0}, p99 {:.0}; finished contrast fallback, backlit foreground and highlight room",
         params.contrast, params.blacks, params.whites, toned.spread, toned.p1, toned.p99
     ));
-    let colour_budget = 20.0
-        * smoothstep(1.2, 2.5, coloured.chroma)
-        * (1.0 - smoothstep(0.07, 0.16, coloured.saturation_p90))
-        * (1.0 - smoothstep(0.1, 1.0, coloured.channel_near));
+    let colour_budget =
+        20.0 * smoothstep(0.5, 1.5, coloured.chroma) * (1.0 - smoothstep(0.14, 0.30, coloured.saturation_p90));
     params.vibrance = round_to(colour_budget, 5.0);
     while params.vibrance > 0.0 {
         let m = look(&params);
-        if m.p50 >= floor_light
-            && m.channel_clipped <= coloured.channel_clipped + 0.05
-            && m.channel_near <= coloured.channel_near + 0.2
-        {
+        if foreground_ok(&m) && m.highlight_clipped <= coloured.highlight_clipped + 0.2 {
             break;
         }
         params.vibrance -= 5.0;
@@ -507,7 +617,7 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
     // statistics. Leave clarity for a deliberate visual edit.
     params.clarity = 0.0;
     notes.push(format!(
-        "vibrance {:+.0}, clarity 0: saturation C/L p90 {:.3}, channels near clipping {:.2}%, clipped {:.2}%; colour trials keep median >= {floor_light:.1} and are limited to +0.05 percentage points clipping / +0.2 near clipping; no reliable evidence for extra local contrast",
+        "vibrance {:+.0}, clarity 0: saturation C/L p90 {:.3}, channels near clipping {:.2}%, clipped {:.2}%; colour trials keep median >= {floor_light:.1} and are limited to +0.2 percentage points bright-channel clipping (L > 90); gamut-boundary colours below L90 and small near-clipped areas do not veto colour elsewhere; no reliable evidence for extra local contrast",
         params.vibrance, coloured.saturation_p90, coloured.channel_near, coloured.channel_clipped
     ));
     let [a, b] = toned.cast;
@@ -517,9 +627,17 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
         ));
     }
     let final_measure = look(&params);
+    if let Some(camera) = &camera {
+        notes.push(format!(
+            "camera sanity bound {}: median floor {:.1} (default {:.1}), L75 floor {}; final median {:.1}, L75 {:.1}; {}",
+            if camera.p50 - 2.0 > default_floor || camera_lift { "raised brightness bounds" } else { "checked" },
+            requested_floor_light, default_floor, requested_floor_upper.map_or_else(|| "skipped: sensor loss occupies upper midtones".into(), |v| format!("{v:.1}")), final_measure.p50, final_measure.p75,
+            if final_measure.p50 >= requested_floor_light && requested_floor_upper.is_none_or(|v| final_measure.p75 >= v) { "brightness floors met" } else { "bound remains unresolved at bounded exposure/local controls; sensor loss or scene range prevents matching camera brightness" }
+        ));
+    }
     notes.push(format!(
-        "final 640px analysis: median {:.0}, p99 {:.0}, channel clipping {:.2}%, pure white {:.2}%; residual clipping can be sensor loss or an output-gamut boundary; inspect a full-resolution export",
-        final_measure.p50, final_measure.p99, final_measure.channel_clipped, final_measure.clipped
+        "final 640px analysis: exposure {:+.2} EV, median {:.0}, p99 {:.0}, channel clipping {:.2}%, pure white {:.2}%; residual clipping can be sensor loss or an output-gamut boundary; inspect a full-resolution export",
+        params.exposure, final_measure.p50, final_measure.p99, final_measure.channel_clipped, final_measure.clipped
     ));
     Ok(Auto { params, notes })
 }
@@ -763,6 +881,7 @@ mod tests {
         assert_eq!(m.clipped, 0.0);
         assert_eq!(m.channel_clipped, 100.0);
         assert_eq!(m.channel_near, 100.0);
+        assert_eq!(m.highlight_clipped, 0.0, "a moderate-lightness gamut boundary is not highlight overexposure");
         assert!(m.saturation_p90 > 0.16);
     }
 }
