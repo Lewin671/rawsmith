@@ -9,6 +9,13 @@ are in English.
   subagents for independent review or bounded implementation when useful;
   give each writer its own branch and worktree. Review their changes and
   validate the combined result before integrating.
+- Use Codex exclusively for acceptance: final code review, end-to-end
+  editing, visual quality judging and release usability checks. Codex may
+  inspect Claude Code installation compatibility, but do not run Claude
+  as an acceptance agent or judge. For photo benchmarks, explicitly pass
+  a verified Codex judge command; do not use the harness's Claude default.
+  Existing Claude benchmark results are historical evidence, not new
+  acceptance. Automated correctness checks remain part of validation.
 - Prioritize data loss, misleading success and unusable exports before
   cosmetic improvements. Error paths matter as much as successful edits.
   Invalid commands must preserve existing RAWs, recipes and previews.

@@ -32,6 +32,13 @@ Anything that changes pixels should come with evidence:
 
 Prefer one focused improvement with a measured effect over a broad rewrite.
 
+Project acceptance uses Codex for reviews, real-photo judging and the
+complete editing workflow. Pass a verified Codex adapter explicitly via
+`bench/photos.py judge --judge-cmd ... --name ...`; the harness's current
+default invokes Claude and must not be used for project acceptance.
+Published Claude results describe earlier development runs. Claude Code
+skill installation compatibility can be inspected by Codex.
+
 ## Adding a camera
 
 1. Add its colour matrix (XYZ D65 to camera RGB, the convention used by
