@@ -218,6 +218,9 @@ impl Plane {
 /// filter). `radius` is the window radius, `eps` the edge threshold in
 /// squared guide units.
 pub fn guided_filter(guide: &Plane, input: &Plane, radius: usize, eps: f32) -> Plane {
+    // Cancellation in E[g²] - E[g]² can make a flat guide's variance
+    // negative. Keep the denominator positive even for vanishing eps.
+    let eps = eps.max(f32::EPSILON);
     let mul = |a: &Plane, b: &Plane| Plane {
         width: a.width,
         height: a.height,
@@ -230,7 +233,7 @@ pub fn guided_filter(guide: &Plane, input: &Plane, radius: usize, eps: f32) -> P
     let mut a = Plane::new(guide.width, guide.height);
     let mut b = Plane::new(guide.width, guide.height);
     a.data.par_iter_mut().zip(b.data.par_iter_mut()).enumerate().for_each(|(i, (a, b))| {
-        let var = corr_gg.data[i] - mean_g.data[i] * mean_g.data[i];
+        let var = (corr_gg.data[i] - mean_g.data[i] * mean_g.data[i]).max(0.0);
         let cov = corr_gi.data[i] - mean_g.data[i] * mean_i.data[i];
         *a = cov / (var + eps);
         *b = mean_i.data[i] - *a * mean_g.data[i];
@@ -240,5 +243,23 @@ pub fn guided_filter(guide: &Plane, input: &Plane, radius: usize, eps: f32) -> P
         width: guide.width,
         height: guide.height,
         data: (0..guide.data.len()).into_par_iter().map(|i| mean_a.data[i] * guide.data[i] + mean_b.data[i]).collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guided_filter_flat_guide_has_positive_denominator() {
+        let guide = Plane { width: 64, height: 48, data: vec![0.661_649_1; 64 * 48] };
+        let mean = guide.box_blur(2);
+        let squared = Plane { data: guide.data.iter().map(|v| v * v).collect(), ..guide.clone() }.box_blur(2);
+        // This reproduces cancellation to exactly the negative regulariser.
+        assert_eq!(squared.data[0] - mean.data[0] * mean.data[0], -f32::EPSILON);
+        for eps in [0.0, f32::MIN_POSITIVE, f32::EPSILON] {
+            let filtered = guided_filter(&guide, &guide, 2, eps);
+            assert!(filtered.data.iter().all(|v| v.is_finite() && (*v - guide.data[0]).abs() < 1e-6));
+        }
     }
 }

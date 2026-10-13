@@ -82,15 +82,21 @@ pub fn white_balance(raw: &RawImage, params: &Params) -> Result<(WhiteBalance, [
     Ok((info, gains))
 }
 
-/// Rotates the image content clockwise by `degrees` about its centre and
-/// crops to the largest rectangle of the same aspect ratio with no empty corners.
+fn rotated_dimensions(width: usize, height: usize, degrees: f32) -> (usize, usize) {
+    let theta = degrees.to_radians();
+    let (sin, cos) = theta.sin_cos();
+    let (w, h) = (width as f32, height as f32);
+    let (long, short) = (w.max(h), w.min(h));
+    let keep = short / (long * sin.abs() + short * cos.abs());
+    (((w * keep) as usize).max(1), ((h * keep) as usize).max(1))
+}
+
+/// Rotates clockwise about the centre and crops away empty corners.
 fn rotated(image: &Image, degrees: f32) -> Image {
     let theta = degrees.to_radians();
     let (sin, cos) = theta.sin_cos();
     let (w, h) = (image.width as f32, image.height as f32);
-    let (long, short) = (w.max(h), w.min(h));
-    let keep = short / (long * sin.abs() + short * cos.abs());
-    let (ow, oh) = (((w * keep) as usize).max(1), ((h * keep) as usize).max(1));
+    let (ow, oh) = rotated_dimensions(image.width, image.height, degrees);
     let mut out = Image::new(ow, oh);
     let (cx, cy) = ((w - 1.0) * 0.5, (h - 1.0) * 0.5);
     let (ocx, ocy) = ((ow as f32 - 1.0) * 0.5, (oh as f32 - 1.0) * 0.5);
@@ -105,6 +111,24 @@ fn rotated(image: &Image, degrees: f32) -> Image {
     out
 }
 
+fn crop_span(from: f64, to: f64, size: usize) -> (usize, usize) {
+    // At least one pixel, and never past the edge, however small the image.
+    let start = ((from * size as f64).round() as usize).min(size - 1);
+    let end = ((to * size as f64).round() as usize).clamp(start + 1, size);
+    (start, end - start)
+}
+
+/// Predict native panel dimensions without allocating or developing pixels.
+/// Lens correction and finishing retain the active-area dimensions.
+pub(crate) fn framed_dimensions(width: usize, height: usize, orientation: u16, params: &Params) -> (usize, usize) {
+    let (mut w, mut h) = if matches!(orientation, 6 | 8) { (height, width) } else { (width, height) };
+    if params.rotate != 0.0 {
+        (w, h) = rotated_dimensions(w, h, params.rotate as f32);
+    }
+    let crop = &params.crop;
+    (crop_span(crop.left, crop.right, w).1, crop_span(crop.top, crop.bottom, h).1)
+}
+
 /// Shared rotation and crop geometry, also applied to the camera comparison.
 pub(crate) fn framed(image: Image, orientation: u16, params: &Params) -> Image {
     let crop = &params.crop;
@@ -113,14 +137,8 @@ pub(crate) fn framed(image: Image, orientation: u16, params: &Params) -> Image {
         image = rotated(&image, params.rotate as f32);
     }
     if *crop != Default::default() {
-        // At least one pixel, and never past the edge, however small the image.
-        let span = |from: f64, to: f64, size: usize| {
-            let start = ((from * size as f64).round() as usize).min(size - 1);
-            let end = ((to * size as f64).round() as usize).clamp(start + 1, size);
-            (start, end - start)
-        };
         let ((x0, cw), (y0, ch)) =
-            (span(crop.left, crop.right, image.width), span(crop.top, crop.bottom, image.height));
+            (crop_span(crop.left, crop.right, image.width), crop_span(crop.top, crop.bottom, image.height));
         image = image.crop(x0, y0, cw, ch);
     }
     image
@@ -462,6 +480,63 @@ pub fn finish(scene: &Image, params: &Params, spaces: &Spaces) -> Image {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn denoise_preserves_perfectly_flat_image_at_epsilon_regulariser() {
+        let value = 0.661_649_1_f32.powi(2);
+        let params = Params { denoise: 52.44140625, ..Params::default() };
+        let strength = params.denoise as f32 / 100.0;
+        let luma_strength = (strength - 0.5) * 2.0;
+        assert_eq!(0.00005 * luma_strength * luma_strength, f32::EPSILON);
+        for (w, h) in [(64, 48), (1, 1), (1, 7), (7, 1), (3, 2)] {
+            let mut image = Image { width: w, height: h, data: vec![[value; 3]; w * h] };
+            denoise(&mut image, strength);
+            for pixel in &image.data {
+                assert!(pixel.iter().all(|v| v.is_finite() && (*v - value).abs() < 1e-5), "{w}x{h}: {pixel:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn synthetic_scenes_render_finite_at_multiple_denoise_settings() {
+        use crate::synthetic::Synthetic;
+
+        // Flat, fully clipped, shadow, skin, haze, snow and saturated sky
+        // scenes cover both prior-based and no-survivor highlight recovery.
+        for (w, h) in [(16, 16), (66, 50)] {
+            for scene_index in 0..8 {
+                let synthetic = Synthetic::from_camera_rgb(w, h, |x, y| {
+                    let u = x as f32 / (w - 1) as f32;
+                    let v = y as f32 / (h - 1) as f32;
+                    let grain = ((x * 31 + y * 47) % 97) as f32 / 97.0;
+                    match scene_index {
+                        0 => [0.0; 3],
+                        1 => [0.437_779_55; 3],
+                        2 => [1.0; 3],
+                        3 => [0.0001 + grain * 0.001, 0.001 + grain * 0.003, 0.0002 + grain * 0.002],
+                        4 => [0.25 + u * 0.4, 0.12 + v * 0.2, 0.08 + grain * 0.01],
+                        5 => [0.18 + u * 0.06, 0.22 + v * 0.04, 0.28 + grain * 0.005],
+                        6 => [0.5 + u * 0.7, 0.6 + u * 0.7, 0.7 + u * 0.7],
+                        _ => [0.1 + u * 1.4, 0.18 + v * 1.1, 0.7 + u * 0.6],
+                    }
+                });
+                let raw = crate::arw::decode(&synthetic.to_bytes()).unwrap();
+                for denoise in [0.0, 0.00001, 25.00001, 50.0, 50.00001, 52.44140625, 85.0, 100.0] {
+                    let params = Params { denoise, ..Params::default() };
+                    params.validate().unwrap();
+                    let context = format!("scene {scene_index}, {w}x{h}, denoise {denoise}");
+                    // Check before finishing too: later max/clamp operations
+                    // can hide a non-finite scene as a successful black render.
+                    let scene = scene(&raw, &params, Size::default()).unwrap();
+                    assert!(scene.image.data.iter().flatten().all(|v| v.is_finite()), "{context}: scene");
+                    for max_edge in [None, Some(1), Some(23)] {
+                        let rendered = render(&raw, &params, Size { max_edge }).unwrap();
+                        assert!(rendered.image.data.iter().flatten().all(|v| v.is_finite()), "{context}: {max_edge:?}");
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn coarse_denoise_preserves_weak_colour_texture_carried_by_luminance() {

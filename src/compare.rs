@@ -163,39 +163,47 @@ pub fn row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result
         None
     };
     let srgb = camera.as_ref().is_none_or(|(_, report)| report["color_space"] == "sRGB");
+    // Determine the shared height from geometry before developing any recipe.
+    // Never upscale a small camera JPEG or a heavily cropped recipe.
+    let height = panels
+        .iter()
+        .map(|panel| {
+            let (w, h) = if panel.kind == "camera" {
+                let (image, _) = camera.as_ref().expect("camera requested");
+                (image.width, image.height)
+            } else {
+                pipeline::framed_dimensions(raw.crop.width, raw.crop.height, raw.meta.orientation, &panel.params)
+            };
+            let scale = (size as f64 / w.max(h) as f64).min(1.0);
+            ((h as f64 * scale).round() as usize).max(1)
+        })
+        .min()
+        .expect("at least one panel");
+    let panel_width =
+        |image: &Image| ((image.width as f64 * height as f64 / image.height as f64).round() as usize).clamp(1, size);
+    // Release the native camera buffer before developing the first recipe,
+    // even if the camera is requested late or more than once in the row.
+    let camera = camera.map(|(image, report)| (image.resized(panel_width(&image), height), report));
     let mut images = Vec::new();
     let mut reports = Vec::new();
+    let mut width = SEPARATOR.checked_mul(panels.len() - 1);
     for panel in panels {
         let (image, mut report, params) = if panel.kind == "camera" {
             let (image, report) = camera.as_ref().expect("camera requested");
             (image.clone(), report.clone(), camera_params)
         } else {
             let rendered = pipeline::render(raw, &panel.params, Size::default())?;
-            (rendered.image, json!({"color_space": "sRGB"}), &panel.params)
+            let image = rendered.image;
+            (image.resized(panel_width(&image), height), json!({"color_space": "sRGB"}), &panel.params)
         };
         report["kind"] = json!(panel.kind);
         report["recipe_file"] = json!(panel.recipe_file);
         report["framing"] = framing(params);
+        report["width"] = json!(image.width);
+        report["height"] = json!(height);
+        width = width.and_then(|total| total.checked_add(image.width));
         images.push(image);
         reports.push(report);
-    }
-    // Never upscale a small camera JPEG or a heavily cropped recipe. Taking
-    // the smallest bounded height keeps every panel's long edge within --size.
-    let height = images
-        .iter()
-        .map(|image| {
-            let scale = (size as f64 / image.width.max(image.height) as f64).min(1.0);
-            ((image.height as f64 * scale).round() as usize).max(1)
-        })
-        .min()
-        .expect("at least one panel");
-    let mut width = SEPARATOR.checked_mul(images.len() - 1);
-    for (image, report) in images.iter_mut().zip(&mut reports) {
-        let w = ((image.width as f64 * height as f64 / image.height as f64).round() as usize).clamp(1, size);
-        *image = image.resized(w, height);
-        report["width"] = json!(w);
-        report["height"] = json!(height);
-        width = width.and_then(|total| total.checked_add(w));
     }
     let width = width.ok_or_else(|| Error::Params("comparison row is too wide".into()))?;
     let pixels = width.checked_mul(height).ok_or_else(|| Error::Params("comparison row is too large".into()))?;
@@ -235,6 +243,163 @@ pub fn row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Frozen pre-streaming implementation: render all panels at native size,
+    // derive the height from actual images, then resize each panel once.
+    fn native_panels_reference(
+        raw: &RawImage,
+        file: &[u8],
+        panels: &[Panel],
+        size: usize,
+    ) -> Result<(Image, Value, bool)> {
+        if panels.is_empty() || size == 0 {
+            return Err(Error::Params("compare needs at least one panel and --size at least 1".into()));
+        }
+        if !matches!(raw.meta.orientation, 1 | 3 | 6 | 8) {
+            return Err(Error::Unsupported(format!(
+                "compare cannot make RAW orientation {} upright",
+                raw.meta.orientation
+            )));
+        }
+        let reference = panels.iter().position(|p| p.kind != "camera");
+        let defaults = Params::default();
+        let camera_params = reference.map(|i| &panels[i].params).unwrap_or(&defaults);
+        let camera_needed = panels.iter().any(|p| p.kind == "camera");
+        let camera = if camera_needed {
+            let (offset, len) =
+                raw.embedded_jpeg.ok_or_else(|| Error::Unsupported("this file has no embedded JPEG".into()))?;
+            let jpeg = offset
+                .checked_add(len)
+                .and_then(|end| file.get(offset..end))
+                .ok_or_else(|| Error::Format("embedded JPEG is out of bounds".into()))?;
+            let (image, report) = camera(jpeg, file)?;
+            Some((pipeline::framed(image, raw.meta.orientation, camera_params), report))
+        } else {
+            None
+        };
+        let srgb = camera.as_ref().is_none_or(|(_, report)| report["color_space"] == "sRGB");
+        let mut images = Vec::new();
+        let mut reports = Vec::new();
+        for panel in panels {
+            let (image, mut report, params) = if panel.kind == "camera" {
+                let (image, report) = camera.as_ref().expect("camera requested");
+                (image.clone(), report.clone(), camera_params)
+            } else {
+                let rendered = pipeline::render(raw, &panel.params, Size::default())?;
+                (rendered.image, json!({"color_space": "sRGB"}), &panel.params)
+            };
+            report["kind"] = json!(panel.kind);
+            report["recipe_file"] = json!(panel.recipe_file);
+            report["framing"] = framing(params);
+            images.push(image);
+            reports.push(report);
+        }
+        // Never upscale a small camera JPEG or a heavily cropped recipe. Taking
+        // the smallest bounded height keeps every panel's long edge within --size.
+        let height = images
+            .iter()
+            .map(|image| {
+                let scale = (size as f64 / image.width.max(image.height) as f64).min(1.0);
+                ((image.height as f64 * scale).round() as usize).max(1)
+            })
+            .min()
+            .expect("at least one panel");
+        let mut width = SEPARATOR.checked_mul(images.len() - 1);
+        for (image, report) in images.iter_mut().zip(&mut reports) {
+            let w = ((image.width as f64 * height as f64 / image.height as f64).round() as usize).clamp(1, size);
+            *image = image.resized(w, height);
+            report["width"] = json!(w);
+            report["height"] = json!(height);
+            width = width.and_then(|total| total.checked_add(w));
+        }
+        let width = width.ok_or_else(|| Error::Params("comparison row is too wide".into()))?;
+        let pixels = width.checked_mul(height).ok_or_else(|| Error::Params("comparison row is too large".into()))?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(pixels).map_err(|_| Error::Params("comparison row is too large".into()))?;
+        data.resize(pixels, [0.5; 3]);
+        let mut row = Image { width, height, data };
+        let mut left = 0;
+        for image in images {
+            for y in 0..height {
+                let start = y * width + left;
+                row.data[start..start + image.width]
+                    .copy_from_slice(&image.data[y * image.width..(y + 1) * image.width]);
+            }
+            left += image.width + SEPARATOR;
+        }
+        let matched = reports.iter().all(|p| p["framing"] == reports[0]["framing"]);
+        let mut warnings = Vec::new();
+        if !matched {
+            warnings.push("Panels have different crop/rotation; each recipe keeps its own framing. The camera matches the first non-camera panel.");
+        }
+        if !srgb {
+            warnings.push("Camera colour is not established sRGB. Camera pixels are unconverted; the mixed comparison has no colour profile, so camera colours may display incorrectly.");
+        }
+        Ok((
+            row,
+            json!({
+                "panels": reports, "width": width, "height": height,
+                "separator_pixels": SEPARATOR, "raw_orientation": raw.meta.orientation,
+                "camera_framing_panel": if camera_needed { reference } else { None },
+                "framing_policy": "camera matches first non-camera panel; recipes keep their own framing",
+                "framing_matched": matched, "warnings": warnings,
+            }),
+            srgb,
+        ))
+    }
+
+    #[test]
+    fn streamed_panels_match_native_panels_reference_bit_for_bit() {
+        use crate::synthetic::Synthetic;
+
+        let mut synthetic = Synthetic::from_camera_rgb(66, 50, |x, y| {
+            let texture = ((x * 31 + y * 47) % 97) as f32 / 97.0 * 0.04;
+            let v = 0.01 + x as f32 / 66.0 * 0.8 + texture;
+            [v * 0.8, v, v * 0.6]
+        });
+        let mut preview = Image::new(41, 27);
+        preview.map_xy(|x, y, _| [x as f32 / 41.0, y as f32 / 27.0, 0.3]);
+        synthetic.embedded_jpeg =
+            Some(crate::output::encode(std::path::Path::new("camera.jpg"), &preview, 94).unwrap());
+        let recipe = |value| serde_json::from_value::<Params>(value).unwrap();
+        let params = [
+            Params::default(),
+            recipe(json!({"rotate": 3.0, "crop": {"top": 0.07, "bottom": 0.93, "left": 0.11}, "denoise": 85})),
+            recipe(json!({"rotate": -7.0, "crop": {"top": 0.6}, "exposure": -0.5})),
+            recipe(json!({"crop": {"left": 0.99, "top": 0.99}})),
+        ];
+        for orientation in [1, 3, 6, 8] {
+            synthetic.orientation = orientation;
+            let file = synthetic.to_bytes();
+            let mut raw = crate::arw::decode(&file).unwrap();
+            // Predict dimensions from the active area, not the stored frame.
+            raw.crop.x = 2;
+            raw.crop.y = 2;
+            raw.crop.width -= 4;
+            raw.crop.height -= 4;
+            for indices in [&[1, 2, 0][..], &[1, 4, 2, 4][..], &[3, 0][..], &[4][..]] {
+                let panels: Vec<_> = indices
+                    .iter()
+                    .map(|&i| Panel {
+                        kind: if i == 4 { "camera" } else { "recipe" },
+                        params: params[i.min(3)].clone(),
+                        recipe_file: (i != 4).then(|| PathBuf::from(format!("synthetic-{i}.json"))),
+                    })
+                    .collect();
+                for size in [1, 19, 43, 100] {
+                    let (expected, expected_report, expected_srgb) =
+                        native_panels_reference(&raw, &file, &panels, size).unwrap();
+                    let (actual, report, srgb) = row(&raw, &file, &panels, size).unwrap();
+                    let context = format!("orientation {orientation}, panels {indices:?}, size {size}");
+                    assert_eq!((actual.width, actual.height), (expected.width, expected.height), "{context}");
+                    let bits = |image: &Image| image.data.iter().map(|p| p.map(f32::to_bits)).collect::<Vec<_>>();
+                    assert_eq!(bits(&actual), bits(&expected), "{context}");
+                    assert_eq!(report, expected_report, "{context}: report");
+                    assert_eq!(srgb, expected_srgb, "{context}: colour space");
+                }
+            }
+        }
+    }
 
     #[test]
     fn exif_colour_walk_handles_big_endian_and_bad_offsets() {
