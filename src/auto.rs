@@ -13,6 +13,8 @@ use crate::pipeline::{self, Size};
 
 /// Long edge of the analysis image.
 const ANALYSIS_EDGE: usize = 640;
+/// Largest camera-JPEG edge decoded for the tone bound of a cropped recipe.
+const CAMERA_EDGE_LIMIT: usize = 8192;
 
 // In sqrt sensor-green light, 0.25 separates a near-white tile from a
 // neighbour below about 0.55. This also catches a one-pixel dark line that
@@ -265,11 +267,25 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
 /// colour falls back to the finished policy, with the reason in decisions.
 pub fn auto_with_file(raw: &RawImage, base: &Params, file: &[u8]) -> Result<Auto> {
     let panels = [crate::compare::Panel { kind: "camera", params: Params::default(), recipe_file: None }];
-    match crate::compare::row(raw, file, &panels, ANALYSIS_EDGE) {
+    // Frame first, then reduce: a tight crop of an already reduced JPEG
+    // would leave too few pixels and shift the reference percentiles.
+    let kept = (base.crop.right - base.crop.left).min(base.crop.bottom - base.crop.top).clamp(0.05, 1.0);
+    let camera_edge = ((ANALYSIS_EDGE as f64 / kept).ceil() as usize).min(CAMERA_EDGE_LIMIT);
+    match crate::compare::row(raw, file, &panels, camera_edge) {
         Ok((image, report, true)) => {
             // The single camera panel is already upright. Apply the recipe's
             // rotation/crop once, without running developing controls on it.
             let image = pipeline::framed(image, 1, base);
+            let long = image.width.max(image.height);
+            let image = if long > ANALYSIS_EDGE {
+                let scale = ANALYSIS_EDGE as f64 / long as f64;
+                image.resized(
+                    ((image.width as f64 * scale).round() as usize).max(1),
+                    ((image.height as f64 * scale).round() as usize).max(1),
+                )
+            } else {
+                image
+            };
             let camera = measure(&image, &Spaces::new());
             let note = format!(
                 "camera tone bound: verified sRGB; conversion {}; matched framing; median {:.1}, upper midtone L75 {:.1}, L75-L50 {:.1}; two-point lightness tolerance, not a look to copy",
