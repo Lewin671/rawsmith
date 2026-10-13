@@ -270,6 +270,7 @@ fn decode_lossless(tiff: &Tiff, raw: &Ifd, width: usize, height: usize, bits: u8
 }
 
 pub fn decode(file: &[u8]) -> Result<RawImage> {
+    let _stage = crate::profile::Stage::new("decode");
     let (tiff, first) = Tiff::new(file)?;
     let ifd0 = tiff.ifd(first)?;
     let meta = metadata(&tiff, &ifd0);

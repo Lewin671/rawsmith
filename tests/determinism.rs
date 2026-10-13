@@ -154,3 +154,66 @@ fn auto_recipe_and_decisions_ignore_rayon_scheduling() {
         }
     }
 }
+
+// FNV-1a over dimensions, exact float bits and encoded files. Golden values
+// were recorded on main (631d308), before any optimisation, in release mode.
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+fn hash_bytes(bytes: impl IntoIterator<Item = u8>) -> u64 {
+    bytes.into_iter().fold(0xcbf29ce484222325, |hash, byte| (hash ^ byte as u64).wrapping_mul(0x100000001b3))
+}
+
+// Transcendental functions are platform dependent, as documented by the
+// rendering contract. These historical hashes belong to the reference host.
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+#[test]
+fn main_render_golden_hashes() {
+    let raw = hazy_sunset();
+    let automatic = auto::auto(&raw, &Params::default()).unwrap();
+    let recipes =
+        [Params::default(), automatic.params, recipe(), Params { denoise: Some(85.0), rotate: 3.0, ..recipe() }];
+    let mut got = Vec::new();
+    for params in recipes {
+        for edge in [None, Some(400), Some(1)] {
+            let image = pipeline::render(&raw, &params, Size { max_edge: edge }).unwrap().image;
+            for image in [
+                image.clone(),
+                image.crop(image.width / 7, image.height / 9, (image.width / 2).max(1), (image.height / 2).max(1)),
+            ] {
+                let mut bytes = Vec::new();
+                bytes.extend((image.width as u64).to_le_bytes());
+                bytes.extend((image.height as u64).to_le_bytes());
+                bytes.extend(image.data.iter().flatten().flat_map(|v| v.to_bits().to_le_bytes()));
+                bytes.extend(output::encode(Path::new("golden.jpg"), &image, 94).unwrap());
+                bytes.extend(output::encode(Path::new("golden.png"), &image, 94).unwrap());
+                got.push(hash_bytes(bytes));
+            }
+        }
+    }
+    let expected: &[u64] = &[
+        0xb85b0817698d8297,
+        0x225074ecba9346ee,
+        0xff5346cde7745533,
+        0xa301a07a56b875da,
+        0xe77c5f29e1b872e9,
+        0xe77c5f29e1b872e9,
+        0x94777d3e7a0671b2,
+        0x9fb186f21f77de67,
+        0x2d151a4699053646,
+        0xf6be77d6d3b054c0,
+        0xd4b409d878d803a4,
+        0xd4b409d878d803a4,
+        0xae1fb123233d60d6,
+        0x906341e98c89b73a,
+        0xd35423824830a1b3,
+        0x6e47f37db21bf7c5,
+        0x6891e9608954e1fc,
+        0x6891e9608954e1fc,
+        0x727730d2942d5042,
+        0x152a3389e6fd12a7,
+        0xd19985231e48a861,
+        0x764518a50d09d4e3,
+        0x73b8be2377867744,
+        0x73b8be2377867744,
+    ];
+    assert_eq!(got, expected);
+}

@@ -18,6 +18,7 @@ pub mod noise;
 pub mod output;
 pub mod params;
 pub mod pipeline;
+pub mod profile;
 pub mod stats;
 pub mod synthetic;
 pub mod tiff;

@@ -220,6 +220,7 @@ pub fn encode(path: &Path, image: &Image, quality: u8) -> Result<Vec<u8>> {
 /// Comparison rows may contain unconverted camera pixels whose space is not sRGB.
 /// In that case, omit the output profile instead of making a false declaration.
 pub fn encode_with_color_space(path: &Path, image: &Image, quality: u8, srgb: bool) -> Result<Vec<u8>> {
+    let _stage = crate::profile::Stage::new("encode");
     let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let (w, h) = (image.width, image.height);
     let failed =

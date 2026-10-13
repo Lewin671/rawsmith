@@ -259,15 +259,18 @@ impl Spaces {
         let lightness = lab[0].clamp(0.0, 1.0);
         let (mut lo, mut hi) = (0.0f32, 1.0f32);
         let at = |k: f32| apply(&self.work_to_srgb, self.from_oklab([lightness, lab[1] * k, lab[2] * k]));
+        let mut accepted = None;
         for _ in 0..12 {
             let mid = 0.5 * (lo + hi);
-            if inside(at(mid)) {
+            let candidate = at(mid);
+            if inside(candidate) {
+                accepted = Some(candidate);
                 lo = mid
             } else {
                 hi = mid
             }
         }
-        at(lo).map(|v| v.clamp(0.0, 1.0))
+        accepted.unwrap_or_else(|| at(lo)).map(|v| v.clamp(0.0, 1.0))
     }
 }
 

@@ -5,6 +5,9 @@ edition = "2021"
 description = "AI-friendly RAW developing CLI: decode, develop and grade photos from a reproducible parameter file"
 license = "MIT OR Apache-2.0"
 
+[features]
+render-profile = []
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 jpeg-encoder = "0.7"

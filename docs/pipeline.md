@@ -230,7 +230,12 @@ GPS or serial numbers. The resize gives the same noise, sharpness and tone
 as resizing a full render with the same area
 filter, rather than changing spatial radii or processing averaged linear
 pixels. Previews therefore do full-resolution work and use full-resolution
-working memory. `compare` uses this path for developed panels too.
+working memory. `compare` uses this path for developed panels too. Scalar
+filter planes resize without RGB expansion; box filters retain their exact
+running-sum order while processing neighbouring columns together and
+reusing disposable buffers. Chroma channels share guide statistics, and
+native rendering finishes its owned scene without copying it.
+[Stage diagnostics and measured before/after results](performance.md).
 
 `examples/quality.rs --check` compares a noisy synthetic RAW at several sizes
 against the downscaled full render, with noise standard deviation, edge

@@ -3,6 +3,19 @@
 
 use rayon::prelude::*;
 
+fn resize_spans(from: usize, to: usize) -> Vec<(usize, Vec<f32>)> {
+    let scale = from as f64 / to as f64;
+    (0..to)
+        .map(|i| {
+            let (a, b) = (i as f64 * scale, (i + 1) as f64 * scale);
+            let first = a.floor() as usize;
+            let last = ((b.ceil() as usize).max(first + 1)).min(from);
+            let weights = (first..last).map(|s| ((b.min((s + 1) as f64) - a.max(s as f64)) / scale) as f32).collect();
+            (first, weights)
+        })
+        .collect()
+}
+
 #[derive(Clone)]
 pub struct Image {
     pub width: usize,
@@ -92,20 +105,7 @@ impl Image {
         if width == self.width && height == self.height {
             return self.clone();
         }
-        let spans = |from: usize, to: usize| -> Vec<(usize, Vec<f32>)> {
-            let scale = from as f64 / to as f64;
-            (0..to)
-                .map(|i| {
-                    let (a, b) = (i as f64 * scale, (i + 1) as f64 * scale);
-                    let first = a.floor() as usize;
-                    let last = ((b.ceil() as usize).max(first + 1)).min(from);
-                    let weights =
-                        (first..last).map(|s| ((b.min((s + 1) as f64) - a.max(s as f64)) / scale) as f32).collect();
-                    (first, weights)
-                })
-                .collect()
-        };
-        let (xs, ys) = (spans(self.width, width), spans(self.height, height));
+        let (xs, ys) = (resize_spans(self.width, width), resize_spans(self.height, height));
         // Horizontal pass, then vertical.
         let mut mid = vec![[0.0f32; 3]; width * self.height];
         mid.par_chunks_mut(width).enumerate().for_each(|(y, row)| {
@@ -165,10 +165,29 @@ impl Plane {
     }
 
     pub fn resized(&self, width: usize, height: usize) -> Plane {
-        let rgb =
-            Image { width: self.width, height: self.height, data: self.data.iter().map(|&v| [v, 0.0, 0.0]).collect() };
-        let out = rgb.resized(width, height);
-        Plane { width, height, data: out.data.iter().map(|p| p[0]).collect() }
+        if (width, height) == (self.width, self.height) {
+            return self.clone();
+        }
+        let (xs, ys) = (resize_spans(self.width, width), resize_spans(self.height, height));
+        let mut mid = vec![0.0f32; width * self.height];
+        mid.par_chunks_mut(width).enumerate().for_each(|(y, row)| {
+            let src = &self.data[y * self.width..(y + 1) * self.width];
+            for (p, (first, weights)) in row.iter_mut().zip(&xs) {
+                for (k, w) in weights.iter().enumerate() {
+                    *p += src[first + k] * w;
+                }
+            }
+        });
+        let mut out = Plane::new(width, height);
+        out.data.par_chunks_mut(width).zip(&ys).for_each(|(row, (first, weights))| {
+            for (k, w) in weights.iter().enumerate() {
+                let src = &mid[(first + k) * width..(first + k + 1) * width];
+                for (p, s) in row.iter_mut().zip(src) {
+                    *p += s * w;
+                }
+            }
+        });
+        out
     }
 
     /// Box blur with the given radius (window `2r + 1`), edges replicated.
@@ -188,19 +207,68 @@ impl Plane {
         };
         let mut mid = vec![0.0f32; w * h];
         mid.par_chunks_mut(w).zip(self.data.par_chunks(w)).for_each(|(dst, src)| run(src, dst, w, 1));
-        // Vertical pass on a transposed copy keeps the inner loop contiguous.
-        let mut columns = vec![0.0f32; w * h];
-        columns.par_chunks_mut(h).enumerate().for_each(|(x, col)| {
-            let src: Vec<f32> = (0..h).map(|y| mid[y * w + x]).collect();
-            run(&src, col, h, 1);
-        });
-        let mut out = Plane::new(w, h);
-        out.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
-            for (x, v) in row.iter_mut().enumerate() {
-                *v = columns[x * h + y];
+        Self::box_columns(w, h, radius, mid, vec![0.0f32; w * h])
+    }
+
+    /// Consume a disposable plane so its storage can hold the column pass.
+    pub(crate) fn box_blur_owned(self, radius: usize) -> Plane {
+        if radius == 0 {
+            return self;
+        }
+        let (w, h) = (self.width, self.height);
+        let norm = 1.0 / (2 * radius + 1) as f32;
+        let mut mid = vec![0.0f32; w * h];
+        mid.par_chunks_mut(w).zip(self.data.par_chunks(w)).for_each(|(dst, src)| {
+            let get = |i: isize| src[i.clamp(0, w as isize - 1) as usize];
+            let mut sum: f32 = (-(radius as isize)..=radius as isize).map(get).sum();
+            for (i, v) in dst.iter_mut().enumerate() {
+                *v = sum * norm;
+                sum += get(i as isize + radius as isize + 1) - get(i as isize - radius as isize);
             }
         });
-        out
+        Self::box_columns(w, h, radius, mid, self.data)
+    }
+
+    fn box_columns(w: usize, h: usize, radius: usize, mut mid: Vec<f32>, mut columns: Vec<f32>) -> Plane {
+        // Neighbouring columns share contiguous source loads while keeping
+        // each column's original top-to-bottom floating-point sum order.
+        const TILE: usize = 32;
+        let norm = 1.0 / (2 * radius + 1) as f32;
+        columns.par_chunks_mut(h * TILE).enumerate().for_each(|(tile, cols)| {
+            let x0 = tile * TILE;
+            let n = cols.len() / h;
+            let mut sums = [-0.0f32; TILE];
+            let row_at = |y: isize| {
+                let y = y.clamp(0, h as isize - 1) as usize;
+                &mid[y * w + x0..y * w + x0 + n]
+            };
+            for y in -(radius as isize)..=radius as isize {
+                for (sum, v) in sums[..n].iter_mut().zip(row_at(y)) {
+                    *sum += v;
+                }
+            }
+            for y in 0..h {
+                let added = row_at(y as isize + radius as isize + 1);
+                let removed = row_at(y as isize - radius as isize);
+                let row = &mut cols[y * n..(y + 1) * n];
+                for (((v, sum), added), removed) in row.iter_mut().zip(&mut sums[..n]).zip(added).zip(removed) {
+                    *v = *sum * norm;
+                    *sum += added - removed;
+                }
+            }
+        });
+        // The horizontal buffer is dead; transpose back into its storage.
+        mid.par_chunks_mut(w * TILE).enumerate().for_each(|(tile, rows)| {
+            let y0 = tile * TILE;
+            for (x_tile, cols) in columns.chunks(h * TILE).enumerate() {
+                let n = cols.len() / h;
+                let x0 = x_tile * TILE;
+                for (y, row) in rows.chunks_mut(w).enumerate() {
+                    row[x0..x0 + n].copy_from_slice(&cols[(y0 + y) * n..(y0 + y + 1) * n]);
+                }
+            }
+        });
+        Plane { width: w, height: h, data: mid }
     }
 
     /// Approximate Gaussian blur: three box blurs of matching variance.
@@ -210,7 +278,7 @@ impl Plane {
         }
         // Variance of a box of radius r is r(r+1)/3; three passes add up.
         let radius = (((sigma * sigma + 0.25).sqrt() - 0.5).round() as usize).max(1);
-        self.box_blur(radius).box_blur(radius).box_blur(radius)
+        self.box_blur(radius).box_blur_owned(radius).box_blur_owned(radius)
     }
 }
 
@@ -218,31 +286,60 @@ impl Plane {
 /// filter). `radius` is the window radius, `eps` the edge threshold in
 /// squared guide units.
 pub fn guided_filter(guide: &Plane, input: &Plane, radius: usize, eps: f32) -> Plane {
-    // Cancellation in E[g²] - E[g]² can make a flat guide's variance
-    // negative. Keep the denominator positive even for vanishing eps.
-    let eps = eps.max(f32::EPSILON);
-    let mul = |a: &Plane, b: &Plane| Plane {
-        width: a.width,
-        height: a.height,
-        data: a.data.par_iter().zip(&b.data).map(|(x, y)| x * y).collect(),
-    };
-    let mean_g = guide.box_blur(radius);
-    let mean_i = input.box_blur(radius);
-    let corr_gi = mul(guide, input).box_blur(radius);
-    let corr_gg = mul(guide, guide).box_blur(radius);
-    let mut a = Plane::new(guide.width, guide.height);
-    let mut b = Plane::new(guide.width, guide.height);
-    a.data.par_iter_mut().zip(b.data.par_iter_mut()).enumerate().for_each(|(i, (a, b))| {
-        let var = (corr_gg.data[i] - mean_g.data[i] * mean_g.data[i]).max(0.0);
-        let cov = corr_gi.data[i] - mean_g.data[i] * mean_i.data[i];
-        *a = cov / (var + eps);
-        *b = mean_i.data[i] - *a * mean_g.data[i];
-    });
-    let (mean_a, mean_b) = (a.box_blur(radius), b.box_blur(radius));
-    Plane {
-        width: guide.width,
-        height: guide.height,
-        data: (0..guide.data.len()).into_par_iter().map(|i| mean_a.data[i] * guide.data[i] + mean_b.data[i]).collect(),
+    Guided::new(guide, radius).into_filter(input.clone(), eps)
+}
+
+/// Reuse the guide's window statistics for multiple input channels.
+pub(crate) struct Guided<'a> {
+    guide: &'a Plane,
+    radius: usize,
+    mean: Plane,
+    correlation: Plane,
+}
+impl<'a> Guided<'a> {
+    pub(crate) fn new(guide: &'a Plane, radius: usize) -> Self {
+        let squared =
+            Plane { width: guide.width, height: guide.height, data: guide.data.par_iter().map(|v| v * v).collect() };
+        Self { guide, radius, mean: guide.box_blur(radius), correlation: squared.box_blur_owned(radius) }
+    }
+
+    pub(crate) fn filter_owned(&self, input: Plane, eps: f32) -> Plane {
+        let (a, b) = self.coefficients(input, eps);
+        Self::reconstruct(self.guide, self.radius, a, b)
+    }
+
+    pub(crate) fn into_filter(self, input: Plane, eps: f32) -> Plane {
+        let (a, b) = self.coefficients(input, eps);
+        let (guide, radius) = (self.guide, self.radius);
+        drop(self);
+        Self::reconstruct(guide, radius, a, b)
+    }
+
+    fn coefficients(&self, mut input: Plane, eps: f32) -> (Plane, Plane) {
+        // A flat guide can have negative variance from cancellation.
+        let eps = eps.max(f32::EPSILON);
+        let mut b = input.box_blur(self.radius);
+        input.data.par_iter_mut().zip(&self.guide.data).for_each(|(v, g)| {
+            let product = *g * *v;
+            *v = product;
+        });
+        let mut a = input.box_blur_owned(self.radius);
+        a.data.par_iter_mut().zip(b.data.par_iter_mut()).enumerate().for_each(|(i, (a, b))| {
+            let var = (self.correlation.data[i] - self.mean.data[i] * self.mean.data[i]).max(0.0);
+            let cov = *a - self.mean.data[i] * *b;
+            *a = cov / (var + eps);
+            *b -= *a * self.mean.data[i];
+        });
+        (a, b)
+    }
+
+    fn reconstruct(guide: &Plane, radius: usize, a: Plane, b: Plane) -> Plane {
+        let mean_a = a.box_blur_owned(radius);
+        let mean_b = b.box_blur_owned(radius);
+        // Reuse one coefficient plane for the final reconstruction.
+        let mut out = mean_a;
+        out.data.par_iter_mut().enumerate().for_each(|(i, v)| *v = *v * guide.data[i] + mean_b.data[i]);
+        out
     }
 }
 

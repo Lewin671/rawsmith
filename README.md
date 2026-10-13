@@ -177,10 +177,14 @@ the camera, `auto` is at least as good as the camera, and the clear gain
 comes from the assistant's judgement — cropping, deciding what should be
 bright, and choosing a palette.
 
-On an Intel i7-10700 (8 cores, macOS) a 1400 px default preview takes
-5.3 s, `auto` with a preview 10.2 s and a full-resolution JPEG export
-5.8 s, with about 3.5 GB peak memory: previews run the full pipeline and
-resize last. Speed is the next thing to fix.
+On the reference Intel i7-10700 (8 cores / 16 threads, macOS), a 33 MP
+ISO 100 file now takes 2.89 s for a 1400 px default preview, 5.80 s for
+`auto` with a preview, and 3.49 s for a native JPEG export. The ISO 4000
+file takes 3.97 / 7.18 / 4.62 s respectively. Peak RSS ranges from 1.91 to
+2.35 GB across these workloads. These are medians of three serial runs
+with allocation diagnostics enabled; pixels and encoded files match the
+pre-optimisation main build. Previews still develop at native resolution
+and resize last. [Before/after stages, method and remaining targets](docs/performance.md).
 
 Decoder samples matched LibRaw on the original 18 test files and two
 additional CC0 lossless Bayer files (55,050,240/55,050,240 samples).

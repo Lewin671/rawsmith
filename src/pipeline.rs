@@ -18,7 +18,7 @@ use crate::adjust::ColorOps;
 use crate::arw::RawImage;
 use crate::color::{self, srgb_encode, Spaces};
 use crate::error::{Error, Result};
-use crate::image::{guided_filter, Image, Plane};
+use crate::image::{guided_filter, Guided, Image, Plane};
 use crate::params::Params;
 use crate::tone::{self, Filmic, Local};
 use crate::{demosaic, lens};
@@ -152,36 +152,41 @@ fn denoise(image: &mut Image, strength: f32) {
     if strength <= 0.0 {
         return;
     }
-    let encoded: Vec<[f32; 3]> = image.data.par_iter().map(|p| p.map(|v| v.max(0.0).sqrt())).collect();
     let (w, h) = (image.width, image.height);
-    let plane = |f: &(dyn Fn(&[f32; 3]) -> f32 + Sync)| Plane {
-        width: w,
-        height: h,
-        data: encoded.par_iter().map(f).collect(),
-    };
-    let y = plane(&|p| (p[0] + 2.0 * p[1] + p[2]) * 0.25);
-    let cr = plane(&|p| p[0] - p[1]);
-    let cb = plane(&|p| p[2] - p[1]);
-    drop(encoded);
+    let (mut y, mut original_cr, mut original_cb) = (Plane::new(w, h), Plane::new(w, h), Plane::new(w, h));
+    y.data
+        .par_iter_mut()
+        .zip(original_cr.data.par_iter_mut())
+        .zip(original_cb.data.par_iter_mut())
+        .zip(&image.data)
+        .for_each(|(((y, cr), cb), p)| {
+            let p = p.map(|v| v.max(0.0).sqrt());
+            *y = (p[0] + 2.0 * p[1] + p[2]) * 0.25;
+            *cr = p[0] - p[1];
+            *cb = p[2] - p[1];
+        });
     let radius = (2.0 + strength * 6.0) as usize;
     let eps = 0.0004 * strength * strength + 1e-6;
     // Chroma follows luminance edges, so colour does not bleed across them.
-    let original_cr = cr;
-    let original_cb = cb;
-    let mut cr = guided_filter(&y, &original_cr, radius, eps);
-    let mut cb = guided_filter(&y, &original_cb, radius, eps);
     let coarse_strength = ((strength - 0.25) / 0.35).clamp(0.0, 1.0);
+    let (sw, sh) = (w.div_ceil(4), h.div_ceil(4));
+    // Preserve the original guides at quarter size before consuming the
+    // native chroma planes; their full-sized copies are no longer needed.
+    let guides =
+        (coarse_strength > 0.0).then(|| [original_cr.resized(sw, sh), original_cb.resized(sw, sh), y.resized(sw, sh)]);
+    let guided = Guided::new(&y, radius);
+    let mut cr = guided.filter_owned(original_cr, eps);
+    let mut cb = guided.into_filter(original_cb, eps);
     if coarse_strength > 0.0 {
         // A native-pixel filter removes grain but leaves correlated chroma
         // clouds. Estimate that base at quarter size (48-pixel native radius).
         // A chroma boundary mask keeps strong colour discontinuities,
         // including ones with little luminance contrast. Apply only the base
         // correction so fine, luminance-guided colour detail is retained.
-        let (sw, sh) = (w.div_ceil(4), h.div_ceil(4));
-        let guides = [original_cr.resized(sw, sh), original_cb.resized(sw, sh), y.resized(sw, sh)];
+        let guides = guides.as_ref().expect("coarse chroma guides");
         let coarse = |chroma: &mut Plane| {
             let small = chroma.resized(sw, sh);
-            let base = chroma_base(&small, &guides, 12, 0.0064 * strength * strength);
+            let base = chroma_base(&small, guides, 12, 0.0064 * strength * strength);
             let (fx, fy) = (sw as f32 / w as f32, sh as f32 / h as f32);
             chroma.data.par_chunks_mut(w).enumerate().for_each(|(row, values)| {
                 let sy = (row as f32 + 0.5) * fy - 0.5;
@@ -194,33 +199,39 @@ fn denoise(image: &mut Image, strength: f32) {
         coarse(&mut cr);
         coarse(&mut cb);
     }
-    drop(original_cr);
-    drop(original_cb);
+    drop(guides);
     // Luminance smoothing only in the upper half of the slider.
     let luma_strength = ((strength - 0.5) * 2.0).max(0.0);
-    let original_luma = Plane::from_fn(image, |p| color::luma(p).max(0.0).sqrt());
+    let original_luma = (luma_strength > 0.0).then(|| Plane::from_fn(image, |p| color::luma(p).max(0.0).sqrt()));
     image.data.par_iter_mut().enumerate().for_each(|(i, p)| {
+        // With chroma-only smoothing, luminance restoration is per-pixel:
+        // keep the same sqrt/square round trip without a separate plane/pass.
+        let original = if luma_strength == 0.0 { color::luma(*p).max(0.0).sqrt() } else { 0.0 };
         // Invert the encoded guide, keeping it unchanged by chroma smoothing.
         let g = y.data[i] - (cr.data[i] + cb.data[i]) * 0.25;
         *p = [g + cr.data[i], g, g + cb.data[i]].map(|v| v.max(0.0).powi(2));
+        if luma_strength == 0.0 {
+            let gain = original.max(0.0).powi(2) / color::luma(*p).max(1e-10);
+            *p = p.map(|v| v * gain);
+        }
     });
-    let guide = Plane::from_fn(image, |p| color::luma(p).max(0.0).sqrt());
+    drop(y);
+    drop(cr);
+    drop(cb);
     // The chroma-cleaned reconstruction is a lower-noise guide. Preserve
     // true linear luminance as the input rather than using sqrt-RGB's proxy.
-    let luma = if luma_strength > 0.0 {
+    if let Some(mut input) = original_luma {
+        let guide = Plane::from_fn(image, |p| color::luma(p).max(0.0).sqrt());
         // At high strength, use the chroma-cleaned luminance estimate as well:
         // the camera colour matrix correlates colour noise with noisy Y.
         // Restoring all of that Y would bring the removed noise back as grain.
-        let mut input = original_luma;
         input.data.par_iter_mut().zip(&guide.data).for_each(|(v, g)| *v += (*g - *v) * luma_strength);
-        guided_filter(&guide, &input, 2, 0.00005 * luma_strength * luma_strength)
-    } else {
-        original_luma
-    };
-    image.data.par_iter_mut().enumerate().for_each(|(i, p)| {
-        let gain = luma.data[i].max(0.0).powi(2) / color::luma(*p).max(1e-10);
-        *p = p.map(|v| v * gain);
-    });
+        let luma = Guided::new(&guide, 2).into_filter(input, 0.00005 * luma_strength * luma_strength);
+        image.data.par_iter_mut().enumerate().for_each(|(i, p)| {
+            let gain = luma.data[i].max(0.0).powi(2) / color::luma(*p).max(1e-10);
+            *p = p.map(|v| v * gain);
+        });
+    }
 }
 
 /// Remove smooth chroma clouds while protecting discontinuous colour edges.
@@ -301,15 +312,18 @@ pub struct Render {
 /// scaling radii alone would still misrepresent noise, clipping and contrast.
 pub fn render(raw: &RawImage, params: &Params, size: Size) -> Result<Render> {
     let Scene { image, white_balance, sensor_clipped_pct, noise_reduction, .. } = scene(raw, params, Size::default())?;
-    let finished = finish(&image, params, &Spaces::new());
-    drop(image);
-    Ok(Render { image: size.apply(finished), white_balance, sensor_clipped_pct, noise_reduction })
+    let finished = finish_owned(image, params, &Spaces::new());
+    let stage = crate::profile::Stage::new("output resize");
+    let image = size.apply(finished);
+    drop(stage);
+    Ok(Render { image, white_balance, sensor_clipped_pct, noise_reduction })
 }
 
 /// Builds the scene-linear image for a recipe. A reduced size is an
 /// approximation for automatic candidate analysis only; use `render` for
 /// previews and exports so every spatial/nonlinear stage precedes resizing.
 pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
+    let stage = crate::profile::Stage::new("noise/prepare");
     let noise_reduction = crate::noise::resolve(raw, params.denoise);
     let cam_to_work = color::camera_to_working(&camera_matrix(raw)?);
     let (white_balance, gains) = white_balance(raw, params)?;
@@ -328,10 +342,16 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
     // neutral-edge colour protection, only for reduced candidate analysis.
     let half = size.max_edge.is_some_and(|edge| edge as f32 <= full_edge * 0.5);
 
+    drop(stage);
+    let stage = crate::profile::Stage::new("demosaic");
     let mut image = if half { demosaic::half(&mosaic) } else { demosaic::full(&mosaic) };
+    drop(stage);
+    let stage = crate::profile::Stage::new("sensor/highlights");
     let (_, _, clipped) = crate::stats::sensor_clipping(raw);
     demosaic::reconstruct_highlights(&mut image, mosaic.clip);
     drop(mosaic);
+    drop(stage);
+    let stage = crate::profile::Stage::new("lens/matrix/fringe");
     if params.lens_corrections {
         if let Some(tables) = &raw.lens {
             if let Some(corrected) = lens::correct(&image, tables) {
@@ -341,10 +361,14 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
     }
     image.map(|p| color::apply(&cam_to_work, p));
     crate::fringe::suppress(&mut image, params.defringe as f32 / 100.0, if half { 2 } else { 3 });
+    drop(stage);
+    let stage = crate::profile::Stage::new("denoise");
     if !half {
         denoise(&mut image, noise_reduction.strength as f32 / 100.0);
     }
 
+    drop(stage);
+    let stage = crate::profile::Stage::new("geometry/scene resize");
     let mut image = framed(image, raw.meta.orientation, params);
     let mut scale = if half { 0.5 } else { 1.0 };
     if let Some(edge) = size.max_edge {
@@ -358,6 +382,7 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
             scale *= k;
         }
     }
+    drop(stage);
     Ok(Scene { image, white_balance, sensor_clipped_pct: clipped, scale, noise_reduction })
 }
 
@@ -394,7 +419,11 @@ fn sharpen(image: &mut Image, amount: f32) {
 
 /// Turns a scene-linear image into the final sRGB-encoded picture.
 pub fn finish(scene: &Image, params: &Params, spaces: &Spaces) -> Image {
-    let mut image = scene.clone();
+    finish_owned(scene.clone(), params, spaces)
+}
+
+fn finish_owned(mut image: Image, params: &Params, spaces: &Spaces) -> Image {
+    let stage = crate::profile::Stage::new("exposure/local tone");
     let base = BASE_EXPOSURE;
     let gain = (params.exposure as f32 + base).exp2();
     image.map(|p| [p[0] * gain, p[1] * gain, p[2] * gain]);
@@ -443,6 +472,8 @@ pub fn finish(scene: &Image, params: &Params, spaces: &Spaces) -> Image {
         },
     );
 
+    drop(stage);
+    let stage = crate::profile::Stage::new("filmic/colour/gamut");
     // Sensor saturation sits at 2^BASE_EXPOSURE and just reaches display white.
     let filmic = Filmic::new(params.contrast as f32, base.exp2());
     // Black and white points on encoded display values: `whites` moves the
@@ -467,8 +498,11 @@ pub fn finish(scene: &Image, params: &Params, spaces: &Spaces) -> Image {
     });
     ops.run(&mut image, spaces);
     image.map(|p| spaces.to_srgb_gamut(p).map(srgb_encode));
+    drop(stage);
+    let stage = crate::profile::Stage::new("sharpen/clamp");
     sharpen(&mut image, params.sharpen as f32 / 100.0 * 1.5);
     image.map(|p| p.map(|v| v.clamp(0.0, 1.0)));
+    drop(stage);
     image
 }
 

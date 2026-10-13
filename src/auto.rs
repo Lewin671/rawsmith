@@ -266,6 +266,7 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
 /// colour conversion as `compare`. Missing, corrupt or unverified camera
 /// colour falls back to the finished policy, with the reason in decisions.
 pub fn auto_with_file(raw: &RawImage, base: &Params, file: &[u8]) -> Result<Auto> {
+    let _stage = crate::profile::Stage::new("auto total");
     let panels = [crate::compare::Panel { kind: "camera", params: Params::default(), recipe_file: None }];
     // Frame first, then reduce: a tight crop of an already reduced JPEG
     // would leave too few pixels and shift the reference percentiles.

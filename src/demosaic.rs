@@ -127,6 +127,9 @@ pub fn half(m: &Mosaic) -> Image {
 /// Mirror an index into `0..n`, preserving its parity (and so its CFA colour).
 #[inline]
 fn mirror(i: isize, n: usize) -> usize {
+    if i >= 0 && (i as usize) < n {
+        return i as usize;
+    }
     if n <= 1 {
         return 0;
     }

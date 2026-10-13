@@ -17,6 +17,20 @@ Tests build their own synthetic RAW files (`src/synthetic.rs`), so no
 photographs are needed. Python tests check the benchmark's filesystem
 safety without rendering photos or invoking a judge. CI runs these checks.
 
+## Changing rendering performance
+
+Performance measurements run only on the designated reference host, one at
+a time, with builds/tests excluded from the measurement period. Follow the
+workspace shared-host scheduling rules. Never substitute a local timing.
+
+For stage diagnostics build with `--features render-profile` and set
+`RAWSMITH_PROFILE=1`; diagnostics go to stderr without changing report JSON.
+See [performance measurements](docs/performance.md) for fields, workload
+runner and allocation/RSS distinctions. Pure optimisations must preserve
+pixel bits, reports and encoded bytes. The historical render hashes in
+`tests/determinism.rs` are the Intel macOS baseline; portable original-filter
+and scheduling controls also run on other platforms.
+
 ## Changing image quality
 
 Anything that changes pixels should come with evidence:
