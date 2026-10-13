@@ -107,20 +107,22 @@ raw.pixls.us).
 | Chroma noise removed, edge contrast kept | 74%, 108% | — |
 | Sharpening overshoot | 1.7% of the edge step | — |
 
-**Real photos, judged blind.** 15 photos, each pair shown to an LLM judge
-in both orders without labels; wins – losses – ties per photo:
+**Real photos, judged blind.** 15 photos; each pair is shown without
+labels, in both orders, to two LLM judges from different vendors. Wins –
+losses – ties per photo:
 
-| Comparison | Result | What it shows |
-|---|---|---|
-| `auto` vs the camera's JPEG | 15 – 0 – 0 | the engine and its automatic adjustment |
-| `auto` vs macOS's RAW converter | 15 – 0 – 0 | |
-| default recipe vs the camera's JPEG | 10 – 0 – 5 | the engine alone |
-| AI-edited vs `auto` | 12 – 1 – 2 | what an assistant's edit loop adds |
+| Comparison | Claude | GPT-6 Luna | What it shows |
+|---|---|---|---|
+| `auto` vs the camera's JPEG | 15 – 0 – 0 | 12 – 0 – 3 | the engine and its automatic adjustment |
+| `auto` vs macOS's RAW converter | 15 – 0 – 0 | 12 – 0 – 3 | |
+| default recipe vs the camera's JPEG | 10 – 0 – 5 | 5 – 0 – 10 | the engine alone |
+| AI-edited vs `auto` | 12 – 1 – 2 | 6 – 0 – 9 | what an assistant's edit loop adds |
 
-The judge rejected 40 of 40 deliberately spoiled controls, called 8 of 8
-identical pairs a tie and kept its verdict in 92% of pairs when the order
-was swapped. This is a small development set from one camera, judged by
-one model: read it as evidence that the approach works, not as a ranking
+Both judges called all identical pairs a tie and rejected deliberately
+spoiled controls (40 of 40 and 36 of 40). The second judge is noisier —
+it keeps its verdict in 75% of pairs when the order is swapped, against
+92% — which shows up as more ties. This is a small development set from
+one camera: read it as evidence that the approach works, not as a ranking
 of raw developers.
 
 **Speed** (33 MP files, 8-core desktop): 0.4 s for a 1400 px preview,

@@ -100,30 +100,42 @@ What the comparisons mean:
 
 ### Results
 
-15 photos (the private set described under Limits), judge: Claude through
-`claude -p`, one judge, 258 judgements, every pair in both orders.
+15 photos (the private set described under Limits), 258 judgements per
+judge, every pair in both orders. Two judges from different vendors saw
+the same blind tasks independently. Cells are wins – losses – ties for
+the first-named variant, one outcome per photo.
 
-| Comparison | Photos | Wins | Losses | Ties | Win rate of decided | 95% interval |
-|---|---|---|---|---|---|---|
-| `neutral` vs `camera` | 15 | 10 | 0 | 5 | 100% | 72–100% |
-| `auto` vs `camera` | 15 | 15 | 0 | 0 | 100% | 80–100% |
-| `auto` vs `system` | 15 | 15 | 0 | 0 | 100% | 80–100% |
-| `auto` vs `neutral` | 15 | 13 | 0 | 2 | 100% | 77–100% |
-| `ai` vs `auto` | 15 | 12 | 1 | 2 | 92% | 67–99% |
-| `ai` vs `camera` | 15 | 15 | 0 | 0 | 100% | 80–100% |
-| `ai` vs `system` | 15 | 15 | 0 | 0 | 100% | 80–100% |
+| Comparison | Claude | GPT-6 Luna |
+|---|---|---|
+| `neutral` vs `camera` | 10 – 0 – 5 | 5 – 0 – 10 |
+| `auto` vs `camera` | 15 – 0 – 0 | 12 – 0 – 3 |
+| `auto` vs `system` | 15 – 0 – 0 | 12 – 0 – 3 |
+| `auto` vs `neutral` | 13 – 0 – 2 | 9 – 2 – 4 |
+| `ai` vs `auto` | 12 – 1 – 2 | 6 – 0 – 9 |
+| `ai` vs `camera` | 15 – 0 – 0 | 12 – 0 – 3 |
+| `ai` vs `system` | 15 – 0 – 0 | 13 – 0 – 2 |
 
-A win is a photo whose two verdicts net out in the candidate's favour.
-The interval is a Wilson interval on wins among decided photos.
+A win is a photo whose two verdicts net out in the candidate's favour;
+opposite verdicts in the two orders cancel to a tie. 95% Wilson intervals
+on the win rate among decided photos are wide at this sample size: for
+15 – 0 the lower bound is 80%, for 6 – 0 it is 61%, for 9 – 2 the
+interval is 52–95%.
 
 Judge checks for this run:
 
-| Check | Result |
-|---|---|
-| Spoiled controls rejected | 40 of 40 |
-| Identical pairs called a tie | 8 of 8 |
-| Same verdict after swapping A and B | 92% of pairs |
-| Position preference | A 122, B 118, tie 18 |
+| Check | Claude | GPT-6 Luna |
+|---|---|---|
+| Spoiled controls rejected | 40 of 40 | 36 of 40 |
+| Identical pairs called a tie | 8 of 8 | 8 of 8 |
+| Same verdict after swapping A and B | 92% of pairs | 75% of pairs |
+| Position votes (A / B / tie) | 122 / 118 / 18 | 88 / 140 / 30 |
+
+The two judges agree on direction in every comparison and neither prefers
+the camera's JPEG or the system converter for any photo. The second judge
+is the noisier instrument: it leans towards whichever image is shown
+second, and because both orders are judged that lean turns into ties
+rather than wins, which is why its counts are lower. Claude ran through
+`claude -p`, GPT-6 Luna through `codex exec` with the two images attached.
 
 Speed on the same machine, mean of the 15 files (33 MP each): a 1400 px
 preview takes 0.39 s; a full-resolution JPEG export takes 4.3 s,
@@ -142,8 +154,10 @@ from `auto`, and used two to five rounds per photo.
   looking at these same photos, so this is a development-set result, not a
   held-out one.
 - An LLM judge measures plausibility of taste, not truth. It is good at
-  rejecting obvious faults (see its control accuracy) and reasonably
-  consistent, but it is one opinion.
+  rejecting obvious faults (see the control accuracy) and reasonably
+  consistent, but two models are two opinions, not a panel of
+  photographers. The `ai` recipes were made by Claude, so the Claude
+  judge shares a maker with them; the second judge does not.
 - `camera` is a resized JPEG, so it has been compressed twice.
 
 ### Run it on your own photos
