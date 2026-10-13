@@ -230,6 +230,7 @@ fn mistakes_produce_json_errors_and_change_nothing() {
     assert_eq!(std::fs::read(&f.raw).unwrap(), before, "the RAW was modified");
 
     // A recipe and a picture cannot share a name, in either direction.
+    std::fs::create_dir_all(f.path("sub")).unwrap();
     let shared = f.path("shared.jpg");
     for args in [
         vec!["edit", s(&f.raw), "--reset", "--recipe", s(&shared), "-o", s(&shared)],
@@ -239,6 +240,10 @@ fn mistakes_produce_json_errors_and_change_nothing() {
         let (success, v) = run(&args);
         assert!(!success && v["error"]["kind"] == "params", "{args:?} -> {v}");
     }
+    assert!(!shared.exists());
+    let (success, v) =
+        run(&["edit", s(&f.raw), "--reset", "--recipe", s(&f.dir.join("sub/../shared.jpg")), "-o", s(&shared)]);
+    assert!(!success && v["error"]["kind"] == "params", "{v}");
     assert!(!shared.exists());
 
     // Saving a recipe leaves no staging file behind.

@@ -166,9 +166,11 @@ def cmd_render(args):
             entry["seconds"]["system"] = round(time.time() - started, 3)
             entry["variants"]["camera"] = entry["variants"]["system"] = None
             os.remove(embedded)
-        # Full-resolution render time, the number users feel on export.
+        # Full-resolution export time, the number users feel: render, encode, write.
         save(scratch, {})
-        _, entry["seconds"]["full_resolution"] = rawsmith(exe, "render", raw, "--recipe", scratch)
+        export = os.path.join(work, "export.jpg")
+        _, entry["seconds"]["full_resolution"] = rawsmith(exe, "render", raw, "--recipe", scratch, "-o", export)
+        os.remove(export)
         entry["seconds"]["full_resolution"] = round(entry["seconds"]["full_resolution"], 3)
         manifest["photos"][photo] = entry
         print(f"{photo}: {', '.join(sorted(entry['variants']))}", flush=True)

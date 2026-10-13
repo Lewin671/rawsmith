@@ -45,6 +45,29 @@ fn to_rgb16_be(image: &Image) -> Vec<u8> {
     out
 }
 
+/// Puts `bytes` at `path` by writing a new file beside it and renaming it
+/// into place. Nothing that already exists is ever opened for writing: an
+/// interrupted write leaves the old file intact, and a destination that is a
+/// symlink or hard link to some other file (the RAW, say) is replaced as a
+/// name while that other file's contents stay untouched.
+pub fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".{}.tmp", std::process::id()));
+    let staging = std::path::PathBuf::from(name);
+    // `create_new` refuses an existing name without following it.
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staging)
+        .and_then(|mut file| file.write_all(bytes))
+        .and_then(|()| std::fs::rename(&staging, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&staging);
+    }
+    written
+}
+
 /// Writes `image` (sRGB-encoded, 0..1) to `path`. The extension selects the
 /// format: `.jpg`/`.jpeg` (8-bit, `quality` 1..100) or `.png` (16-bit, lossless).
 pub fn write(path: &Path, image: &Image, quality: u8) -> Result<()> {
@@ -57,18 +80,20 @@ pub fn write(path: &Path, image: &Image, quality: u8) -> Result<()> {
             if w > u16::MAX as usize || h > u16::MAX as usize {
                 return Err(Error::Params("image is too large for JPEG; use --size or PNG".into()));
             }
-            let mut encoder = jpeg_encoder::Encoder::new_file(path, quality.clamp(1, 100)).map_err(|e| failed(&e))?;
+            let mut bytes = Vec::new();
+            let mut encoder = jpeg_encoder::Encoder::new(&mut bytes, quality.clamp(1, 100));
             // Always full chroma resolution. Subsampled (4:2:0) files from this
             // encoder decode correctly in libjpeg and ImageIO, but an image
             // viewer used by AI assistants showed them scrambled, and a preview
             // the assistant cannot see correctly defeats the purpose.
             encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
             encoder.set_optimized_huffman_tables(true);
-            encoder.encode(&to_rgb8(image), w as u16, h as u16, jpeg_encoder::ColorType::Rgb).map_err(|e| failed(&e))
+            encoder
+                .encode(&to_rgb8(image), w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
+                .map_err(|e| failed(&e))?;
+            replace(path, &bytes).map_err(|e| failed(&e))
         }
         "png" => {
-            // Encoded in memory and written in one call, so a failed write
-            // (a full disk) is reported instead of lost in a buffer's drop.
             let mut bytes = Vec::new();
             let mut encoder = png::Encoder::new(&mut bytes, w as u32, h as u32);
             encoder.set_color(png::ColorType::Rgb);
@@ -78,7 +103,7 @@ pub fn write(path: &Path, image: &Image, quality: u8) -> Result<()> {
             let mut writer = encoder.write_header().map_err(|e| failed(&e))?;
             writer.write_image_data(&to_rgb16_be(image)).map_err(|e| failed(&e))?;
             writer.finish().map_err(|e| failed(&e))?;
-            std::fs::write(path, bytes).map_err(|e| failed(&e))
+            replace(path, &bytes).map_err(|e| failed(&e))
         }
         _ => Err(Error::Params(format!("unsupported output format '.{extension}'; use .jpg or .png"))),
     }

@@ -9,7 +9,7 @@ none of them substitutes for the others.
 | `examples/quality.rs` | Are the algorithms correct and better than naive baselines, against known answers? | No (synthetic) |
 | `bench/photos.py` | Do real photos come out better than the camera's own rendering and the system RAW converter, and does AI editing help? | Your own RAW files |
 
-Numbers below are from version RAWSMITH_VERSION on an Intel i7-10700
+Numbers below are from version 0.1.0 on an Intel i7-10700
 (8 cores / 16 threads), macOS, release build.
 
 ## 1. Decoder cross-check
@@ -28,7 +28,19 @@ level and as-shot white balance.
 Synthetic scenes with a known correct answer. Reproducible by anyone;
 `--check` turns the floors into a regression test that CI runs.
 
-QUALITY_TABLE
+| Measure | rawsmith | Baseline | Floor checked in CI |
+|---|---|---|---|
+| Demosaic PSNR, mean of four scenes | 39.4 dB | bilinear 33.2 dB, Malvar–He–Cutler 37.1 dB | +4 dB over bilinear, +1 dB over MHC |
+| Demosaic false colour, zone plate (lower is better) | 0.025 | bilinear 0.084, MHC 0.030 | — |
+| Highlight reconstruction, mean relative error | 1.1% | 10.3% when clipping | below 3% |
+| Colour accuracy, 24 patches (ΔE, Oklab × 100) | mean 0.014, max 0.036 | — | mean below 0.5, max below 1 |
+| Chroma noise removed / edge contrast kept | 74% / 108% | — | at least 25% / 95% |
+| Sharpening overshoot, share of the edge step | 1.7% | — | below 2% |
+| Tone curve monotone | yes | — | yes |
+
+Per scene, demosaic PSNR in dB (bilinear / MHC / rawsmith): zone plate
+19.6 / 25.7 / 28.6, coloured lines 26.8 / 26.1 / 27.6, soft shapes
+41.8 / 45.1 / 48.2, fractal texture 44.8 / 51.6 / 53.1.
 
 - **Demosaic**: PSNR of the reconstructed image against the original, over
   four scenes (zone plate up to 0.8 of the sensor's resolution limit, thin
@@ -88,7 +100,39 @@ What the comparisons mean:
 
 ### Results
 
-PHOTO_TABLE
+15 photos (the private set described under Limits), judge: Claude through
+`claude -p`, one judge, 258 judgements, every pair in both orders.
+
+| Comparison | Photos | Wins | Losses | Ties | Win rate of decided | 95% interval |
+|---|---|---|---|---|---|---|
+| `neutral` vs `camera` | 15 | 10 | 0 | 5 | 100% | 72–100% |
+| `auto` vs `camera` | 15 | 15 | 0 | 0 | 100% | 80–100% |
+| `auto` vs `system` | 15 | 15 | 0 | 0 | 100% | 80–100% |
+| `auto` vs `neutral` | 15 | 13 | 0 | 2 | 100% | 77–100% |
+| `ai` vs `auto` | 15 | 12 | 1 | 2 | 92% | 67–99% |
+| `ai` vs `camera` | 15 | 15 | 0 | 0 | 100% | 80–100% |
+| `ai` vs `system` | 15 | 15 | 0 | 0 | 100% | 80–100% |
+
+A win is a photo whose two verdicts net out in the candidate's favour.
+The interval is a Wilson interval on wins among decided photos.
+
+Judge checks for this run:
+
+| Check | Result |
+|---|---|
+| Spoiled controls rejected | 40 of 40 |
+| Identical pairs called a tie | 8 of 8 |
+| Same verdict after swapping A and B | 92% of pairs |
+| Position preference | A 122, B 118, tie 18 |
+
+Speed on the same machine, mean of the 15 files (33 MP each): a 1400 px
+preview takes 0.39 s; a full-resolution JPEG export takes 4.3 s,
+including encoding and writing. `rawsmith auto` with a preview takes 1.05 s
+and macOS `sips` 1.30 s for a picture of the same size.
+
+The `ai` recipes came from five independent assistant sessions (three
+photos each) that were given only the skill file and the CLI, started
+from `auto`, and used two to five rounds per photo.
 
 ### Limits
 

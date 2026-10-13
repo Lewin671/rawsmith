@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
@@ -126,22 +125,7 @@ fn save_recipe(path: &Path, params: &Params) -> Result<()> {
     let mut value = params.to_sparse();
     value["rawsmith"] = json!(env!("CARGO_PKG_VERSION"));
     let text = serde_json::to_string_pretty(&value).expect("recipes always serialise");
-    // Write-then-rename so an interrupted save never leaves half a recipe.
-    // The staging file must be new: `create_new` refuses an existing name
-    // without following it, so a link planted there cannot redirect the write.
-    let mut name = path.as_os_str().to_owned();
-    name.push(format!(".{}.tmp", std::process::id()));
-    let temporary = PathBuf::from(name);
-    let written = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .and_then(|mut file| file.write_all(text.as_bytes()).and_then(|()| file.write_all(b"\n")))
-        .and_then(|()| std::fs::rename(&temporary, path));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    Ok(written?)
+    Ok(output::replace(path, (text + "\n").as_bytes())?)
 }
 
 fn read_raw(path: &Path) -> Result<arw::RawImage> {
@@ -164,6 +148,8 @@ fn parse_region(text: &str) -> Result<[f32; 4]> {
 
 /// Refuses to write `destination` when it is the RAW file itself, by any
 /// name: the same path, a symlink to it, or a hard link sharing its data.
+/// Where hard links cannot be recognised, `output::replace` still keeps the
+/// RAW's contents intact: it replaces names, it never writes into files.
 fn protect_raw(raw: &Path, destination: &Path, what: &str) -> Result<()> {
     if same_file(raw, destination) {
         return Err(Error::Params(format!(
@@ -177,7 +163,13 @@ fn protect_raw(raw: &Path, destination: &Path, what: &str) -> Result<()> {
 /// Whether two paths name one file: the same path (even if nothing exists
 /// there yet), a symlink to it, or a hard link sharing its data.
 fn same_file(a: &Path, b: &Path) -> bool {
-    let resolved = |p: &Path| std::fs::canonicalize(p).or_else(|_| std::path::absolute(p)).ok();
+    // A file that does not exist yet is named by its directory, resolved.
+    let resolved = |p: &Path| {
+        std::fs::canonicalize(p).ok().or_else(|| {
+            let full = std::path::absolute(p).ok()?;
+            Some(std::fs::canonicalize(full.parent()?).ok()?.join(full.file_name()?))
+        })
+    };
     if resolved(a).is_some_and(|x| Some(x) == resolved(b)) {
         return true;
     }
@@ -294,7 +286,7 @@ fn run(cli: Cli) -> Result<Value> {
             let raw = arw::decode(&file)?;
             let (offset, len) =
                 raw.embedded_jpeg.ok_or_else(|| Error::Unsupported("this file has no embedded JPEG".into()))?;
-            std::fs::write(&output, &file[offset..offset + len])?;
+            output::replace(&output, &file[offset..offset + len])?;
             Ok(json!({"output": output, "bytes": len}))
         }
     }
