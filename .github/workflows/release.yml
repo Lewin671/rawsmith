@@ -102,8 +102,8 @@ jobs:
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
     env:
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: '-C link-self-contained=yes'
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: '-C link-self-contained=yes'
       RELEASE_TARGET: ${{ matrix.target }}
       RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
     steps:
@@ -111,12 +111,17 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.commit }}
           persist-credentials: false
-      - name: Install native musl linker
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - name: Use the Rust toolchain's linker and musl runtime
+        if: runner.os == 'Linux'
+        run: |
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          linker="$(rustc --print sysroot)/lib/rustlib/$host/bin/rust-lld"
+          test -x "$linker"
+          printf 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=%s\n' "$linker" >> "$GITHUB_ENV"
+          printf 'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=%s\n' "$linker" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}

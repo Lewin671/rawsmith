@@ -46,7 +46,10 @@ this smoke test isolated from existing user installations.
 ## Retry a failed release
 
 Re-run the failed workflow, or dispatch Release with the existing stable
-tag. A draft is resumable only when it targets the same commit and has
+tag. For a workflow-only fix, push the corrected workflow to main and
+dispatch it from main with the original tag; this changes the build
+configuration while preserving the tagged product source and version.
+A draft is resumable only when it targets the same commit and has
 no unexpected attachments. Expected draft assets are replaced as a set
 before publication. A published release is never overwritten; publish a
 new version for fixes.
