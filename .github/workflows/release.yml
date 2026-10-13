@@ -1,0 +1,194 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing stable tag to release (vMAJOR.MINOR.PATCH)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  MACOSX_DEPLOYMENT_TARGET: '11.0'
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      commit: ${{ steps.commit.outputs.commit }}
+    steps:
+      - name: Validate stable tag
+        id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          tag = os.environ['INPUT_TAG'] if os.environ['EVENT_NAME'] == 'workflow_dispatch' else os.environ['REF_NAME']
+          if os.environ['EVENT_NAME'] != 'workflow_dispatch' and os.environ['REF_TYPE'] != 'tag':
+              raise SystemExit('Only a tag can be released')
+          if not re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag):
+              raise SystemExit('Release tag must be vMAJOR.MINOR.PATCH')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'tag={tag}\n')
+          PY
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify tagged version and record immutable commit
+        id: commit
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          cargo metadata --locked --no-deps --format-version 1 > "$RUNNER_TEMP/metadata.json"
+          python3 - <<'PY'
+          import json, os
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'metadata.json')) as source:
+              package = next(p for p in json.load(source)['packages'] if p['name'] == 'rawsmith')
+          if os.environ['RELEASE_TAG'] != 'v' + package['version']:
+              raise SystemExit('Tag and Cargo package version must match exactly')
+          PY
+          printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  check:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: python3 -m unittest discover -s tests -p 'test_*.py'
+      - run: bash -n install.sh scripts/package-release.sh
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --release
+      - run: cargo run --locked --release --example quality -- --check
+
+  build:
+    needs: [resolve, check]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      RELEASE_TARGET: ${{ matrix.target }}
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          persist-credentials: false
+      - name: Install native musl linker
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Test native release build
+        run: |
+          cargo test --locked --release --target "$RELEASE_TARGET"
+          cargo run --locked --release --target "$RELEASE_TARGET" --example quality -- --check
+          cargo build --locked --release --target "$RELEASE_TARGET" --bin rawsmith
+      - name: Smoke test and package
+        run: bash scripts/package-release.sh "$RELEASE_TARGET" "$RELEASE_TAG" dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.target }}
+          path: dist/rawsmith-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [resolve, check, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: dist
+          merge-multiple: true
+      - name: Prepare and verify complete release attachments
+        run: |
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
+          cp install.sh dist/install.sh
+          python3 - <<'PY'
+          import hashlib, pathlib
+          dist = pathlib.Path('dist')
+          names = {f'rawsmith-{target}.tar.gz' for target in (
+              'x86_64-unknown-linux-musl', 'aarch64-unknown-linux-musl',
+              'x86_64-apple-darwin', 'aarch64-apple-darwin')}
+          names.add('install.sh')
+          if {p.name for p in dist.iterdir()} != names:
+              raise SystemExit('Missing or unexpected release attachments')
+          with (dist / 'SHA256SUMS').open('w') as output:
+              for name in sorted(names):
+                  output.write(f'{hashlib.sha256((dist / name).read_bytes()).hexdigest()}  {name}\n')
+          PY
+          (cd dist && sha256sum --check SHA256SUMS)
+      - name: Create or resume draft, upload, then publish
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft,targetCommitish,assets > "$RUNNER_TEMP/release.json"; then
+            python3 - <<'PY'
+          import json, os, pathlib
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'release.json')) as source:
+              release = json.load(source)
+          if not release['isDraft']:
+              raise SystemExit('Already published: release assets are immutable; create a new version instead')
+          if release['targetCommitish'] != os.environ['RELEASE_COMMIT']:
+              raise SystemExit('Existing draft targets a different commit; refusing to replace its assets')
+          expected = {p.name for p in pathlib.Path('dist').iterdir()}
+          if any(asset['name'] not in expected for asset in release['assets']):
+              raise SystemExit('Existing draft contains unexpected assets; review it before retrying')
+          PY
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --target "$RELEASE_COMMIT" --title "rawsmith $RELEASE_TAG" --generate-notes --draft
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest
