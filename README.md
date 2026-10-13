@@ -3,258 +3,183 @@
 [![CI](https://github.com/Lewin671/rawsmith/actions/workflows/ci.yml/badge.svg)](https://github.com/Lewin671/rawsmith/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#licence)
 
-A RAW photo developer built for AI assistants. `rawsmith` decodes a camera
-RAW file and develops it into a finished picture from a small JSON recipe —
-and it is designed so an assistant can do the editing: read the photo,
-change parameters, look at the result, and repeat until it is right.
+Tell Claude Code or Codex what needs fixing in your RAW photo, and let it develop the picture.
 
-- **Own engine, written in Rust.** RAW decoding, demosaicing, highlight
-  reconstruction, lens corrections, colour, tone mapping, local contrast,
-  dehaze, noise reduction and sharpening are implemented here. No LibRaw,
-  RawTherapee or Lightroom underneath.
-- **Made for an edit loop.** Every command prints JSON. Previews render in
-  under half a second. Each render reports numbers an assistant can reason
-  about (tone percentiles, clipping, colour cast, a 3×3 brightness grid)
-  next to the image it can look at.
-- **Non-destructive and reproducible.** The RAW is only ever read. An edit
-  is a short, human-readable recipe file next to it; the same recipe always
-  produces the same picture.
-- **Measured.** Decoded samples are verified against LibRaw; algorithms are
-  benchmarked against ground truth; real-photo results are judged blind
-  against the camera's own JPEG and the system RAW converter. See
-  [Results](#results).
+The assistant looks at previews, adjusts the edit and checks detail before
+exporting. rawsmith runs locally, leaves your RAW untouched and saves the
+edit as a small JSON recipe you can inspect and render again.
 
-## Before and after
+rawsmith supports only uncompressed or lossy-compressed Sony A7 IV
+(ILCE-7M4) ARW, on macOS and Linux.
 
-The camera's embedded JPEG is on the left; the RAW developed with rawsmith
-is on the right. These are **AI-edited results**: `auto` provided the
-starting point, then an assistant refined the recipe while checking
-previews. The edits include cropping; both sides show their complete frame.
+## Try it
 
-**Snowman — brighten underexposed snow and bring out the subject's texture.**
-
-![Snowman: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snowman-comparison.jpg)
-
-**Sunset — deepen the warm sky, preserve the mountain layers and tighten the framing.**
-
-![Sunset: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/sunset-comparison.jpg)
-
-**Snow mountain — soften the blue cast in shade and lift the foreground while keeping the warm summit light.**
-
-![Snow mountain: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snow-mountain-comparison.jpg)
-
-Sony A7 IV photographs, reproduced with permission. The exact recipes are
-in [docs/recipes](docs/recipes); photo permissions are described in
-[docs/images/README.md](docs/images/README.md).
-
-<details>
-<summary>One-command auto example (CC0 sample)</summary>
-
-| Camera JPEG | `rawsmith auto` |
-|---|---|
-| ![The camera's own rendering](docs/images/demo-camera.jpg) | ![rawsmith auto rendering](docs/images/demo-rawsmith.jpg) |
-
-A CC0 sample from [raw.pixls.us](https://raw.pixls.us) (Sony A7 IV), developed with one command.
-
-</details>
-
-## Install
-
-Install the latest prebuilt release and the skill for both Claude Code and
-Codex:
+Install the CLI and the editing skill for both Claude Code and Codex:
 
 ```sh
 curl -fsSL https://github.com/Lewin671/rawsmith/releases/latest/download/install.sh | sh
 ```
 
-Supports macOS 11+ (Apple Silicon and Intel) and Linux (ARM64 and x86_64;
-static musl binaries). Requires `curl`, `tar` and `sha256sum` or `shasum`.
-No Rust toolchain or `sudo` is needed. Downloads are pinned to one release
-and checked against its SHA-256 manifest before installation.
+Then tell your assistant: **“Use rawsmith to edit ~/Pictures/DSC0001.ARW —
+the foreground is too dark. Show me a preview before exporting.”**
 
-The binary goes in `~/.local/bin`. If that directory is not already on
-your PATH, add it to your shell configuration and reload your shell:
+[Installation options, PATH setup and skill locations](docs/install.md).
 
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-```
+## Before and after
 
-The installer prints its destinations and does not edit shell profiles.
-Choose one agent, skip skills, pin a version, or change the binary directory
-by passing options to `sh -s --`:
+Camera JPEG on the left; assistant edit on the right, each shown in full
+with its own framing.
 
-```sh
-curl -fsSL https://github.com/Lewin671/rawsmith/releases/latest/download/install.sh | sh -s -- --skills codex
-# Other options: --skills claude | --skills none | --version 0.1.1 | --bin-dir "$HOME/bin"
-```
+![Sunset: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/sunset-comparison.jpg)
 
-Re-running updates installer-managed skills. Locally customized skills
-are preserved; `--force` saves a backup before replacing them. See
-[release downloads](https://github.com/Lewin671/rawsmith/releases) or
-`install.sh --help` for all options.
+<details>
+<summary>Two more assistant edits</summary>
 
-For a manual download, choose `rawsmith-<platform>-<architecture>.tar.gz`:
-`linux-x86_64`, `linux-arm64`, `macos-x86_64` (Intel), or `macos-arm64`
-(Apple Silicon). Linux binaries use static musl. The installer also
-supports `--version 0.1.0`, whose original downloads used Rust target names.
+**Snowman — brighten underexposed snow and bring out the subject's texture.**
 
-To build from source instead:
+![Snowman: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snowman-comparison.jpg)
 
-```sh
-git clone https://github.com/Lewin671/rawsmith
-cd rawsmith
-cargo install --locked --path .
-```
+**Snow mountain — soften the blue cast in shade and lift the foreground while keeping the warm summit light.**
 
-Source builds require a recent stable Rust toolchain. No other dependencies.
+![Snow mountain: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snow-mountain-comparison.jpg)
 
-## Use
+</details>
+
+Sony A7 IV photographs, reproduced with permission.
+[Exact recipes](docs/recipes) · [Photo permissions and a one-command CC0 example](docs/images/README.md).
+
+## One edit, from request to export
+
+“Keep the sunset warm, bring out the mountain layers and crop some of the
+empty sky.”
+
+Using `sunset.ARW` for the source photo, these commands reproduce
+[the published recipe](docs/recipes/sunset.json).
 
 ```sh
-# What is in this file?
-rawsmith inspect photo.ARW
-
-# A good starting point, explained, plus a preview to look at
-rawsmith auto photo.ARW -o preview.jpg --size 1400
-
-# Refine: set values, or nudge them with += / -=
-rawsmith edit photo.ARW --set shadows=35 --set highlights-=20 -o preview.jpg --size 1400
-
-# Check fine detail at 100%
-rawsmith render photo.ARW --region 0.4,0.4,0.6,0.6 -o detail.jpg
-
-# Export at full resolution (.jpg, or .png for 16-bit)
-rawsmith render photo.ARW -o final.jpg
+rawsmith inspect sunset.ARW
 ```
+The assistant reads the camera settings, as-shot white balance and sensor exposure.
 
-The edit is stored in `photo.ARW.rawsmith.json`, containing only what
-differs from the defaults:
+```sh
+rawsmith auto sunset.ARW -o sunset-start.jpg --size 1400
+```
+It opens the starting preview and reads `decisions`, using `stats.clipped_highlights_pct` and `stats.crushed_shadows_pct` to check for lost detail.
+
+```sh
+rawsmith edit sunset.ARW --reset \
+  --set exposure=-0.8 --set highlights=-35 --set shadows=30 \
+  --set whites=-10 --set blacks=-10 --set contrast=5 \
+  --set clarity=10 --set dehaze=12 --set vibrance=25 \
+  --set crop.top=0.1 --set crop.bottom=0.98 \
+  -o sunset-edit.jpg --size 1400
+```
+It lowers exposure, lifts shadows, adds dehaze and trims the sky, then compares the two previews.
+
+```sh
+rawsmith render sunset.ARW --region 0.4,0.4,0.6,0.6 -o sunset-detail.jpg
+```
+It checks full-resolution detail for noise, sharpening halos and lost texture.
+
+```sh
+rawsmith render sunset.ARW -o sunset-final.jpg
+```
+It exports the full-resolution JPEG; `.png` would give 16-bit output.
+
+The published recipe records the resulting edit:
 
 ```json
 {
-  "exposure": 0.35,
-  "highlights": -40.0,
-  "shadows": 35.0,
-  "vibrance": 20.0,
-  "hsl": { "blue": { "saturation": -15.0 } },
-  "rawsmith": "0.1.1"
+  "blacks": -10.0,
+  "clarity": 10.0,
+  "contrast": 5.0,
+  "crop": { "bottom": 0.98, "top": 0.1 },
+  "dehaze": 12.0,
+  "exposure": -0.8,
+  "highlights": -35.0,
+  "rawsmith": "0.1.0",
+  "shadows": 30.0,
+  "vibrance": 25.0,
+  "whites": -10.0
 }
 ```
 
-An explicit `render --recipe FILE` requires that file to exist, so a
-misspelled path cannot silently export an unedited picture. `edit` and
-`auto` can create a new recipe at that path. Without `--recipe`, a missing
-sidecar means the default recipe. `--size` must be at least 1 pixel and
-`--quality` is 1–100; invalid values are reported as JSON errors.
+[Editing skill](skill/rawsmith/SKILL.md) · [CLI and recipe reference](docs/cli.md).
 
-`rawsmith schema` lists every parameter with its range and meaning:
-white balance (`temperature`, `tint`), tone (`exposure`, `contrast`,
-`highlights`, `shadows`, `whites`, `blacks`, `clarity`, `dehaze`, `curve`),
-colour (`vibrance`, `saturation`, eight `hsl` bands, shadow/highlight
-`grade`), detail (`sharpen`, `denoise`), and geometry (`rotate`, `crop`,
-`lens_corrections`).
+## Why it is built this way
 
-## Use it from an AI assistant
-
-[`skill/rawsmith/SKILL.md`](skill/rawsmith/SKILL.md) teaches an assistant
-the editing loop: inspect, start from `auto`, look at the preview, fix the
-biggest problem first, compare, check detail, export. The one-command
-installer installs the same skill for both agents:
-
-| Agent | User skill directory | Project skill directory |
-|---|---|---|
-| [Claude Code](https://code.claude.com/docs/en/skills#choose-where-skills-load) | `~/.claude/skills/rawsmith/` | `.claude/skills/rawsmith/` |
-| [Codex](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills) | `~/.agents/skills/rawsmith/` | `.agents/skills/rawsmith/` |
-
-Claude Code's user directory follows `CLAUDE_CONFIG_DIR` when configured.
-For a project-scoped installation, pass `--claude-skills-dir .claude/skills`
-and/or `--codex-skills-dir .agents/skills`. Older Codex installations that
-use `~/.codex/skills` can select it explicitly with
-`--codex-skills-dir "$HOME/.codex/skills"`; the default follows current
-Codex documentation and avoids installing duplicate copies.
-
-For a source checkout, install the skill manually:
-
-```sh
-mkdir -p ~/.claude/skills ~/.agents/skills
-cp -r skill/rawsmith ~/.claude/skills/
-cp -r skill/rawsmith ~/.agents/skills/
-```
-
-If the skill does not appear, reload skills or restart your agent. Then
-ask: *"Edit ~/Pictures/DSC0001.ARW — the foreground is too dark."*
+- **Images and numbers together.** Render reports include tone percentiles,
+  clipping, colour cast and a 3×3 brightness grid. An assistant can look
+  at the picture and check what its last adjustment did.
+- **Fast previews, full-resolution checks.** A 1400 px preview took 0.4 s
+  and a full-resolution JPEG 4.3 s on 33 MP files in the published
+  [v0.1.0 benchmark](docs/benchmark.md) (Intel i7-10700, 8 cores, macOS).
+- **An edit is a recipe.** `render --set` tries
+  settings; `edit` saves them. The same RAW, recipe and engine
+  version reproduce the picture. Separate recipes keep separate versions.
+- **A discoverable CLI.** Successful subcommands return JSON on stdout;
+  errors return JSON on stderr with a nonzero exit code. `--help` and
+  `--version` print plain text. `rawsmith schema` gives parameter ranges
+  and meanings, including `vignette` and graduated filters (`gradients`).
+- **The developing engine is here.** Rust modules implement RAW decoding,
+  demosaicing, highlight reconstruction, lens corrections, colour, tone,
+  local contrast, dehaze, noise reduction and sharpening.
+  [See the stages](docs/pipeline.md).
 
 ## Results
 
-**Decoding.** Sensor samples are identical to LibRaw's on all 18 test
-files (15 uncompressed, 2 more uncompressed and 1 lossy-compressed from
-raw.pixls.us).
+15 of 15 photos were wins for `auto` over the camera JPEG with Claude
+as judge; GPT-6 Luna recorded 12 wins, 3 ties and no losses.
+Counts in the published blind comparisons are wins – losses – ties per photo.
 
-**Algorithms, against ground truth** (`cargo run --release --example quality`):
-
-| Measure | rawsmith | Baseline |
+| Comparison | Claude | GPT-6 Luna |
 |---|---|---|
-| Demosaic PSNR, mean of four scenes | 39.4 dB | bilinear 33.2 dB, Malvar–He–Cutler 37.1 dB |
-| Highlight reconstruction error | 1.1% | 10.3% when clipping |
-| Chroma noise removed, edge contrast kept | 74%, 108% | — |
-| Sharpening overshoot | 1.7% of the edge step | — |
+| `auto` vs camera JPEG | 15 – 0 – 0 | 12 – 0 – 3 |
+| `auto` vs macOS RAW converter | 15 – 0 – 0 | 12 – 0 – 3 |
+| Default recipe vs camera JPEG | 10 – 0 – 5 | 5 – 0 – 10 |
+| Assistant-edited vs `auto` | 12 – 1 – 2 | 6 – 0 – 9 |
 
-**Real photos, judged blind.** 15 photos; each pair is shown without
-labels, in both orders, to two LLM judges from different vendors. Wins –
-losses – ties per photo:
+This is a development set: 15 photos from one camera and one photographer,
+used while tuning the engine and `auto`. The two LLM judges saw each pair
+without labels, in both orders. These are model preferences, not a panel
+of photographers or a ranking of RAW developers. The edited recipes were
+made by Claude, which shares a vendor with one judge.
 
-| Comparison | Claude | GPT-6 Luna | What it shows |
-|---|---|---|---|
-| `auto` vs the camera's JPEG | 15 – 0 – 0 | 12 – 0 – 3 | the engine and its automatic adjustment |
-| `auto` vs macOS's RAW converter | 15 – 0 – 0 | 12 – 0 – 3 | |
-| default recipe vs the camera's JPEG | 10 – 0 – 5 | 5 – 0 – 10 | the engine alone |
-| AI-edited vs `auto` | 12 – 1 – 2 | 6 – 0 – 9 | what an assistant's edit loop adds |
+Both judges called all identical pairs a tie. They rejected spoiled
+controls in 40 of 40 and 36 of 40 cases; verdicts survived swapping image
+order in 92% and 75% of pairs, respectively. The second judge's order
+sensitivity contributes to its higher tie count.
 
-Both judges called all identical pairs a tie and rejected deliberately
-spoiled controls (40 of 40 and 36 of 40). The second judge is noisier —
-it keeps its verdict in 75% of pairs when the order is swapped, against
-92% — which shows up as more ties. This is a small development set from
-one camera: read it as evidence that the approach works, not as a ranking
-of raw developers.
+Decoder samples matched LibRaw on all 18 test files. Synthetic tests also
+check demosaicing, highlight reconstruction, colour, noise reduction and
+sharpening against known answers. [Full measurements, method and limits](docs/benchmark.md).
 
-**Speed** (33 MP files, 8-core desktop): 0.4 s for a 1400 px preview,
-4.3 s for a full-resolution JPEG.
+## Limits
 
-Method, full tables and how to run the benchmark on your own photos:
-[docs/benchmark.md](docs/benchmark.md).
-
-## Supported files
-
-| Camera | Formats |
-|---|---|
-| Sony A7 IV (ILCE-7M4) | ARW, uncompressed and lossy-compressed |
-
+Only Sony A7 IV ARW, uncompressed or lossy-compressed, is supported.
 Lossless-compressed ARW is not supported yet. Other cameras need a colour
-matrix and a test file — see [CONTRIBUTING.md](CONTRIBUTING.md). Output is
-sRGB JPEG or 16-bit PNG, without camera metadata.
+matrix and a test file; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## How it works
-
-[docs/pipeline.md](docs/pipeline.md) walks through the developing pipeline
-stage by stage.
+Local edits are graduated filters. There are no brushes, subject masks,
+spot removal or dust removal. Output is sRGB JPEG or 16-bit PNG, without
+camera metadata.
 
 ## Privacy
 
-rawsmith runs locally and never uses the network. Pictures developed by
-`render`, `edit` and `auto` carry no EXIF, GPS position or serial numbers.
-`extract-jpeg` copies the camera's embedded JPEG unchanged, including any
-metadata it contains; check or remove that metadata before sharing it.
-If you let a cloud-hosted assistant
-drive it, the previews it looks at are sent to that assistant's provider,
-like any other image you show it.
+rawsmith develops photos locally without network access. Images produced
+by `render`, `edit` and `auto` contain no EXIF, GPS or serial numbers.
+`extract-jpeg` copies the camera JPEG unchanged, including its metadata;
+check or remove it before sharing.
+
+If a cloud-hosted assistant views your previews, those images are sent to
+its provider, like any other image you show it.
 
 ## Licence
 
-Licensed under either of [Apache License 2.0](LICENSE-APACHE) or
-[MIT licence](LICENSE-MIT) at your option. Contributions are accepted under
-the same terms.
+Choose [Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT).
+Contributions use the same terms. Photographs have
+[separate permissions](docs/images/README.md).
 
-The camera colour matrix is sensor characterisation data as published in
-Adobe's DNG Converter and reproduced by open-source raw software. The
-one-command demo photo is a CC0 sample from [raw.pixls.us](https://raw.pixls.us). Other
-photograph permissions are listed in [docs/images/README.md](docs/images/README.md).
+The camera colour matrix is sensor characterisation data published in
+Adobe's DNG Converter and reproduced by open-source RAW software. The
+one-command demo photo is a CC0 sample from [raw.pixls.us](https://raw.pixls.us).
