@@ -321,7 +321,11 @@ can legitimately differ from statistics of its resized version.
 
 ## Recipe versions
 
-Version 0.2.0 changes pixels for existing sparse recipes. The `rawsmith`
+Versions 0.2.0 and 0.4.0 change pixels for existing recipes: 0.2.0 through
+the default tone and colour, 0.4.0 wherever `denoise` resolves above 10
+(luminance grain is now removed) or `defringe` is above zero (coloured
+specks are calmed too). Recipes that develop a low-ISO photo without
+defringe render the same bytes in 0.3.0 and 0.4.0. The `rawsmith`
 writer version is provenance, not a pinned pipeline: omitted fields adopt
 current defaults and explicit settings are retained. Keeping an obsolete
 pipeline would retain its colour and noise shortcomings and double the

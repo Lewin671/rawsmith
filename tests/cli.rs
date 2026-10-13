@@ -1138,8 +1138,16 @@ fn denoise_schema_reports_and_legacy_recipe_migration_are_explicit() {
     assert!(default["recipe_compatibility"].is_null());
     assert!(default["noise_reduction"]["strength"].is_number());
     assert!(default["recipe"].get("denoise").is_none());
-    for version in [Some("0.1.0"), Some("0.1.1"), None, Some("0.2.0"), Some("99.0.0"), Some(env!("CARGO_PKG_VERSION"))]
-    {
+    for version in [
+        Some("0.1.0"),
+        Some("0.1.1"),
+        None,
+        Some("0.2.0"),
+        Some("0.3.0"),
+        Some("0.4.0"),
+        Some("99.0.0"),
+        Some(env!("CARGO_PKG_VERSION")),
+    ] {
         let mut recipe = serde_json::json!({"exposure":0.1});
         if let Some(version) = version {
             recipe["rawsmith"] = serde_json::json!(version);
@@ -1151,10 +1159,10 @@ fn denoise_schema_reports_and_legacy_recipe_migration_are_explicit() {
         assert_eq!(compatibility["written_version"], serde_json::json!(version));
         assert_eq!(compatibility["rendering_version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(compatibility["policy"], "current_defaults");
-        // Defaults last changed in 0.2.0: only older, unknown or future writers get a note.
+        // Rendering last changed in 0.4.0: only older, unknown or future writers get a note.
         assert_eq!(
             compatibility["note"].is_null(),
-            matches!(version, Some("0.2.0")) || version == Some(env!("CARGO_PKG_VERSION"))
+            matches!(version, Some("0.4.0")) || version == Some(env!("CARGO_PKG_VERSION"))
         );
         assert_eq!(rendered["recipe"]["exposure"], 0.1);
         let compared = ok(&[
