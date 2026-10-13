@@ -129,8 +129,17 @@ surfaces, including their corners, are protected. It changes chroma while
 preserving linear luminance, so it cannot reconstruct missing edge shape or
 highlight detail. The automatic demosaic protection above runs even at `defringe=0`.
 This control adds stronger post-processing for residual fringes; it does
-not disable the demosaic fix. Additional suppression is off by default
-because genuinely purple detail only a few sensor pixels wide can be affected.
+not disable the demosaic fix. The same control also calms false colour on
+scattered bright dots: sky seen through a thicket of twigs lands on one or
+two photosites at a time, and each dot demosaics into a different pastel.
+Where luminance changes at least fourfold within two pixels, a pixel's
+chroma moves towards the median chroma of its 5x5 neighbourhood by the
+defringe strength (fading in over the next stop of contrast). Colour with
+real extent is its own median and is returned bit for bit; linear luminance
+is preserved. Additional suppression is off by default because genuinely
+purple detail only a few sensor pixels wide can be affected, and a coloured
+point one or two pixels across, such as a distant lamp, cannot be told from
+a false-colour dot.
 Previews resize the filtered native-resolution result; inspect a full-resolution
 region before keeping the setting, since resizing can hide residual fringes
 and damage to fine colour. Broad purple casts and wide out-of-focus halos

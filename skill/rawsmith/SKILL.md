@@ -157,7 +157,7 @@ keep several versions.
 | Mood | `grade.shadows` / `grade.highlights` (`hue` 0–360, `saturation`), `grade.balance` |
 | Local subject, corner or sky through branches | `masks` (radial, linear and luminance selection); `gradients` for a simple fade |
 | Hold the eye in the frame | `vignette` (negative darkens the corners) |
-| Purple edges on branches against bright sky | `defringe` |
+| Purple edges and coloured specks on branches against bright sky | `defringe` |
 | Noise; crispness | `denoise`, `sharpen` |
 
 Tone and colour controls run −100…100 with 0 meaning no change; `schema`
@@ -295,8 +295,9 @@ full-resolution export's report as well.
 - With the sun or a blown sky in frame, keep `highlights` above about
   −40: further down the lost area turns into a grey slab or a disc with
   a hard edge, and fine branches against it pick up coloured specks.
-- Purple edges against a blown sky: `defringe` (check purple flowers and
-  lights at 100% first). It does not fix wide out-of-focus halos.
+- Purple edges and coloured specks on twigs against a blown sky:
+  `defringe` 50–90 (check purple flowers and small coloured lights at
+  100% first). It does not fix wide out-of-focus halos.
 - If two rounds in a row did not visibly improve the picture, the idea
   is exhausted: finish, or change the idea.
 

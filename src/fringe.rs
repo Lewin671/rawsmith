@@ -24,6 +24,81 @@ fn encoded(p: [f32; 3]) -> [f32; 3] {
 /// Changes chroma only, preserving linear luminance and the edge profile.
 pub fn suppress(image: &mut Image, strength: f32, radius: usize) {
     suppress_stripes(image, strength, radius, 64);
+    calm_false_colour(image, strength, 64);
+}
+
+/// Bright sky seen through a thicket of twigs lands on one or two photosites
+/// at a time, and each such dot is demosaiced into a different colour: pink,
+/// cyan, green. Where luminance changes at least fourfold within two pixels,
+/// the chroma of a pixel moves towards the median chroma of its 5x5
+/// neighbourhood, by `strength`. A dot a pixel or two across takes the
+/// colour around it; colour with real extent is its own median and stays.
+/// Linear luminance is preserved. A genuinely coloured point of that size,
+/// such as a distant lamp, cannot be told from such a dot, which is why this
+/// belongs to the opt-in control.
+fn calm_false_colour(image: &mut Image, strength: f32, stripe_rows: usize) {
+    const REACH: usize = 2;
+    const CONTRAST: f32 = 4.0;
+    let (w, h) = (image.width, image.height);
+    if strength <= 0.0 || w <= 2 * REACH || h <= 2 * REACH {
+        return;
+    }
+    // Encoded copies of each stripe and its halo: results never read rows
+    // this pass has already changed, whatever the stripe size or scheduling.
+    let mut source: Vec<[f32; 3]> = Vec::with_capacity(w * (stripe_rows + 2 * REACH));
+    let mut carried: Vec<[f32; 3]> = Vec::new();
+    for first in (0..h).step_by(stripe_rows) {
+        let end = (first + stripe_rows).min(h);
+        let base = first.saturating_sub(REACH);
+        source.clear();
+        source.extend_from_slice(&carried);
+        source.extend(image.data[first * w..(end + REACH).min(h) * w].iter().copied().map(encoded));
+        carried.clear();
+        carried.extend_from_slice(&source[(end.saturating_sub(REACH) - base) * w..(end - base) * w]);
+        let rows = source.len() / w;
+        image.data[first * w..end * w].par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            let y = y + first - base;
+            let (top, bottom) = (y.saturating_sub(REACH), (y + REACH).min(rows - 1));
+            for (x, p) in row.iter_mut().enumerate() {
+                let (left, right) = (x.saturating_sub(REACH), (x + REACH).min(w - 1));
+                let (mut lo, mut hi) = (f32::MAX, 0.0f32);
+                for ny in top..=bottom {
+                    for q in &source[ny * w + left..=ny * w + right] {
+                        lo = lo.min(q[2]);
+                        hi = hi.max(q[2]);
+                    }
+                }
+                let centre = source[y * w + x];
+                if hi < CONTRAST * lo.max(1e-6) || centre[2] <= 1e-8 {
+                    continue;
+                }
+                let (mut a, mut b) = ([0.0f32; 25], [0.0f32; 25]);
+                let mut n = 0;
+                for ny in top..=bottom {
+                    for q in &source[ny * w + left..=ny * w + right] {
+                        (a[n], b[n]) = (q[0], q[1]);
+                        n += 1;
+                    }
+                }
+                let median = |values: &mut [f32]| *values.select_nth_unstable_by(values.len() / 2, f32::total_cmp).1;
+                // Fade in over the next stop of contrast instead of switching at one value.
+                let onset = ((hi / lo.max(1e-6) - CONTRAST) / CONTRAST).clamp(0.0, 1.0);
+                let amount = strength * onset;
+                let (da, db) = (median(&mut a[..n]) - centre[0], median(&mut b[..n]) - centre[1]);
+                // Colour that agrees with its surroundings is returned bit for bit.
+                if amount <= 0.0 || da.abs().max(db.abs()) < 1e-4 {
+                    continue;
+                }
+                let (a, b) = (centre[0] + amount * da, centre[1] + amount * db);
+                let g = (1.0 - a - b) / 3.0;
+                let rgb = [g + a, g, g + b].map(|v| v.max(0.0));
+                let luma = rgb.iter().zip(LUMA).map(|(v, k)| v * k).sum::<f32>();
+                if luma > 1e-8 {
+                    *p = rgb.map(|v| v * centre[2] / luma);
+                }
+            }
+        });
+    }
 }
 
 fn suppress_stripes(image: &mut Image, strength: f32, radius: usize, stripe_rows: usize) {
@@ -251,6 +326,57 @@ mod tests {
         let original = image.clone();
         suppress(&mut image, 1.0, 3);
         assert!(image.data.iter().zip(&original.data).all(|(a, b)| a == b));
+    }
+
+    #[test]
+    fn scattered_dots_between_dark_structure_lose_their_false_colour() {
+        // A dark thicket with one-pixel bright gaps, each a different colour.
+        let colours = [[1.0, 0.5, 0.8], [0.4, 1.0, 0.9], [0.6, 0.9, 0.4], [0.9, 0.6, 1.0]];
+        let mut image = Image::new(96, 64);
+        for y in 0..64 {
+            for x in 0..96 {
+                let dot = x % 6 == 3 && y % 6 == 3;
+                image.data[y * 96 + x] = if dot { colours[(x / 6 + y / 6) % 4] } else { [0.02; 3] };
+            }
+        }
+        // A broad coloured patch with the same contrast against the dark.
+        for y in 40..60 {
+            for x in 60..90 {
+                image.data[y * 96 + x] = [0.9, 0.3, 0.2];
+            }
+        }
+        let original = image.clone();
+        let saturation = |p: [f32; 3]| {
+            let (lo, hi) = (p.iter().copied().fold(f32::MAX, f32::min), p.iter().copied().fold(0.0, f32::max));
+            (hi - lo) / hi
+        };
+        let luma = |p: [f32; 3]| p.iter().zip(LUMA).map(|(v, k)| v * k).sum::<f32>();
+        let mut stripes = image.clone();
+        calm_false_colour(&mut image, 1.0, 64);
+        for (x, y) in [(9, 9), (15, 9), (21, 15), (27, 27)] {
+            let (before, after) = (original.at(x, y), image.at(x, y));
+            assert!(saturation(after) < 0.5 * saturation(before), "dot at {x},{y}: {before:?} -> {after:?}");
+            assert!((luma(after) - luma(before)).abs() < 1e-6);
+        }
+        // The interior of the patch is its own median and is returned exactly;
+        // only its outermost pixels can change.
+        for y in 43..57 {
+            for x in 63..87 {
+                assert_eq!(image.at(x, y), original.at(x, y), "patch interior {x},{y}");
+            }
+        }
+        // Half strength moves half way, and stripe size cannot change the result.
+        let mut half = original.clone();
+        calm_false_colour(&mut half, 0.5, 64);
+        let (full, mid, start) = (saturation(image.at(9, 9)), saturation(half.at(9, 9)), saturation(original.at(9, 9)));
+        assert!(mid > full && mid < start);
+        for rows in [1, 2, 5] {
+            let mut other = original.clone();
+            calm_false_colour(&mut other, 1.0, rows);
+            assert!(other.data == image.data, "stripe rows {rows}");
+        }
+        calm_false_colour(&mut stripes, 0.0, 64);
+        assert!(stripes.data == original.data);
     }
 
     #[test]
