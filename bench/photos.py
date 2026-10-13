@@ -10,7 +10,7 @@ only as SHA-256 hashes.
 
     bench/photos.py render --raws DIR --work DIR [--recipes DIR]
     bench/photos.py pairs  --work DIR
-    bench/photos.py judge  --work DIR [--model MODEL] [--jobs N]
+    bench/photos.py judge  --work DIR [--model MODEL] [--effort EFFORT] [--jobs N]
     bench/photos.py judge  --work DIR --judge-cmd CMD --model MODEL --name LABEL
     bench/photos.py report --work DIR [--json FILE]
 
@@ -21,10 +21,11 @@ Variants compared (see docs/benchmark.md for what each comparison shows):
   auto     rawsmith after `rawsmith auto`
   ai       rawsmith with the recipe an AI assistant produced (--recipes DIR/<name>.json)
 
-The default judge is bench/judge-codex.py, using gpt-6-luna. Resume verifies
-configuration, exact prompts, task assignments and image bytes; configuration
-changes and legacy caches require a new --name (or archiving the old file).
-Custom commands must pin their actual model and declare it with --model.
+The default judge is bench/judge-codex.py, using gpt-6.1-sol at low reasoning
+effort. Resume verifies configuration, exact prompts, task assignments and
+image bytes; configuration changes and legacy caches require a new --name (or archiving the old file).
+Custom commands must pin their actual model and effort and declare them with
+--model and --effort.
 
 Python 3.8+, standard library only.
 """
@@ -50,7 +51,8 @@ WORK_MARKER = ".rawsmith-benchmark.json"
 WORK_FORMAT = {"format": "rawsmith-photo-benchmark", "version": 1}
 JUDGE_FORMAT = {"format": "rawsmith-photo-verdicts", "version": 2}
 DEFAULT_JUDGE = shlex.quote(os.path.join(REPO, "bench", "judge-codex.py"))
-DEFAULT_MODEL = "gpt-6-luna"
+DEFAULT_MODEL = "gpt-6.1-sol"
+DEFAULT_EFFORT = "low"
 COMPARISONS = [("neutral", "camera"), ("auto", "camera"), ("auto", "system"), ("auto", "neutral"),
                ("ai", "auto"), ("ai", "camera"), ("ai", "system")]
 # Deliberately bad recipes. A trustworthy judge must prefer the unspoiled picture.
@@ -370,7 +372,7 @@ def verified_file(stored):
     return (isinstance(stored, dict) and stored.get("format") == JUDGE_FORMAT["format"]
             and type(stored.get("version")) is int and stored["version"] == JUDGE_FORMAT["version"]
             and isinstance(stored.get("configuration"), dict)
-            and all(isinstance(stored["configuration"].get(key), str) for key in ("judge_command", "model", "prompt_sha256"))
+            and all(isinstance(stored["configuration"].get(key), str) for key in ("judge_command", "model", "effort", "prompt_sha256"))
             and isinstance(stored["configuration"].get("harness"), dict)
             and isinstance(stored.get("runs"), list)
             and stored.get("configuration_sha256") == digest(stored["configuration"])
@@ -392,12 +394,14 @@ def cmd_judge(args):
         die("--jobs must be at least 1")
     if args.model is not None and not args.model.strip():
         die("--model must not be empty")
+    if not args.effort.strip():
+        die("--effort must not be empty")
     builtin = args.judge_cmd == DEFAULT_JUDGE
     model = args.model or (DEFAULT_MODEL if builtin else None)
     if not model:
         die("custom --judge-cmd requires --model; pin that same model in the command")
-    command = args.judge_cmd + (" --model " + shlex.quote(model) if builtin else "")
-    configuration = {"judge_command": command, "model": model,
+    command = args.judge_cmd + (" --model " + shlex.quote(model) + " --effort " + shlex.quote(args.effort) if builtin else "")
+    configuration = {"judge_command": command, "model": model, "effort": args.effort,
                      "prompt_sha256": text_digest(PROMPT), "harness": JUDGE_FORMAT,
                      "adapter_sha256": file_digest(os.path.join(REPO, "bench", "judge-codex.py")) if builtin else None,
                      "builtin_adapter": builtin}
@@ -409,7 +413,7 @@ def cmd_judge(args):
             die("existing verdict file is legacy or unverifiable and cannot be reused; "
                 "use a new --name or archive the old verdict file first (left unchanged)")
         if stored["configuration"] != configuration:
-            die("judge command, model, prompt or harness configuration changed; "
+            die("judge command, model, effort, prompt or harness configuration changed; "
                 "use a new --name or archive the old verdict file first (left unchanged)")
     else:
         stored = {**JUDGE_FORMAT, "configuration": configuration, "configuration_sha256": config_hash,
@@ -519,7 +523,7 @@ def report_verdicts(stored, inputs, task_ids):
     # their exact hash; the local verdict file retains the literal command.
     public = {"judge_command": {"sha256": text_digest(configuration["judge_command"]),
                                 "adapter": "bench/judge-codex.py" if configuration.get("builtin_adapter") else "custom"},
-              "model": configuration["model"], "prompt_sha256": configuration["prompt_sha256"],
+              "model": configuration["model"], "effort": configuration["effort"], "prompt_sha256": configuration["prompt_sha256"],
               "harness": configuration["harness"], "adapter_sha256": configuration.get("adapter_sha256"),
               "task_set": stored.get("task_set"), "runs": stored.get("runs", [])}
     return valid, public, counts
@@ -628,6 +632,9 @@ def cmd_report(args):
               f"{camera['adobe_rgb_converted']} converted from Adobe RGB, {camera['skipped']} skipped")
     for judge, summary in report["judges"].items():
         checks = summary["judge_checks"]
+        evaluation = summary["evaluation"]
+        if evaluation:
+            print(f"Judge configuration: model {evaluation['model']}, effort {evaluation['effort']}")
         print(f"\nVerdict validation: {summary['verdict_validation']} (unverifiable/stale verdicts excluded)")
         print(f"\nJudge: {judge}   control accuracy {checks['control_accuracy']} over {checks['control_votes']} votes, "
               f"order consistency {checks['order_consistency']}, identical pairs called tie {checks['identical_pairs_called_tie']}, "
@@ -657,8 +664,9 @@ def main():
     p.add_argument("--work", required=True)
     p.add_argument("--name", default="codex", help="verdict label (default: codex); use a new label when configuration changes")
     p.add_argument("--judge-cmd", default=DEFAULT_JUDGE,
-                   help="shell command reading the prompt on stdin and printing a verdict (default: bench/judge-codex.py); custom commands must pin --model")
-    p.add_argument("--model", help="actual judge model (default adapter: gpt-6-luna); required for custom commands")
+                   help="shell command reading the prompt on stdin and printing a verdict (default: bench/judge-codex.py); custom commands must pin model and effort")
+    p.add_argument("--model", help="actual judge model (default adapter: gpt-6.1-sol); required for custom commands")
+    p.add_argument("--effort", default=DEFAULT_EFFORT, help="actual judge reasoning effort (default: low); custom commands must pin the same effort; supported levels depend on the model")
     p.add_argument("--jobs", type=int, default=4)
     p.set_defaults(run=cmd_judge)
     p = sub.add_parser("report", help="print validated results and provenance; no private photo paths")

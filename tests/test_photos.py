@@ -269,7 +269,7 @@ class JudgeTests(unittest.TestCase):
                           "with open(sys.argv[1], 'a') as f: f.write(json.dumps(prompt)+'\\n')\n"
                           "print(json.dumps({'winner':'A','confidence':2,'reason':'synthetic'}))\n")
         self.command = " ".join(shlex.quote(str(p)) for p in (sys.executable, script, self.calls))
-        self.args = SimpleNamespace(work=str(self.work), name="fake", judge_cmd=self.command, model="fake-model", jobs=1)
+        self.args = SimpleNamespace(work=str(self.work), name="fake", judge_cmd=self.command, model="fake-model", effort="low", jobs=1)
         self.verdict_file = self.work / "verdicts-fake.json"
 
     def judge(self):
@@ -295,6 +295,7 @@ class JudgeTests(unittest.TestCase):
         config = stored["configuration"]
         self.assertEqual(config["judge_command"], self.command)
         self.assertEqual(config["model"], "fake-model")
+        self.assertEqual(config["effort"], "low")
         self.assertEqual(config["prompt_sha256"], photos.text_digest(photos.PROMPT))
         self.assertEqual(config["harness"], photos.JUDGE_FORMAT)
         self.assertEqual(stored["task_set"]["seed"], 7)
@@ -304,7 +305,8 @@ class JudgeTests(unittest.TestCase):
         for verdict in stored["verdicts"].values():
             self.assertEqual(len(verdict["fingerprint"]), 64)
             self.assertRegex(verdict["judged_at"], r"^\d{4}-\d\d-\d\dT")
-        report, _ = self.report()
+        report, text = self.report()
+        self.assertIn("model fake-model, effort low", text)
         self.assertEqual(report["rendering"], self.manifest["rendering"])
         self.assertEqual(report["task_set"], stored["task_set"])
         summary = report["judges"]["fake"]
@@ -313,16 +315,17 @@ class JudgeTests(unittest.TestCase):
         public = summary["evaluation"]
         self.assertEqual(public["judge_command"]["sha256"], photos.text_digest(self.command))
         self.assertEqual(public["model"], "fake-model")
+        self.assertEqual(public["effort"], "low")
         self.assertEqual(public["prompt_sha256"], config["prompt_sha256"])
         self.assertEqual(public["harness"], photos.JUDGE_FORMAT)
         self.assertEqual(public["runs"], stored["runs"])
         for private in (str(self.base), "private-owner", "t0000", "p000", ".jpg", "synthetic"):
             self.assertNotIn(private, json.dumps(report))
 
-    def test_command_model_and_prompt_changes_refuse_without_mutating_file(self):
+    def test_command_model_effort_and_prompt_changes_refuse_without_mutating_file(self):
         self.judge()
         original = self.verdict_file.read_bytes()
-        for field, value in (("judge_cmd", self.command + " changed"), ("model", "other-model")):
+        for field, value in (("judge_cmd", self.command + " changed"), ("model", "other-model"), ("effort", "high")):
             old = getattr(self.args, field)
             with self.subTest(field=field):
                 setattr(self.args, field, value)
@@ -564,8 +567,10 @@ class JudgeTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"JUDGE_MODEL": "hidden-model"}):
             with mock.patch.object(photos.subprocess, "run", return_value=reply) as run:
                 stored = self.judge()
-        self.assertEqual(stored["configuration"]["model"], "gpt-6-luna")
-        self.assertIn("--model gpt-6-luna", run.call_args.args[0])
+        self.assertEqual(stored["configuration"]["model"], "gpt-6.1-sol")
+        self.assertIn("--model gpt-6.1-sol", run.call_args.args[0])
+        self.assertIn("--effort low", run.call_args.args[0])
+        self.assertEqual(stored["configuration"]["effort"], "low")
         self.assertEqual(len(stored["configuration"]["adapter_sha256"]), 64)
         real_digest = photos.file_digest
         def changed_adapter(path):
@@ -575,6 +580,52 @@ class JudgeTests(unittest.TestCase):
                 self.judge()
             report, _ = self.report()
         self.assertEqual(report["judges"]["fake"]["verdict_validation"]["valid"], 0)
+
+    def test_builtin_effort_override_is_forwarded_recorded_and_fingerprinted(self):
+        self.args.judge_cmd = photos.DEFAULT_JUDGE
+        self.args.model = None
+        reply = subprocess.CompletedProcess([], 0, '{"winner":"tie"}', '')
+        with mock.patch.object(photos.subprocess, "run", return_value=reply) as run:
+            before = self.judge()
+            self.args.effort = "high"
+            original = self.verdict_file.read_bytes()
+            with self.assertRaisesRegex(SystemExit, "effort.*configuration changed"):
+                self.judge()
+            self.assertEqual(self.verdict_file.read_bytes(), original)
+            self.args.name = "high"
+            self.judge()
+            after = photos.load(str(self.work / "verdicts-high.json"))
+        self.assertIn("--effort high", run.call_args.args[0])
+        self.assertEqual(after["configuration"]["effort"], "high")
+        self.assertNotEqual(before["configuration_sha256"], after["configuration_sha256"])
+        self.assertNotEqual(before["verdicts"]["t0000"]["fingerprint"], after["verdicts"]["t0000"]["fingerprint"])
+        report, text = self.report()
+        self.assertEqual(report["judges"]["high"]["evaluation"]["effort"], "high")
+        self.assertIn("model gpt-6.1-sol, effort high", text)
+
+    def test_cache_without_recorded_effort_is_unverifiable_and_preserved(self):
+        stored = self.judge()
+        del stored["configuration"]["effort"]
+        stored["configuration_sha256"] = photos.digest(stored["configuration"])
+        photos.save(str(self.verdict_file), stored)
+        original = self.verdict_file.read_bytes()
+        with self.assertRaisesRegex(SystemExit, "unverifiable.*new --name"):
+            self.judge()
+        self.assertEqual(self.verdict_file.read_bytes(), original)
+        report, _ = self.report()
+        self.assertEqual(report["judges"]["fake"]["verdict_validation"]["unverifiable"], 4)
+        self.assertIsNone(report["judges"]["fake"]["evaluation"])
+        self.assertEqual(self.call_count(), 4)
+
+    def test_empty_effort_is_rejected_before_cache_mutation(self):
+        self.judge()
+        original = self.verdict_file.read_bytes()
+        for effort in ("", " "):
+            self.args.effort = effort
+            with self.assertRaisesRegex(SystemExit, "--effort must not be empty"):
+                self.judge()
+            self.assertEqual(self.verdict_file.read_bytes(), original)
+        self.assertEqual(self.call_count(), 4)
 
     def test_custom_shell_commands_and_claude_wrapped_replies_still_work(self):
         self.args.judge_cmd = self.command + " | cat"
@@ -602,10 +653,12 @@ class JudgeTests(unittest.TestCase):
         args = judge.call_args.args[0]
         self.assertEqual(args.name, "codex")
         self.assertEqual(args.judge_cmd, photos.DEFAULT_JUDGE)
+        self.assertEqual(args.effort, "low")
         help_text = subprocess.run([sys.executable, str(Path(photos.REPO) / "bench" / "photos.py"), "judge", "--help"],
                                    capture_output=True, text=True, check=True).stdout
         self.assertIn("legacy verdict", help_text)
-        self.assertIn("gpt-6-luna", help_text)
+        self.assertIn("gpt-6.1-sol", help_text)
+        self.assertIn("--effort", help_text)
 
     def test_render_manifest_and_report_record_binary_version_and_commit(self):
         raws = self.base / "synthetic-raws"
@@ -670,6 +723,16 @@ class CodexAdapterTests(unittest.TestCase):
         path.write_text("#!" + sys.executable + "\n" + body)
         path.chmod(0o755)
 
+    def test_empty_effort_is_rejected_before_launch(self):
+        capture = self.base / "launched"
+        self.fake_codex(f"open({str(capture)!r}, 'w').close()")
+        for effort in ("", " "):
+            result = self.run_adapter("--effort", effort)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("--effort must not be empty", result.stderr)
+            self.assertEqual(result.stdout, "")
+        self.assertFalse(capture.exists())
+
     def test_missing_codex_fails_loudly(self):
         self.assertTrue(os.access(self.adapter, os.X_OK))
         result = self.run_adapter()
@@ -693,12 +756,14 @@ class CodexAdapterTests(unittest.TestCase):
         self.fake_codex("import json,sys\n"
                         + f"with open({str(capture)!r}, 'w') as f: json.dump(sys.argv[1:], f)\n"
                         + "with open(sys.argv[sys.argv.index('-o')+1], 'w') as f: f.write('{\"winner\":\"tie\"}')\n")
-        for model, args in (("gpt-6-luna", ()), ("explicit-model", ("--model", "explicit-model"))):
+        for model, effort, args in (("gpt-6.1-sol", "low", ()),
+                                    ("explicit-model", "high", ("--model", "explicit-model", "--effort", "high"))):
             result = self.run_adapter(*args)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout), {"winner": "tie"})
             argv = json.loads(capture.read_text())
             self.assertEqual(argv[argv.index("-m") + 1], model)
+            self.assertEqual(argv[argv.index("-c") + 1], 'model_reasoning_effort="' + effort + '"')
             self.assertEqual(argv[argv.index("-s") + 1], "read-only")
             self.assertIn("--ephemeral", argv)
             self.assertIn("--ignore-user-config", argv)

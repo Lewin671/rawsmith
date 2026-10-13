@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Codex photo judge: prompt on stdin, reply on stdout; default gpt-6-luna."""
+"""Codex photo judge: prompt on stdin, reply on stdout; default gpt-6.1-sol at low effort."""
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -10,10 +11,13 @@ import tempfile
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default="gpt-6-luna", help="explicit Codex model (default: gpt-6-luna; environment model overrides are ignored)")
+    parser.add_argument("--model", default="gpt-6.1-sol", help="explicit Codex model (default: gpt-6.1-sol; environment model overrides are ignored)")
+    parser.add_argument("--effort", default="low", help="explicit reasoning effort (default: low; supported levels depend on the model)")
     args = parser.parse_args()
     if not args.model.strip():
         parser.error("--model must not be empty")
+    if not args.effort.strip():
+        parser.error("--effort must not be empty")
     codex = shutil.which("codex")
     if not codex:
         parser.exit(1, "error: codex not found on PATH; install the Codex CLI before judging\n")
@@ -28,7 +32,8 @@ def main():
     # the user's Codex home, but settings and optional integrations are disabled.
     with tempfile.TemporaryDirectory(prefix="rawsmith-judge-") as work:
         reply = os.path.join(work, "reply.txt")
-        command = [codex, "exec", "-m", args.model, "-s", "read-only", "--ephemeral",
+        command = [codex, "exec", "-m", args.model,
+                   "-c", "model_reasoning_effort=" + json.dumps(args.effort), "-s", "read-only", "--ephemeral",
                    "--skip-git-repo-check", "--ignore-user-config",
                    "--disable", "hooks", "--disable", "apps", "--disable", "plugins", "--disable", "memories",
                    "-i", images[0], "-i", images[1], "-o", reply, "--",

@@ -13,8 +13,9 @@ are in English.
   editing, visual quality judging and release usability checks. Codex may
   inspect Claude Code installation compatibility, but do not run Claude
   as an acceptance agent or judge. Photo benchmarks default to the repository
-  Codex adapter with explicit gpt-6-luna model selection. Verify the adapter
-  and model configuration before using a run for acceptance.
+  Codex adapter with explicit gpt-6.1-sol model selection and low reasoning
+  effort. Verify the adapter, model and effort configuration before using a
+  run for acceptance.
   Existing Claude benchmark results are historical evidence, not new
   acceptance. Automated correctness checks remain part of validation.
 - Prioritize data loss, misleading success and unusable exports before

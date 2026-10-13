@@ -103,12 +103,13 @@ honest:
   names or private paths. Judge command lines are published as hashes.
 
 Judge results are cached under `--name` in a versioned verdict file. A file
-configuration fingerprint covers the exact command, explicitly selected model,
-prompt template and harness format (plus the built-in adapter's source hash).
+configuration fingerprint covers the exact command, explicitly selected model
+and reasoning effort, prompt template and harness format (plus the built-in
+adapter's source hash).
 Changing any of these under an existing name refuses the run and leaves the
 file unchanged: choose a new `--name`, or archive the old file yourself first.
-Legacy verdict files without fingerprints are unverifiable; `judge` refuses to
-reuse or overwrite them, and `report` labels and excludes them.
+Legacy verdict files without fingerprints or recorded effort are unverifiable;
+`judge` refuses to reuse or overwrite them, and `report` labels and excludes them.
 
 Each verdict also fingerprints the exact formatted prompt, both blind image
 byte hashes, and the task including its photo grouping and A/B assignment.
@@ -121,9 +122,9 @@ non-zero. `report` rechecks current tasks and image bytes, excludes stale,
 failed, missing-image and removed-task verdicts, and counts incomplete pairs
 separately. Changing the built-in adapter also invalidates its old evidence.
 
-The local verdict file records the literal command, model, prompt SHA-256,
-harness format/version, timestamps for each run and verdict, and each run's
-task-set identity: seed, task count, task digest and blind-image digest. The JSON
+The local verdict file records the literal command, model, reasoning effort,
+prompt SHA-256, harness format/version, timestamps for each run and verdict,
+and each run's task-set identity: seed, task count, task digest and blind-image digest. The JSON
 report includes this evaluation provenance, validation counts and the current
 task-set identity. To keep reports publishable, it replaces literal commands
 with their SHA-256 and a logical adapter label (`bench/judge-codex.py` or
@@ -212,11 +213,17 @@ from `auto`, and used two to five rounds per photo.
 
 ### Run it on your own photos
 
+The default judge is now `gpt-6.1-sol` at `low` reasoning effort. In a
+held-out reliability run, `gpt-6.1-sol` rejected 94% of spoiled controls and
+kept 84% of verdicts after swapping image order, compared with 81% and 66%
+for `gpt-6-luna`. The owner selected the more reliable judge for future
+runs; the published development-set tables above remain historical results.
+
 ```sh
 cargo build --release
 bench/photos.py render --raws ~/Pictures/raw --work ~/rawsmith-bench
 bench/photos.py pairs  --work ~/rawsmith-bench
-bench/photos.py judge  --work ~/rawsmith-bench     # Codex, gpt-6-luna, label codex
+bench/photos.py judge  --work ~/rawsmith-bench     # Codex, gpt-6.1-sol, low effort, label codex
 bench/photos.py report --work ~/rawsmith-bench
 ```
 
@@ -226,25 +233,32 @@ with `codex exec -i`, and prints the reply. It runs read-only and ephemeral from
 an empty temporary directory, ignores user configuration, and disables hooks,
 apps, plugins and memories. Missing Codex, a failed run, or an empty reply
 produces a stderr error and non-zero exit. The model is pinned by `--model`
-(default `gpt-6-luna`, the model used by the published GPT run); `JUDGE_MODEL`
-and other model environment overrides do not select the adapter's model.
+(default `gpt-6.1-sol`), and reasoning effort by `--effort` (default `low`).
+The adapter passes effort as `codex exec -c 'model_reasoning_effort="low"'`,
+using the key in the [official Codex configuration reference](https://developers.openai.com/codex/config-reference)
+and the `-c` override syntax from `codex exec --help`. Supported effort levels
+depend on the selected model and Codex version. User configuration and
+environment overrides do not select the adapter's model or effort.
 
 ```sh
-bench/photos.py judge --work ~/rawsmith-bench --model gpt-6-luna --name codex
+# Choose a different model or effort under a new verdict label:
+bench/photos.py judge --work ~/rawsmith-bench --model gpt-6-luna --effort high --name luna-high
 ```
 
 `--judge-cmd` still accepts any shell command that reads the prompt on standard
 input, can open the two image paths named in it, and prints a JSON verdict.
-Custom commands must explicitly pin their own model and declare the same value
-with the harness's `--model`; the harness cannot infer a model from an opaque
-shell command or provider settings. Changing that declared model invalidates
-the file configuration. Custom commands remain useful for other research
-judges, including Claude, but project acceptance uses Codex exclusively:
+Custom commands must explicitly pin their own model and effort and declare
+the same values with the harness's `--model` and `--effort` (which defaults to
+`low`); the harness cannot infer either from an opaque shell command or
+provider settings. These flags record configuration but do not modify custom
+commands. Changing either declared value invalidates the file configuration.
+Custom commands remain useful for other research judges, including Claude,
+but project acceptance uses Codex exclusively:
 
 ```sh
-bench/photos.py judge --work ~/rawsmith-bench --name research-claude \
-  --model YOUR_MODEL_ID \
-  --judge-cmd 'claude -p --model YOUR_MODEL_ID --allowedTools Read --output-format json'
+bench/photos.py judge --work ~/rawsmith-bench --name custom-codex \
+  --model gpt-6.1-sol --effort low \
+  --judge-cmd '/path/to/rawsmith/bench/judge-codex.py --model gpt-6.1-sol --effort low'
 ```
 
 The work directory must be outside the repository. Only judge synthetic or
