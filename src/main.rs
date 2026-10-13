@@ -31,7 +31,7 @@ enum Command {
     Edit(Edit),
     /// Analyse the scene, save an automatic starting recipe, and optionally render a preview
     Auto(Auto),
-    /// Save the camera's own embedded JPEG rendering, for reference
+    /// Save the camera's embedded JPEG unchanged, including any metadata, for reference
     ExtractJpeg {
         raw: PathBuf,
         #[arg(short, long)]
@@ -57,14 +57,14 @@ struct Target {
     /// Output image (.jpg or 16-bit .png)
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// Longest edge in pixels [default: full resolution]. Small sizes render much faster.
+    /// Longest edge in pixels (at least 1) [default: full resolution]. Small sizes render much faster.
     #[arg(long)]
     size: Option<usize>,
     /// Render only this part of the picture at full resolution, to check fine
     /// detail: x0,y0,x1,y1 as fractions of the picture
     #[arg(long, value_name = "X0,Y0,X1,Y1", conflicts_with = "size")]
     region: Option<String>,
-    /// JPEG quality
+    /// JPEG quality (1..100)
     #[arg(long, default_value_t = 92)]
     quality: u8,
 }
@@ -96,6 +96,21 @@ struct Auto {
     target: Target,
 }
 
+impl Target {
+    fn validate(&self) -> Result<()> {
+        if self.size == Some(0) {
+            return Err(Error::Params("--size must be at least 1 pixel".into()));
+        }
+        if !(1..=100).contains(&self.quality) {
+            return Err(Error::Params("--quality must be in 1..100".into()));
+        }
+        if let Some(region) = &self.region {
+            parse_region(region)?;
+        }
+        Ok(())
+    }
+}
+
 fn recipe_path(source: &Source) -> Result<PathBuf> {
     let path = source.recipe.clone().unwrap_or_else(|| {
         let mut name = source.raw.clone().into_os_string();
@@ -106,7 +121,7 @@ fn recipe_path(source: &Source) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn load_recipe(path: &Path) -> Result<Params> {
+fn load_recipe(path: &Path, allow_missing: bool) -> Result<Params> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
             let mut value: Value = serde_json::from_str(&text)
@@ -116,16 +131,16 @@ fn load_recipe(path: &Path) -> Result<Params> {
             }
             Params::from_value(value)
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Params::default()),
-        Err(e) => Err(e.into()),
+        Err(e) if allow_missing && e.kind() == std::io::ErrorKind::NotFound => Ok(Params::default()),
+        Err(e) => Err(Error::Io(std::io::Error::new(e.kind(), format!("cannot read recipe {}: {e}", path.display())))),
     }
 }
 
-fn save_recipe(path: &Path, params: &Params) -> Result<()> {
+fn recipe_bytes(params: &Params) -> Vec<u8> {
     let mut value = params.to_sparse();
     value["rawsmith"] = json!(env!("CARGO_PKG_VERSION"));
     let text = serde_json::to_string_pretty(&value).expect("recipes always serialise");
-    Ok(output::replace(path, (text + "\n").as_bytes())?)
+    (text + "\n").into_bytes()
 }
 
 fn read_raw(path: &Path) -> Result<arw::RawImage> {
@@ -193,15 +208,11 @@ fn distinct(recipe: &Path, target: &Target) -> Result<()> {
     }
 }
 
-/// Renders `params` and writes the output; returns the JSON report.
-fn render(raw_path: &Path, params: &Params, target: &Target) -> Result<Value> {
+/// Prepares a render and its encoded output without changing any files.
+fn prepare_render(raw: &arw::RawImage, params: &Params, target: &Target) -> Result<(Value, Option<Vec<u8>>)> {
     let started = Instant::now();
-    if let Some(out) = &target.output {
-        protect_raw(raw_path, out, "output")?;
-    }
     let region = target.region.as_deref().map(parse_region).transpose()?;
-    let raw = read_raw(raw_path)?;
-    let scene = pipeline::scene(&raw, params, Size { max_edge: target.size })?;
+    let scene = pipeline::scene(raw, params, Size { max_edge: target.size })?;
     let spaces = Spaces::new();
     let mut image = pipeline::finish(&scene.image, params, &spaces);
     if let Some([x0, y0, x1, y1]) = region {
@@ -209,17 +220,52 @@ fn render(raw_path: &Path, params: &Params, target: &Target) -> Result<Value> {
         let (x, y) = ((x0 * w) as usize, (y0 * h) as usize);
         image = image.crop(x, y, (((x1 - x0) * w) as usize).max(1), (((y1 - y0) * h) as usize).max(1));
     }
+    let bytes = target.output.as_ref().map(|out| output::encode(out, &image, target.quality)).transpose()?;
+    Ok((
+        json!({
+            "output": target.output,
+            "recipe": params.to_sparse(),
+            "white_balance": scene.white_balance,
+            "sensor_clipped_pct": scene.sensor_clipped_pct,
+            "stats": stats::image_stats(&image, &spaces),
+            "elapsed_ms": started.elapsed().as_millis() as u64,
+        }),
+        bytes,
+    ))
+}
+
+fn render(raw_path: &Path, params: &Params, target: &Target) -> Result<Value> {
+    let started = Instant::now();
     if let Some(out) = &target.output {
-        output::write(out, &image, target.quality)?;
+        protect_raw(raw_path, out, "output")?;
     }
-    Ok(json!({
-        "output": target.output,
-        "recipe": params.to_sparse(),
-        "white_balance": scene.white_balance,
-        "sensor_clipped_pct": scene.sensor_clipped_pct,
-        "stats": stats::image_stats(&image, &spaces),
-        "elapsed_ms": started.elapsed().as_millis() as u64,
-    }))
+    let (mut report, bytes) = prepare_render(&read_raw(raw_path)?, params, target)?;
+    if let (Some(out), Some(bytes)) = (&target.output, bytes) {
+        output::replace(out, &bytes)?;
+    }
+    report["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+    Ok(report)
+}
+
+/// Both outputs are ready before either existing file is replaced.
+fn save_edit(raw: &arw::RawImage, recipe: &Path, params: &Params, target: &Target) -> Result<Value> {
+    let started = Instant::now();
+    let recipe_data = recipe_bytes(params);
+    let mut report = if let Some(out) = &target.output {
+        let (report, bytes) = prepare_render(raw, params, target)?;
+        let bytes = bytes.expect("an output path always produces encoded bytes");
+        output::replace_pair((out, &bytes), (recipe, &recipe_data))?;
+        report
+    } else {
+        pipeline::white_balance(raw, params)?;
+        output::replace(recipe, &recipe_data)?;
+        json!({"recipe": params.to_sparse()})
+    };
+    if target.output.is_some() {
+        report["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+    }
+    report["recipe_file"] = json!(recipe);
+    Ok(report)
 }
 
 fn run(cli: Cli) -> Result<Value> {
@@ -243,40 +289,36 @@ fn run(cli: Cli) -> Result<Value> {
         }
         Command::Schema => Ok(params::schema()),
         Command::Render(Render { source, target }) => {
+            target.validate()?;
             let path = recipe_path(&source)?;
             distinct(&path, &target)?;
-            let params = load_recipe(&path)?.with_assignments(&source.set)?;
+            let params = load_recipe(&path, source.recipe.is_none())?.with_assignments(&source.set)?;
             render(&source.raw, &params, &target)
         }
         Command::Edit(Edit { source, target, reset }) => {
+            target.validate()?;
             let path = recipe_path(&source)?;
             distinct(&path, &target)?;
-            let base = if reset { Params::default() } else { load_recipe(&path)? };
+            if let Some(out) = &target.output {
+                protect_raw(&source.raw, out, "output")?;
+            }
+            let base = if reset { Params::default() } else { load_recipe(&path, true)? };
             let params = base.with_assignments(&source.set)?;
-            // Render first: a recipe that cannot be rendered is not saved.
-            let mut report = if target.output.is_some() {
-                render(&source.raw, &params, &target)?
-            } else {
-                json!({"recipe": params.to_sparse()})
-            };
-            save_recipe(&path, &params)?;
-            report["recipe_file"] = json!(path);
-            Ok(report)
+            save_edit(&read_raw(&source.raw)?, &path, &params, &target)
         }
         Command::Auto(Auto { source, target }) => {
+            target.validate()?;
             let path = recipe_path(&source)?;
             distinct(&path, &target)?;
+            if let Some(out) = &target.output {
+                protect_raw(&source.raw, out, "output")?;
+            }
             // White balance, crop and other non-tone settings of an existing recipe are kept.
-            let base = load_recipe(&path)?;
-            let proposal = rawsmith::auto::auto(&read_raw(&source.raw)?, &base)?;
+            let base = load_recipe(&path, true)?;
+            let raw = read_raw(&source.raw)?;
+            let proposal = rawsmith::auto::auto(&raw, &base)?;
             let params = proposal.params.with_assignments(&source.set)?;
-            let mut report = if target.output.is_some() {
-                render(&source.raw, &params, &target)?
-            } else {
-                json!({"recipe": params.to_sparse()})
-            };
-            save_recipe(&path, &params)?;
-            report["recipe_file"] = json!(path);
+            let mut report = save_edit(&raw, &path, &params, &target)?;
             report["decisions"] = json!(proposal.notes);
             Ok(report)
         }

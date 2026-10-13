@@ -69,6 +69,13 @@ one in the greys.
 The recipe lives next to the RAW by default. To keep it elsewhere, or to
 keep several versions of one photo, pass the same `--recipe FILE` to every
 `auto`, `edit` and `render` call for that version.
+`edit` and `auto` can create that file; `render` reports an error if an
+explicit recipe file does not exist. Even without a preview, edits check
+the RAW and white balance before saving.
+
+Developed images contain no camera metadata. `extract-jpeg` is a byte-for-byte
+copy of the embedded JPEG and may retain metadata; do not assume it is
+safe to share without checking it.
 
 ## Parameters that matter most
 

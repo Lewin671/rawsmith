@@ -90,6 +90,11 @@ honest:
   swapped, are reported next to the results.
 - **Numbers only**: the report contains no images, file names or paths.
 
+Judge results are cached under `--name`. Use a new name whenever the
+judge command, model or prompt changes; otherwise a resumed run reuses
+the old verdicts. The current cache does not verify judge identity, so
+do not combine verdicts from different judging setups under one name.
+
 What the comparisons mean:
 
 - `neutral vs camera`, `auto vs camera`, `auto vs system`: the engine

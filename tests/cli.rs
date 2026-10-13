@@ -286,3 +286,165 @@ fn schema_lists_every_parameter() {
     }
     assert!(v["parameters"].as_array().unwrap().iter().all(|p| p["description"].as_str().unwrap().len() > 15));
 }
+
+#[test]
+fn recipe_only_edits_validate_the_source_and_preserve_existing_edits_on_failure() {
+    let f = Fixture::new("recipe-validation");
+    ok(&["edit", s(&f.raw), "--set", "exposure=0.5"]);
+    let before = std::fs::read(f.recipe()).unwrap();
+    let junk = f.path("junk.ARW");
+    std::fs::write(&junk, b"not a raw file").unwrap();
+    let unknown = f.path("unknown.ARW");
+    let mut raw = Synthetic::new(64, 48, vec![2000; 64 * 48]);
+    raw.model = "DSC-UNKNOWN".into();
+    std::fs::write(&unknown, raw.to_bytes()).unwrap();
+    for (source, kind) in [(&f.path("missing.ARW"), "io"), (&junk, "format"), (&unknown, "unsupported")] {
+        let (success, v) = run(&["edit", s(source), "--recipe", s(&f.recipe()), "--set", "exposure=1"]);
+        assert!(!success && v["error"]["kind"] == kind, "{v}");
+        assert_eq!(std::fs::read(f.recipe()).unwrap(), before);
+    }
+    for command in ["edit", "auto"] {
+        let (success, v) = run(&[command, s(&f.raw), "--set", "temperature=2000", "--set", "tint=150"]);
+        assert!(!success && v["error"]["kind"] == "params", "{command}: {v}");
+        assert_eq!(std::fs::read(f.recipe()).unwrap(), before);
+    }
+    let (success, v) = run(&["edit", s(&f.path("missing.ARW")), "--set", "exposure=1"]);
+    assert!(!success && v["error"]["kind"] == "io", "{v}");
+    assert!(!f.path("missing.ARW.rawsmith.json").exists());
+}
+
+#[test]
+fn invalid_preview_options_fail_before_changing_any_files() {
+    let f = Fixture::new("target-validation");
+    let preview = f.path("preview.png");
+    std::fs::write(&preview, b"previous preview").unwrap();
+    ok(&["edit", s(&f.raw), "--set", "exposure=0.5"]);
+    let recipe = std::fs::read(f.recipe()).unwrap();
+    for command in ["render", "edit", "auto"] {
+        for (flag, value) in [("--size", "0"), ("--quality", "0"), ("--quality", "200"), ("--region", "bad")] {
+            for output in [false, true] {
+                let mut args = vec![command, s(&f.raw), flag, value];
+                if output {
+                    args.extend(["-o", s(&preview)]);
+                }
+                let (success, v) = run(&args);
+                assert!(!success && v["error"]["kind"] == "params", "{args:?}: {v}");
+                assert_eq!(std::fs::read(f.recipe()).unwrap(), recipe);
+                assert_eq!(std::fs::read(&preview).unwrap(), b"previous preview");
+            }
+        }
+    }
+    for quality in ["1", "100"] {
+        let report = ok(&["render", s(&f.raw), "--size", "1", "--quality", quality, "-o", s(&f.path("tiny.jpg"))]);
+        assert_eq!(report["stats"]["width"], 1);
+    }
+}
+
+#[test]
+fn render_requires_an_explicit_recipe_to_exist_but_edit_can_create_it() {
+    let f = Fixture::new("explicit-recipe");
+    let custom = f.path("custom.json");
+    let preview = f.path("preview.png");
+    std::fs::write(&preview, b"previous preview").unwrap();
+    let (success, v) = run(&["render", s(&f.raw), "--recipe", s(&custom), "-o", s(&preview)]);
+    assert!(!success && v["error"]["kind"] == "io", "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("custom.json"));
+    assert_eq!(std::fs::read(&preview).unwrap(), b"previous preview");
+    assert!(!custom.exists());
+    assert_eq!(ok(&["render", s(&f.raw)])["recipe"], serde_json::json!({}));
+    ok(&["edit", s(&f.raw), "--recipe", s(&custom), "--set", "exposure=0.75"]);
+    assert_eq!(ok(&["render", s(&f.raw), "--recipe", s(&custom)])["recipe"]["exposure"], 0.75);
+    std::fs::remove_file(&custom).unwrap();
+    ok(&["auto", s(&f.raw), "--recipe", s(&custom)]);
+    assert!(custom.exists());
+}
+
+#[test]
+fn overflowing_white_balance_increment_does_not_clear_the_saved_value() {
+    let f = Fixture::new("overflow");
+    ok(&["edit", s(&f.raw), "--set", "temperature=5200", "--set", "tint=12"]);
+    let before = std::fs::read(f.recipe()).unwrap();
+    for set in ["temperature+=1e308", "temperature-=1e308", "tint+=1e308", "tint-=1e308"] {
+        let (success, v) = run(&["edit", s(&f.raw), "--set", set]);
+        assert!(!success && v["error"]["kind"] == "params", "{set}: {v}");
+        assert_eq!(std::fs::read(f.recipe()).unwrap(), before);
+    }
+}
+
+#[test]
+fn failed_recipe_save_preserves_the_preview_and_leaves_no_staging_files() {
+    let f = Fixture::new("save-failure");
+    let preview = f.path("preview.png");
+    let directory = f.path("recipe-directory");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("keep.txt"), b"keep").unwrap();
+    for command in ["edit", "auto"] {
+        for recipe in [&f.path("missing/recipe.json"), &directory] {
+            for existing_preview in [false, true] {
+                if existing_preview {
+                    std::fs::write(&preview, b"previous preview").unwrap();
+                }
+                let (success, v) = run(&[command, s(&f.raw), "--recipe", s(recipe), "-o", s(&preview)]);
+                assert!(!success && v["error"]["kind"] == "io", "{command}: {v}");
+                if existing_preview {
+                    assert_eq!(std::fs::read(&preview).unwrap(), b"previous preview");
+                    std::fs::remove_file(&preview).unwrap();
+                } else {
+                    assert!(!preview.exists());
+                }
+                assert_eq!(std::fs::read(directory.join("keep.txt")).unwrap(), b"keep");
+                assert!(!f.path("missing").exists());
+                assert!(std::fs::read_dir(&f.dir).unwrap().all(|entry| {
+                    let name = entry.unwrap().file_name();
+                    !name.to_string_lossy().ends_with(".tmp") && !name.to_string_lossy().ends_with(".bak")
+                }));
+            }
+        }
+    }
+    // A reset bypasses recipe loading, so a directory reaches the commit stage.
+    std::fs::write(&preview, b"previous preview").unwrap();
+    let (success, v) = run(&["edit", s(&f.raw), "--reset", "--recipe", s(&directory), "-o", s(&preview)]);
+    assert!(!success && v["error"]["kind"] == "io", "{v}");
+    assert_eq!(std::fs::read(&preview).unwrap(), b"previous preview");
+    assert_eq!(std::fs::read(directory.join("keep.txt")).unwrap(), b"keep");
+}
+
+#[test]
+fn extracted_camera_jpeg_keeps_metadata_while_developed_images_do_not() {
+    let f = Fixture::new("metadata");
+    let reference = f.path("reference.jpg");
+    ok(&["render", s(&f.raw), "-o", s(&reference)]);
+    let jpeg = std::fs::read(&reference).unwrap();
+    let metadata = b"Exif\0\0synthetic-metadata-only";
+    let mut embedded = jpeg[..2].to_vec();
+    embedded.extend([0xff, 0xe1]);
+    embedded.extend(((metadata.len() + 2) as u16).to_be_bytes());
+    embedded.extend(metadata);
+    embedded.extend(&jpeg[2..]);
+
+    // Add a second top-level TIFF IFD pointing at the embedded JPEG.
+    let mut raw = std::fs::read(&f.raw).unwrap();
+    let ifd = raw.len() as u32;
+    raw[58..62].copy_from_slice(&ifd.to_le_bytes());
+    let offset = ifd + 2 + 2 * 12 + 4;
+    raw.extend(2u16.to_le_bytes());
+    for (tag, value) in [(0x0201u16, offset), (0x0202, embedded.len() as u32)] {
+        raw.extend(tag.to_le_bytes());
+        raw.extend(4u16.to_le_bytes());
+        raw.extend(1u32.to_le_bytes());
+        raw.extend(value.to_le_bytes());
+    }
+    raw.extend(0u32.to_le_bytes());
+    raw.extend(&embedded);
+    std::fs::write(&f.raw, &raw).unwrap();
+
+    let extracted = f.path("camera.jpg");
+    ok(&["extract-jpeg", s(&f.raw), "-o", s(&extracted)]);
+    assert_eq!(std::fs::read(extracted).unwrap(), embedded);
+    for command in ["render", "edit", "auto"] {
+        let developed = f.path(&format!("{command}.jpg"));
+        ok(&[command, s(&f.raw), "-o", s(&developed)]);
+        assert!(!std::fs::read(developed).unwrap().windows(metadata.len()).any(|bytes| bytes == metadata));
+    }
+    assert_eq!(std::fs::read(&f.raw).unwrap(), raw);
+}

@@ -101,6 +101,12 @@ differs from the defaults:
 }
 ```
 
+An explicit `render --recipe FILE` requires that file to exist, so a
+misspelled path cannot silently export an unedited picture. `edit` and
+`auto` can create a new recipe at that path. Without `--recipe`, a missing
+sidecar means the default recipe. `--size` must be at least 1 pixel and
+`--quality` is 1–100; invalid values are reported as JSON errors.
+
 `rawsmith schema` lists every parameter with its range and meaning:
 white balance (`temperature`, `tint`), tone (`exposure`, `contrast`,
 `highlights`, `shadows`, `whites`, `blacks`, `clarity`, `dehaze`, `curve`),
@@ -176,8 +182,11 @@ stage by stage.
 
 ## Privacy
 
-rawsmith runs locally and never uses the network. Output files carry no
-EXIF, GPS position or serial numbers. If you let a cloud-hosted assistant
+rawsmith runs locally and never uses the network. Pictures developed by
+`render`, `edit` and `auto` carry no EXIF, GPS position or serial numbers.
+`extract-jpeg` copies the camera's embedded JPEG unchanged, including any
+metadata it contains; check or remove that metadata before sharing it.
+If you let a cloud-hosted assistant
 drive it, the previews it looks at are sent to that assistant's provider,
 like any other image you show it.
 

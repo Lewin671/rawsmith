@@ -10,10 +10,12 @@ cargo build --release
 cargo test --release
 cargo run --release --example quality -- --check
 cargo fmt --check && cargo clippy --all-targets -- -D warnings
+python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
 Tests build their own synthetic RAW files (`src/synthetic.rs`), so no
-photographs are needed. CI runs exactly the commands above.
+photographs are needed. Python tests check the benchmark's filesystem
+safety without rendering photos or invoking a judge. CI runs these checks.
 
 ## Changing image quality
 
