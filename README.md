@@ -3,11 +3,14 @@
 [![CI](https://github.com/Lewin671/rawsmith/actions/workflows/ci.yml/badge.svg)](https://github.com/Lewin671/rawsmith/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#licence)
 
-Tell Claude Code or Codex what needs fixing in your RAW photo, and let it develop the picture.
+Hand Claude Code or Codex a RAW photo and get back a finished picture.
 
-The assistant looks at previews, adjusts the edit and checks detail before
-exporting. rawsmith runs locally, leaves your RAW untouched and saves the
-edit as a small JSON recipe you can inspect and render again.
+The assistant works like a photo editor: it looks at the photo, decides
+what the picture should be, crops, sets the light and the colour, compares
+its work with the camera's JPEG and checks detail before exporting. You do
+not have to describe a look — say what you want if you know, or just ask
+it to edit the photo. rawsmith runs locally, leaves your RAW untouched and
+saves the edit as a small JSON recipe you can inspect and render again.
 
 rawsmith supports Sony A7 IV (ILCE-7M4) Bayer ARW on macOS and Linux.
 
@@ -28,98 +31,91 @@ Install the CLI and the editing skill for both Claude Code and Codex:
 curl -fsSL https://github.com/Lewin671/rawsmith/releases/latest/download/install.sh | sh
 ```
 
-Then tell your assistant: **“Use rawsmith to edit ~/Pictures/DSC0001.ARW —
-the foreground is too dark. Show me a preview before exporting.”**
+Then tell your assistant: **“Use rawsmith to edit ~/Pictures/DSC0001.ARW.”**
+Add a direction if you have one — *“keep it dark and quiet”*, *“the
+foreground is too dark”* — and it takes precedence.
 
 [Installation options, PATH setup and skill locations](docs/install.md).
 
 ## Before and after
 
-Camera JPEG on the left, assistant edit on the right, same framing.
-These examples were rendered with the original 0.1.0 binary. Version 0.2.0
-uses a different default look; the recorded recipes do not pin old pixels.
+Camera JPEG on the left, assistant edit on the right. In each case the
+request was only *“edit this photo”*; the camera panel is cropped to the
+edit's framing.
 
-![Snow peak: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snow-peak-comparison.jpg)
+![Garden pond: camera JPEG on the left, assistant edit on the right](docs/images/pond-comparison.jpg)
 
-**“The forest at the bottom is a black block and the sky is too heavy. Keep the snow bright.”**
+*A garden pond under an overcast sky. The assistant opened the dark trees
+on the left, made the greens deeper and let the autumn maple and the
+pavilion's timber carry the warmth.*
 
 <details>
 <summary>More assistant edits</summary>
 
-**Rime — open up the backlit trees without losing the frost.**
+*Rime on pines — the camera rendered the frost blue-grey; the edit makes
+it white against a deeper sky.*
 
-![Rime: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/rime-comparison.jpg)
+![Rime: camera JPEG on the left, assistant edit on the right](docs/images/rime-comparison.jpg)
 
-**Maple — bring the trunk and the dark red leaves out of the shade under a bright sky.**
+*Ginkgo at dusk (ISO 4000) — the surroundings go cool and quiet so the
+gold leaves carry the picture.*
 
-![Maple: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/maple-comparison.jpg)
-
-**Snowman — the camera exposed the snow as grey; the edit brings it back to white and keeps its texture.**
-
-![Snowman: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snowman-comparison.jpg)
-
-**Sunset — a deeper sky and a tighter frame. The camera's own rendering is already good here; this one is a matter of taste.**
-
-![Sunset: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/sunset-comparison.jpg)
+![Ginkgo: camera JPEG on the left, assistant edit on the right](docs/images/ginkgo-comparison.jpg)
 
 </details>
 
-Sony A7 IV photographs, reproduced with permission.
+Sony A7 IV photographs, reproduced with permission; rendered by 0.2.0.
 [Exact recipes](docs/recipes) · [Photo permissions and a one-command CC0 example](docs/images/README.md).
 
 ## One edit, from request to export
 
-These commands reproduce [the recipe](docs/recipes/snow-peak.json) behind
-the picture above, with `peak.ARW` standing for the source photo.
+These are the steps behind the pond picture above
+([its recipe](docs/recipes/pond.json)), with `pond.ARW` standing for the
+source photo.
 
 ```sh
-rawsmith inspect peak.ARW
+rawsmith inspect pond.ARW
+rawsmith auto pond.ARW -o start.jpg --size 1400
+rawsmith compare pond.ARW -o compare.jpg
 ```
-The assistant reads the camera settings, white balance and how the sensor was exposed.
+The assistant reads how the sensor was exposed (the sky is blown and
+cannot be recovered), takes `auto`'s measured starting point and looks at
+it beside the camera's JPEG. Then it decides the picture: *a quiet
+pavilion over the pond on an overcast day, deep greens with a touch of
+autumn.*
 
 ```sh
-rawsmith auto peak.ARW -o start.jpg --size 1400
-```
-It opens the starting preview and reads `decisions` (what `auto` measured and chose) and the clipping statistics.
-
-```sh
-rawsmith edit peak.ARW \
-  --set exposure=0.25 --set shadows=35 --set highlights=-8 \
-  --set blacks=-12 --set contrast=12 --set clarity=5 --set vibrance=12 \
-  --set crop.top=0.1 --set crop.bottom=0.98 \
-  --set 'gradients=[{"from":[0.5,0],"to":[0.5,0.35],"exposure":-0.18}]' \
+rawsmith edit pond.ARW \
+  --set crop.top=0.1 --set crop.left=0.06 --set crop.bottom=0.97 \
+  --set shadows=45 --set highlights=-55 --set contrast=12 --set blacks=-12 \
+  --set 'curve=[[0.2,0.17],[0.5,0.53],[0.8,0.83]]' \
+  --set 'gradients=[{"from":[0,0.5],"to":[0.3,0.5],"exposure":-0.3}]' \
+  --set temperature=5900 --set tint=28 --set vibrance=25 \
+  --set hsl.green.hue=12 --set hsl.green.luminance=-8 \
+  --set hsl.orange.saturation=30 --set hsl.red.saturation=20 \
+  --set grade.shadows.hue=190 --set grade.shadows.saturation=18 \
+  --set grade.highlights.hue=50 --set grade.highlights.saturation=14 \
+  --set vignette=-25 \
   -o edit.jpg --size 1400
 ```
-It lifts the shadowed forest, eases the blue, trims empty sky and darkens the top slightly with a graduated filter.
+Composition first (a strip of blown sky and dark tree goes), then light
+(open the shadows, hold the left edge with a graduated filter), then
+colour (greens toward a deeper teal, the maple's orange and red brought
+forward, cool shadows under warm highlights). In practice this takes a
+few rounds, each one rendered and looked at; the published recipe has a
+few more settings than shown here.
 
 ```sh
-rawsmith compare peak.ARW -o compare.jpg
+rawsmith compare pond.ARW -o compare.jpg
+rawsmith render pond.ARW --region 0.4,0.3,0.6,0.5 -o detail.jpg
+rawsmith render pond.ARW -o final.jpg
 ```
-It checks the edit beside the camera's JPEG, upright and in the same framing.
-
-```sh
-rawsmith render peak.ARW --region 0.4,0.4,0.6,0.6 -o detail.jpg
-rawsmith render peak.ARW -o final.jpg
-```
-It inspects detail at 100% for noise, halos and lost texture, then exports at full resolution (`.png` gives 16-bit output).
+It checks the edit against the camera's JPEG in the same framing, inspects
+100% detail for noise, halos and coloured edges, and exports at full
+resolution (`.png` gives 16-bit output).
 
 The edit is a small JSON file next to the RAW, holding only what differs
-from the defaults:
-
-```json
-{
-  "blacks": -12.0,
-  "clarity": 5.0,
-  "contrast": 12.0,
-  "crop": { "bottom": 0.98, "top": 0.1 },
-  "exposure": 0.25,
-  "gradients": [{ "exposure": -0.18, "from": [0.5, 0.0], "to": [0.5, 0.35] }],
-  "highlights": -8.0,
-  "shadows": 35.0,
-  "sharpen": 28.0,
-  "vibrance": 12.0
-}
-```
+from the defaults.
 
 [Editing skill](skill/rawsmith/SKILL.md) · [CLI and recipe reference](docs/cli.md).
 
@@ -131,14 +127,12 @@ from the defaults:
 - **Previews match resized exports.** Previews develop at full resolution,
   including noise reduction, tone and sharpening, then area-resize the
   finished sRGB pixels. Check 100% detail for artefacts hidden by resizing.
-  The earlier 0.406 s preview path skipped noise reduction and no
-  longer exists; see [current measured timings](docs/benchmark.md).
 - **An edit is a recipe.** `render --set` tries
   settings; `edit` saves them. The same rawsmith binary, RAW and recipe produce
   the same file, bit for bit ([exact terms](docs/cli.md)).
-  Separate recipes keep separate edits. Writer versions do not pin pixels:
-  0.2.0 applies the current curve and measured denoise defaults to older
-  sparse recipes, with a `recipe_compatibility` note in reports.
+  Separate recipes keep separate edits. Recipes store only what differs
+  from the defaults, so a release that changes the defaults changes how
+  older recipes render; reports say so in `recipe_compatibility`.
 - **A discoverable CLI.** Successful subcommands return JSON on stdout;
   errors return JSON on stderr with exit status 1 and empty stdout. `--help` and
   `--version` print plain text. `rawsmith schema` gives parameter ranges
@@ -156,40 +150,37 @@ from the defaults:
 
 ## Results
 
-On a sealed set of 10 Sony A7 IV photos, first viewed after all fixes were
-merged and edited and judged once, assistant edits beat the camera JPEG on
-8 photos with 2 ties; counts below are wins – losses – ties per photo.
-The blind Codex `gpt-6.1-sol` judge used low effort, both image orders,
-spoiled controls and identical pairs; the editor used the same model at
-high effort, which may favour assistant edits, and all camera JPEGs were
-converted from Adobe RGB to sRGB.
+Ten Sony A7 IV photos kept out of development were edited by an assistant
+following the skill, with no direction beyond *“edit these photos”*, and
+judged blind against the camera's JPEG, the macOS RAW converter and
+rawsmith's own automatic and default renderings. Counts are wins – losses
+– ties per photo.
 
-| Comparison | Sealed after fixes (10 photos) |
-|---|---|
-| Assistant-edited vs camera JPEG | 8 – 0 – 2 |
-| Assistant-edited vs `auto` | 7 – 0 – 3 |
-| `auto` vs camera JPEG | 5 – 1 – 4 |
-| `auto` vs macOS RAW converter | 3 – 3 – 4 |
-| Default recipe vs camera JPEG | 3 – 5 – 2 |
+| Comparison | All 10 | The 6 never used in development |
+|---|---|---|
+| Assistant edit vs camera JPEG | 10 – 0 – 0 | 6 – 0 – 0 |
+| Assistant edit vs macOS RAW converter | 10 – 0 – 0 | 6 – 0 – 0 |
+| Assistant edit vs `auto` | 8 – 0 – 2 | 5 – 0 – 1 |
+| `auto` vs camera JPEG | 6 – 0 – 4 | 2 – 0 – 4 |
+| `auto` vs macOS RAW converter | 7 – 2 – 1 | 4 – 1 – 1 |
+| Default recipe vs camera JPEG | 4 – 3 – 3 | 2 – 2 – 2 |
 
-These results predate 0.2.0. In that evaluation the default recipe lost to
-camera JPEGs, particularly at high ISO with its fixed low noise reduction.
-`auto` only draws with the macOS converter, and editors repeatedly noted the camera's stronger
-colour and contrast. Samples are small and confidence intervals are wide;
-the separate 24-photo validation set was used to guide fixes, making its
-after-fix results optimistic development evidence, while the earlier
-15-photo results are historical and their camera comparisons remain
-**withdrawn** because Adobe RGB JPEGs were shown unconverted as sRGB.
+Read this with its limits. Four of the ten photos were looked at while
+0.2.0's `auto` and skill were being tuned, so the right-hand column is the
+cleaner evidence, and six photos is a small sample. The judge was Codex
+`gpt-6.1-sol` at low effort, shown both image orders with spoiled controls
+and identical pairs; the editor was the same model, which may favour its
+own edits. Camera JPEGs were converted from Adobe RGB to sRGB.
 
-On the Intel i7-10700 measurement machine (8 cores, macOS), the sealed-set
-mean was 4.619 s for a 1400 px default preview, 7.342 s for `auto` with a
-preview and 5.158 s for a full-resolution JPEG export: previews now render
-the full pipeline and resize last.
+What the numbers say: the developing engine alone is roughly level with
+the camera, `auto` is at least as good as the camera, and the clear gain
+comes from the assistant's judgement — cropping, deciding what should be
+bright, and choosing a palette.
 
-Version 0.2.0 strengthens the base contrast, preserves hue through tone
-mapping and derives noise reduction from measured sensor noise whenever
-`denoise` is unset. The scores and timings above were measured before that
-change.
+On an Intel i7-10700 (8 cores, macOS) a 1400 px default preview takes
+5.3 s, `auto` with a preview 10.2 s and a full-resolution JPEG export
+5.8 s, with about 3.5 GB peak memory: previews run the full pipeline and
+resize last. Speed is the next thing to fix.
 
 Decoder samples matched LibRaw on the original 18 test files and two
 additional CC0 lossless Bayer files (55,050,240/55,050,240 samples).
@@ -203,8 +194,16 @@ S store reduced-size YCbCr rather than Bayer and return `unsupported`.
 Other cameras need a colour matrix and a test file; see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Local edits are graduated filters. There are no brushes, subject masks,
-spot removal or dust removal. Output is sRGB JPEG or 16-bit PNG, without
+Local edits are graduated filters. There are no brushes, subject or
+luminance masks, spot removal or dust removal.
+
+Known rendering weaknesses: with the sun in frame, pulling `highlights`
+far down shows the blown core as a disc with a visible edge where the
+camera shows a soft glow; fine branches against a blown sky can keep a few
+coloured specks at 100%; high-ISO luminance grain is a little coarser than
+the camera's.
+
+Output is sRGB JPEG or 16-bit PNG, without
 camera metadata.
 JPEG embeds a compact ICC v2 sRGB profile; PNG uses its standard sRGB chunk.
 Preview clipping statistics can differ slightly from the full-resolution

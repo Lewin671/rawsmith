@@ -221,6 +221,9 @@ full-resolution export's report as well.
   `exposure` and `whites`, and hold a clear sky with a gradient.
 - `highlights` far negative on a scene that is bright everywhere greys
   the whole picture; give exposure back or use a gradient.
+- With the sun or a blown sky in frame, keep `highlights` above about
+  −40: further down the lost area turns into a grey slab or a disc with
+  a hard edge, and fine branches against it pick up coloured specks.
 - Purple edges against a blown sky: `defringe` (check purple flowers and
   lights at 100% first). It does not fix wide out-of-focus halos.
 - If two rounds in a row did not visibly improve the picture, the idea

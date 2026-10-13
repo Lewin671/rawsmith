@@ -1,18 +1,45 @@
 {
-  "blacks": -10.0,
-  "clarity": 3.0,
-  "contrast": 5.0,
-  "exposure": 0.18,
-  "highlights": -20.0,
-  "hsl": {
-    "blue": {
-      "saturation": -10.0
+  "blacks": -8.0,
+  "clarity": 18.0,
+  "contrast": 15.0,
+  "crop": {
+    "bottom": 0.92,
+    "right": 0.96,
+    "top": 0.04
+  },
+  "exposure": 0.35,
+  "grade": {
+    "balance": 20.0,
+    "highlights": {
+      "hue": 48.0,
+      "saturation": 14.0
     }
   },
-  "rawsmith": "0.1.1",
-  "shadows": 38.0,
-  "sharpen": 28.0,
-  "temperature": 5900.0,
-  "vibrance": 8.0,
-  "whites": 3.0
+  "gradients": [
+    {
+      "exposure": -0.3,
+      "from": [
+        0.5,
+        0.0
+      ],
+      "saturation": 15.0,
+      "to": [
+        0.5,
+        0.45
+      ]
+    }
+  ],
+  "highlights": -25.0,
+  "hsl": {
+    "blue": {
+      "luminance": -18.0,
+      "saturation": 5.0
+    }
+  },
+  "rawsmith": "0.2.0",
+  "shadows": 30.0,
+  "temperature": 6400.0,
+  "vibrance": 15.0,
+  "vignette": -12.0,
+  "whites": 20.0
 }

@@ -9,17 +9,11 @@ none of them substitutes for the others.
 | `examples/quality.rs` | Are the algorithms correct and better than naive baselines, against known answers? | No (synthetic) |
 | `bench/photos.py` | Do real photos come out better than the camera's own rendering and the system RAW converter, and does AI editing help? | Your own RAW files |
 
-The real-photo scores and timings below predate the 0.2.0 default-look
-change; they must not be presented as measurements of the new default.
-Version 0.2.0 changes base contrast, colour transport through tone mapping
-and unset denoise to a shared native-noise estimate. Its new synthetic
-properties are described in [pipeline.md](pipeline.md); a fresh blind
-camera comparison is pending.
-
-Decoder and synthetic measurements below are from version 0.1.0. Real-photo
-results distinguish the sealed evaluation, validation before and after fixes,
-and historical development runs. Timings were measured on an Intel i7-10700
-(8 cores / 16 threads), macOS, release build.
+Real-photo results are reported per release: the 0.2.0 acceptance run
+first, then the earlier sealed evaluation, the validation set used to
+guide fixes, and historical development runs. Decoder and synthetic
+measurements date from 0.1.0 unless noted. Timings were measured on an
+Intel i7-10700 (8 cores / 16 threads), macOS, release build.
 
 ## 1. Decoder cross-check
 
@@ -195,7 +189,42 @@ What the comparisons mean:
 - `ai vs auto`: what an assistant's editing loop adds on top — the reason
   the tool exists.
 
-### Sealed results: 10 photos, evaluated once after fixes
+### 0.2.0 acceptance: sealed set, second use (10 photos)
+
+Version 0.2.0 changed the default rendering (stronger base curve,
+hue-preserving chroma, noise reduction from measured sensor noise),
+rewrote `auto` to propose a finished picture bounded by the camera JPEG's
+tone distribution, and rewrote the skill so the assistant decides an
+interpretation and edits toward it without asking for a look. The ten
+sealed photos were edited again by Codex `gpt-6.1-sol` following the new
+skill, with the single instruction to edit the photos, and judged blind by
+the same model at low effort (control accuracy 32/32, identical pairs
+called tie 6/6, order consistency 0.84).
+
+| Comparison | All 10 | 6 never used in development |
+|---|---|---|
+| Assistant edit vs camera JPEG | 10 – 0 – 0 | 6 – 0 – 0 |
+| Assistant edit vs macOS RAW converter | 10 – 0 – 0 | 6 – 0 – 0 |
+| Assistant edit vs `auto` | 8 – 0 – 2 | 5 – 0 – 1 |
+| `auto` vs camera JPEG | 6 – 0 – 4 | 2 – 0 – 4 |
+| `auto` vs macOS RAW converter | 7 – 2 – 1 | 4 – 1 – 1 |
+| `auto` vs default recipe | 5 – 1 – 4 | — |
+| Default recipe vs camera JPEG | 4 – 3 – 3 | 2 – 2 – 2 |
+
+This is the set's second use, and four of its photos (two high-ISO, one
+backlit, one snow) were rendered and inspected while `auto` and the skill
+were being tuned for this release; results on those four are development
+evidence. The right-hand column covers the six that were not. Editor and
+judge are the same model. Samples are small.
+
+Mean time per photo: default 1400 px preview 5.3 s, `auto` with preview
+10.2 s, full-resolution export 5.8 s; peak memory about 3.5 GB.
+
+Known weaknesses at this release: a sun in frame shows a disc edge when
+`highlights` is pulled far down; residual coloured specks on fine branches
+against blown sky; coarser high-ISO luminance grain than the camera.
+
+### Sealed results before 0.2.0: 10 photos, first use
 
 The sealed set contains 10 further Sony A7 IV photos from the same selection
 as the validation set: 3 high ISO, 3 backlit, 3 saturated sky and 1 snow.

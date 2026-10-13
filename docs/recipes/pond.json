@@ -1,0 +1,80 @@
+{
+  "blacks": -12.0,
+  "clarity": 10.0,
+  "contrast": 12.0,
+  "crop": {
+    "bottom": 0.97,
+    "left": 0.06,
+    "top": 0.1
+  },
+  "curve": [
+    [
+      0.2,
+      0.17
+    ],
+    [
+      0.5,
+      0.53
+    ],
+    [
+      0.8,
+      0.83
+    ]
+  ],
+  "grade": {
+    "highlights": {
+      "hue": 50.0,
+      "saturation": 14.0
+    },
+    "shadows": {
+      "hue": 190.0,
+      "saturation": 18.0
+    }
+  },
+  "gradients": [
+    {
+      "exposure": -0.3,
+      "from": [
+        0.0,
+        0.5
+      ],
+      "saturation": 0.0,
+      "to": [
+        0.3,
+        0.5
+      ]
+    }
+  ],
+  "highlights": -55.0,
+  "hsl": {
+    "blue": {
+      "saturation": -40.0
+    },
+    "green": {
+      "hue": 12.0,
+      "luminance": -8.0,
+      "saturation": -10.0
+    },
+    "orange": {
+      "luminance": 10.0,
+      "saturation": 30.0
+    },
+    "purple": {
+      "saturation": -40.0
+    },
+    "red": {
+      "saturation": 20.0
+    },
+    "yellow": {
+      "hue": -10.0,
+      "saturation": 10.0
+    }
+  },
+  "rawsmith": "0.2.0",
+  "shadows": 45.0,
+  "temperature": 5900.0,
+  "tint": 28.0,
+  "vibrance": 25.0,
+  "vignette": -25.0,
+  "whites": 10.0
+}

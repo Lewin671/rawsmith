@@ -1,9 +1,9 @@
 # Documentation photographs
 
 - `demo-camera.jpg` and `demo-rawsmith.jpg`: a CC0 Sony A7 IV sample
-  from [raw.pixls.us](https://raw.pixls.us), as described in the main README.
-- `snow-peak-comparison.jpg`, `rime-comparison.jpg`, `maple-comparison.jpg`,
-  `snowman-comparison.jpg` and `sunset-comparison.jpg`: user-provided Sony A7 IV photographs,
+  from [raw.pixls.us](https://raw.pixls.us), rendered by rawsmith 0.1.0.
+- `pond-comparison.jpg`, `rime-comparison.jpg` and
+  `ginkgo-comparison.jpg`: user-provided Sony A7 IV photographs,
   reproduced with permission for this repository's documentation. These
   photographs are not CC0 and are not covered by the code's MIT/Apache-2.0
   licences; no permission for other reuse is granted here.
@@ -22,9 +22,8 @@ recipe of the same name:
 rawsmith compare "$RAW" --panel camera --panel recipe:docs/recipes/NAME.json -o docs/images/NAME-comparison.jpg --size 1000
 ```
 
-`snow-peak`, `rime` and `maple` come from a held-out validation set and were
-edited by an assistant following the skill; their recipes were written by
-rawsmith 0.1.1 and rendered with the current engine.
+All three were edited by an assistant following the skill, asked only to
+edit the photo, and rendered with rawsmith 0.2.0.
 
 ## One-command auto example (CC0 sample)
 
@@ -32,4 +31,4 @@ rawsmith 0.1.1 and rendered with the current engine.
 |---|---|
 | ![The camera's own rendering](demo-camera.jpg) | ![rawsmith auto rendering](demo-rawsmith.jpg) |
 
-A CC0 sample from [raw.pixls.us](https://raw.pixls.us) (Sony A7 IV), developed with one command.
+A CC0 sample from [raw.pixls.us](https://raw.pixls.us) (Sony A7 IV), developed with one command by rawsmith 0.1.0.
