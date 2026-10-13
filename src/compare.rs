@@ -149,8 +149,8 @@ fn framing(params: &Params) -> Value {
 
 /// Returns the row, its report, and whether every panel is established sRGB.
 pub fn row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result<(Image, Value, bool)> {
-    if panels.len() < 2 || size == 0 {
-        return Err(Error::Params("compare needs at least two panels and --size at least 1".into()));
+    if panels.is_empty() || size == 0 {
+        return Err(Error::Params("compare needs at least one panel and --size at least 1".into()));
     }
     if !matches!(raw.meta.orientation, 1 | 3 | 6 | 8) {
         return Err(Error::Unsupported(format!(
@@ -194,7 +194,7 @@ pub fn row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result
     }
     // Never upscale a small camera JPEG or a heavily cropped recipe. Taking
     // the smallest bounded height keeps every panel's long edge within --size.
-    let height = images.iter().map(|image| image.height).min().expect("at least two panels");
+    let height = images.iter().map(|image| image.height).min().expect("at least one panel");
     let mut width = SEPARATOR.checked_mul(images.len() - 1);
     for (image, report) in images.iter_mut().zip(&mut reports) {
         let w = ((image.width as f64 * height as f64 / image.height as f64).round() as usize).max(1);

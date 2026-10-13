@@ -27,19 +27,20 @@ the foreground is too dark. Show me a preview before exporting.”**
 
 ## Before and after
 
-Camera JPEG on the left; assistant edit on the right, each shown in full
-with its own framing.
+Camera JPEG on the left, assistant edit on the right, same framing.
 
-![Sunset: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/sunset-comparison.jpg)
+![Snowman: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snowman-comparison.jpg)
+
+**Snowman — the camera exposed the snow as grey; the edit brings it back to white and keeps its texture.**
 
 <details>
 <summary>Two more assistant edits</summary>
 
-**Snowman — brighten underexposed snow and bring out the subject's texture.**
+**Sunset — a deeper sky and a tighter frame. The camera's own rendering is already good here; this one is a matter of taste.**
 
-![Snowman: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snowman-comparison.jpg)
+![Sunset: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/sunset-comparison.jpg)
 
-**Snow mountain — soften the blue cast in shade and lift the foreground while keeping the warm summit light.**
+**Snow mountain — less blue in the shade and a more readable foreground, with the warm summit light kept.**
 
 ![Snow mountain: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snow-mountain-comparison.jpg)
 
@@ -88,6 +89,7 @@ It exports the full-resolution JPEG; `.png` would give 16-bit output.
 Both declare sRGB (ICC in JPEG, a standard sRGB chunk in PNG).
 `compare` uses the embedded JPEG's colour declaration, falling back to RAW
 EXIF; declared Adobe RGB camera previews are converted to sRGB and tagged.
+A single `--panel camera` exports this upright camera rendering alone.
 Unknown or unverified camera colour produces a warning and an untagged row.
 Outputs are replaced; RAWs never. Use a new output name to keep a version;
 the report's `output_replaced` field signals replacement.
@@ -139,15 +141,23 @@ The published recipe records the resulting edit:
 
 ## Results
 
-15 of 15 photos were wins for `auto` over the camera JPEG with Claude
-as judge; GPT-6 Luna recorded 12 wins, 3 ties and no losses.
+Against the macOS RAW converter, `auto` recorded 15 wins with Claude
+and 12 wins, 3 ties and no losses with GPT-6 Luna on the published development set.
+
+Correction: All 15 private-set camera JPEGs were Adobe RGB but were shown
+unconverted as sRGB in the published `camera` comparisons. This made the
+camera rendering look duller and less saturated than it is. The
+`neutral`/`auto`/`ai` vs `camera` rows therefore overstate rawsmith's advantage
+and are withdrawn pending a rerun. Historical counts are retained.
+Comparisons against `system`, `auto` vs `neutral` and `ai` vs `auto` are
+unaffected, as are the three sRGB CC0 samples.
 Counts in the published blind comparisons are wins – losses – ties per photo.
 
 | Comparison | Claude | GPT-6 Luna |
 |---|---|---|
-| `auto` vs camera JPEG | 15 – 0 – 0 | 12 – 0 – 3 |
+| `auto` vs camera JPEG **(withdrawn)** | 15 – 0 – 0 | 12 – 0 – 3 |
 | `auto` vs macOS RAW converter | 15 – 0 – 0 | 12 – 0 – 3 |
-| Default recipe vs camera JPEG | 10 – 0 – 5 | 5 – 0 – 10 |
+| Default recipe vs camera JPEG **(withdrawn)** | 10 – 0 – 5 | 5 – 0 – 10 |
 | Assistant-edited vs `auto` | 12 – 1 – 2 | 6 – 0 – 9 |
 
 This is a development set: 15 photos from one camera and one photographer,

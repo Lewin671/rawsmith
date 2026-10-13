@@ -59,10 +59,11 @@ photos.
    paths, then use
    `rawsmith compare photo.ARW --panel recipe:earlier.json --panel saved -o rounds.jpg`.
    Repeat `--panel` for `camera`, `saved`, `default` or `recipe:FILE` (at
-   least two); a missing explicit recipe is an error. `saved` uses defaults
+   least one); a missing explicit recipe is an error. `saved` uses defaults
    if the default sidecar is absent; `default` always ignores saved edits.
    Recipes keep their own framing; the camera matches the first non-camera
-   panel. Read `framing_matched` and `warnings` when framing differs.
+   panel. `--panel camera` alone exports the upright camera rendering with
+   neutral framing. Read `framing_matched` and `warnings` when framing differs.
    `--size` defaults to 1400 per panel; all panels shrink to one height.
    Orientations outside 1/3/6/8 are rejected. Camera colour uses embedded
    JPEG declarations first, then RAW EXIF. `color_declaration` reports

@@ -170,7 +170,8 @@ def cmd_render(args):
     images = os.path.join(work, "images")
     shutil.rmtree(images, ignore_errors=True)
     os.makedirs(images)
-    manifest = {"edge": EDGE, "photos": {}, "rendering": rendering}
+    manifest = {"edge": EDGE, "photos": {}, "rendering": rendering,
+                "camera_color_space": {"srgb": 0, "adobe_rgb_converted": 0, "skipped": 0}}
     for index, name in enumerate(names):
         raw = os.path.join(args.raws, name)
         # Photos are known by index only from here on.
@@ -178,8 +179,6 @@ def cmd_render(args):
         entry = {"variants": {}, "seconds": {}}
         out = lambda variant: os.path.join(images, f"{photo}-{variant}.jpg")
         size = ["--size", str(EDGE), "--quality", "92"]
-        info, _ = rawsmith(exe, "inspect", raw)
-        upright = info["camera"]["orientation"] in (1, None)
 
         scratch = os.path.join(work, "scratch.json")
         def render(variant, recipe, extra=()):
@@ -206,17 +205,39 @@ def cmd_render(args):
                 except RuntimeError as error:
                     # e.g. a colour cast this photo's white balance cannot take
                     print(f"  control {control} skipped: {error}", flush=True)
+        # compare applies RAW orientation and establishes/converts camera colour.
+        # Never judge unmanaged pixels as if they were an sRGB reference.
+        camera = {"status": "skipped", "reason": "camera rendering failed"}
+        try:
+            report, _ = rawsmith(exe, "compare", raw, "--panel", "camera",
+                                 "--size", str(EDGE), "-o", out("camera"))
+            panel = report["panels"][0]
+            camera["color_declaration"] = panel["color_declaration"]
+            camera["color_conversion"] = panel["color_conversion"]
+            declared = panel["color_declaration"]["color_space"]
+            if report["output_color_space"] == "sRGB" and panel["color_space"] == "sRGB":
+                if declared == "sRGB" and panel["color_conversion"] is None:
+                    camera = {**camera, "status": "srgb"}
+                elif declared == "Adobe RGB (1998)" and panel["color_conversion"] == "Adobe RGB (1998) to sRGB":
+                    camera = {**camera, "status": "adobe_rgb_converted"}
+            if camera["status"] == "skipped":
+                camera["reason"] = "camera colour space could not be established"
+        except RuntimeError:
+            pass
+        if camera["status"] == "skipped":
+            if os.path.exists(out("camera")):
+                os.remove(out("camera"))
+            print(f"{photo}: camera skipped: {camera['reason']}", flush=True)
+        else:
+            camera.pop("reason")
+            entry["variants"]["camera"] = None
+        entry["camera"] = camera
+        manifest["camera_color_space"][camera["status"]] += 1
         if sips:
-            # The embedded JPEG is stored unrotated, the RAW engine applies orientation itself.
-            embedded = os.path.join(work, "embedded.jpg")
-            rawsmith(exe, "extract-jpeg", raw, "-o", embedded)
-            rotate = [] if upright else ["-r", {8: "270", 6: "90", 3: "180"}[info["camera"]["orientation"]]]
-            subprocess.run([sips, *rotate, *srgb, "-Z", str(EDGE), "-s", "formatOptions", "92", embedded, "--out", out("camera")], capture_output=True, check=True)
             started = time.time()
             subprocess.run([sips, *srgb, "-s", "format", "jpeg", "-s", "formatOptions", "92", "-Z", str(EDGE), raw, "--out", out("system")], capture_output=True, check=True)
             entry["seconds"]["system"] = round(time.time() - started, 3)
-            entry["variants"]["camera"] = entry["variants"]["system"] = None
-            os.remove(embedded)
+            entry["variants"]["system"] = None
         # Full-resolution export time, the number users feel: render, encode, write.
         save(scratch, {})
         export = os.path.join(work, "export.jpg")
@@ -587,7 +608,7 @@ def cmd_report(args):
     mean = lambda values: round(sum(values) / len(values), 3) if values else None
     seconds = {key: mean([p["seconds"][key] for p in photos if key in p["seconds"]]) for key in ("neutral", "auto", "system", "full_resolution")}
     clipping = {v: mean([p["variants"][v]["clipped_highlights_pct"] for p in photos if p["variants"].get(v)]) for v in ("neutral", "auto", "ai")}
-    report = {"photos": len(manifest["photos"]), "preview_edge_px": manifest["edge"], "mean_seconds": seconds, "mean_clipped_highlights_pct": clipping, "rendering": manifest.get("rendering", {"rawsmith_version": None, "repository_commit": None}), "judges": {}}
+    report = {"photos": len(manifest["photos"]), "preview_edge_px": manifest["edge"], "camera_color_space": manifest.get("camera_color_space"), "mean_seconds": seconds, "mean_clipped_highlights_pct": clipping, "rendering": manifest.get("rendering", {"rawsmith_version": None, "repository_commit": None}), "judges": {}}
     inputs = current_inputs(work, tasks)
     report["task_set"] = task_set_identity(manifest, tasks, inputs)
     for file in sorted(os.listdir(work)):
@@ -599,6 +620,12 @@ def cmd_report(args):
     if args.json:
         save(os.path.abspath(args.json), report)
     print(f"Photos: {report['photos']}   mean seconds: {seconds}")
+    camera = report["camera_color_space"]
+    if camera is None:
+        print("Camera JPEG colour: unknown (older manifest)")
+    else:
+        print(f"Camera JPEG colour: {camera['srgb']} sRGB, "
+              f"{camera['adobe_rgb_converted']} converted from Adobe RGB, {camera['skipped']} skipped")
     for judge, summary in report["judges"].items():
         checks = summary["judge_checks"]
         print(f"\nVerdict validation: {summary['verdict_validation']} (unverifiable/stale verdicts excluded)")

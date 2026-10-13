@@ -83,6 +83,8 @@ metadata only, not pixels. Developed files contain no camera metadata.
 ```sh
 # Camera JPEG on the left, saved edit on the right
 rawsmith compare photo.ARW -o comparison.jpg
+# Camera alone, upright and converted to sRGB when its colour is established
+rawsmith compare photo.ARW --panel camera -o camera.jpg --size 1400
 # Earlier recipe versus the current saved edit, in this order
 rawsmith compare photo.ARW --panel recipe:earlier.json --panel saved -o rounds.png
 # Camera, neutral default and another recipe
@@ -92,7 +94,7 @@ rawsmith compare photo.ARW --panel camera --panel default --panel recipe:alterna
 `compare` writes one unlabelled row with a two-pixel neutral grey separator
 between panels. Repeat `--panel` in left-to-right order, selecting `camera`,
 `saved`, `default` or `recipe:FILE`. With no `--panel`, it selects `camera`
-then `saved`; an explicit selection needs at least two panels. `saved`
+then `saved`; a single explicit panel is also allowed, with no separator. `saved`
 reads `<raw>.rawsmith.json`, using defaults when it is missing. `default`
 always uses the neutral default recipe. A missing explicit `recipe:FILE`
 is an error. The command never saves recipes, and refuses to overwrite the

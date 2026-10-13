@@ -153,6 +153,94 @@ class WorkDirectoryTests(unittest.TestCase):
         self.assertFalse(any(p.name.startswith(".rawsmith-") for p in self.base.iterdir()))
 
 
+class CameraRenderTests(unittest.TestCase):
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(self.scratch.cleanup)
+        self.base = Path(self.scratch.name)
+        self.work = self.base / "work"
+        self.raws = self.base / "raws"
+        self.raws.mkdir()
+        self.calls = self.base / "calls.jsonl"
+        self.binary = self.base / "fake-rawsmith"
+        self.binary.write_text("#!" + sys.executable + "\n" + f"CALLS = {str(self.calls)!r}\n" + r'''
+import json, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(CALLS, "a") as f:
+    f.write(json.dumps(args) + "\n")
+if args == ["--version"]:
+    print("rawsmith fake-version")
+    sys.exit(0)
+if args[0] not in ("render", "auto", "compare"):
+    sys.exit("unexpected command (extract-jpeg/inspect must not be used)")
+output = Path(args[args.index("-o") + 1])
+output.write_bytes(b"synthetic image")
+if args[0] == "compare":
+    assert args[2:6] == ["--panel", "camera", "--size", "1400"]
+    space = Path(args[1]).read_text()
+    if space == "failure":
+        sys.exit("synthetic camera decode failure")
+    converted = "Adobe RGB (1998) to sRGB" if space == "Adobe RGB (1998)" else None
+    final = "sRGB" if converted else space
+    print(json.dumps({"output_color_space": "sRGB" if final == "sRGB" else "mixed-unmanaged",
+                      "panels": [{"color_space": final, "color_conversion": converted,
+                                  "color_declaration": {"source": "raw-exif", "color_space": space}}]}))
+else:
+    if args[0] == "auto":
+        Path(args[args.index("--recipe") + 1]).write_text("{}")
+    print(json.dumps({"stats": {"clipped_highlights_pct": 0}, "recipe": {}}))
+''')
+        self.binary.chmod(0o755)
+
+    def render(self, spaces, sips=None):
+        for index, space in enumerate(spaces):
+            (self.raws / f"private-photo-{index}.ARW").write_text(space)
+        output = io.StringIO()
+        with mock.patch.object(photos.shutil, "which", return_value=sips):
+            with contextlib.redirect_stdout(output):
+                photos.cmd_render(SimpleNamespace(work=str(self.work), raws=str(self.raws),
+                                                 recipes=None, rawsmith=str(self.binary)))
+        return photos.load(str(self.work / "manifest.json")), output.getvalue()
+
+    def test_camera_without_macos_skips_unmanaged_and_failed_outputs(self):
+        manifest, output = self.render(["sRGB", "Adobe RGB (1998)", "unknown", "uncalibrated",
+                                       "ICC (unverified)", "failure"])
+        counts = {"srgb": 1, "adobe_rgb_converted": 1, "skipped": 4}
+        self.assertEqual(manifest["camera_color_space"], counts)
+        for index, entry in enumerate(manifest["photos"].values()):
+            self.assertEqual("camera" in entry["variants"], index < 2)
+            self.assertEqual((self.work / "images" / f"p{index:03d}-camera.jpg").exists(), index < 2)
+            self.assertNotIn("system", entry["variants"])
+        self.assertEqual(output.count("camera skipped:"), 4)
+        photos.cmd_pairs(SimpleNamespace(work=str(self.work), seed=1))
+        tasks = photos.load(str(self.work / "tasks.json"))
+        self.assertTrue(all(t["photo"] in ("p000", "p001") for t in tasks if "camera" in (t["A"], t["B"])))
+        report_path = self.work / "report.json"
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            photos.cmd_report(SimpleNamespace(work=str(self.work), json=str(report_path)))
+        report = photos.load(str(report_path))
+        self.assertEqual(report["camera_color_space"], counts)
+        self.assertIn("1 sRGB, 1 converted from Adobe RGB, 4 skipped", output.getvalue())
+        self.assertNotIn("private-photo", json.dumps(report))
+        self.assertNotIn(str(self.base), json.dumps(report))
+
+    def test_sips_is_only_used_for_system(self):
+        sips = self.base / "fake-sips"
+        sips_calls = self.base / "sips.jsonl"
+        sips.write_text("#!" + sys.executable + "\nimport json,sys\nfrom pathlib import Path\n"
+                        + f"with open({str(sips_calls)!r}, 'a') as f: f.write(json.dumps(sys.argv[1:])+'\\n')\n"
+                        + "Path(sys.argv[-1]).write_bytes(b'synthetic system')\n")
+        sips.chmod(0o755)
+        manifest, _ = self.render(["Adobe RGB (1998)"], str(sips))
+        calls = [json.loads(line) for line in sips_calls.read_text().splitlines()]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][-3], str(self.raws / "private-photo-0.ARW"))
+        self.assertIn("system", manifest["photos"]["p000"]["variants"])
+        self.assertIn("camera", manifest["photos"]["p000"]["variants"])
+
+
 class JudgeTests(unittest.TestCase):
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory()
@@ -505,6 +593,7 @@ class JudgeTests(unittest.TestCase):
         report, _ = self.report()
         self.assertEqual(report["rendering"], {"rawsmith_version": None, "repository_commit": None})
         self.assertIsNone(report["task_set"]["seed"])
+        self.assertIsNone(report["camera_color_space"])
 
     def test_cli_defaults_to_codex_and_help_describes_resume(self):
         with mock.patch.object(sys, "argv", ["photos.py", "judge", "--work", str(self.work)]):
@@ -533,6 +622,10 @@ class JudgeTests(unittest.TestCase):
                 return {"camera": {"orientation": 1}}, 0
             if "-o" in args:
                 Path(args[args.index("-o") + 1]).write_bytes(b"synthetic render")
+            if args[0] == "compare":
+                return {"output_color_space": "sRGB", "panels": [{"color_space": "sRGB",
+                        "color_declaration": {"source": "raw-exif", "color_space": "sRGB"},
+                        "color_conversion": None}]}, 0
             if args[0] == "auto":
                 photos.save(args[args.index("--recipe") + 1], {})
             return {"stats": {"clipped_highlights_pct": 0}, "recipe": {}}, 0

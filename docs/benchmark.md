@@ -66,11 +66,22 @@ Every RAW file is rendered several ways at 1400 px:
 
 | Variant | What it is |
 |---|---|
-| `camera` | the JPEG the camera embedded in the RAW: the manufacturer's rendering |
+| `camera` | the embedded JPEG rendered upright through `rawsmith compare --panel camera`; established sRGB or Adobe RGB converted to sRGB |
 | `system` | macOS's RAW converter (`sips`), converted to sRGB |
 | `neutral` | rawsmith, default recipe |
 | `auto` | rawsmith after `rawsmith auto` |
 | `ai` | rawsmith with a recipe made by an AI assistant following [the skill](../skill/rawsmith/SKILL.md), starting from `auto` |
+
+The `camera` variant works without macOS. `render` calls
+`rawsmith compare RAW --panel camera -o camera.jpg --size 1400` and reads its
+colour report. Unknown, conflicting, uncalibrated or unverified colour skips
+that photo's `camera` variant with a message; camera rendering failures also
+skip it. No pairs against `camera` are generated for skipped photos.
+The manifest records each photo's camera status, colour declaration and
+conversion (when available), plus `camera_color_space` counts of `srgb`,
+`adobe_rgb_converted` and `skipped`. The JSON and text report include those
+counts; older manifests report them as unknown (`null`), not zero.
+Only `system` still requires macOS `sips`.
 
 An LLM judge sees two renderings of one photo, labelled only A and B, and
 picks the better finished photograph or declares a tie. To keep that
@@ -136,14 +147,22 @@ judge, every pair in both orders. Two judges from different vendors saw
 the same blind tasks independently. Cells are wins – losses – ties for
 the first-named variant, one outcome per photo.
 
+Correction: All 15 private-set camera JPEGs were Adobe RGB but were shown
+unconverted as sRGB in the published `camera` comparisons. This made the
+camera rendering look duller and less saturated than it is. The
+`neutral`/`auto`/`ai` vs `camera` rows therefore overstate rawsmith's advantage
+and are withdrawn pending a rerun. Historical counts are retained.
+Comparisons against `system`, `auto` vs `neutral` and `ai` vs `auto` are
+unaffected, as are the three sRGB CC0 samples.
+
 | Comparison | Claude | GPT-6 Luna |
 |---|---|---|
-| `neutral` vs `camera` | 10 – 0 – 5 | 5 – 0 – 10 |
-| `auto` vs `camera` | 15 – 0 – 0 | 12 – 0 – 3 |
+| `neutral` vs `camera` **(withdrawn)** | 10 – 0 – 5 | 5 – 0 – 10 |
+| `auto` vs `camera` **(withdrawn)** | 15 – 0 – 0 | 12 – 0 – 3 |
 | `auto` vs `system` | 15 – 0 – 0 | 12 – 0 – 3 |
 | `auto` vs `neutral` | 13 – 0 – 2 | 9 – 2 – 4 |
 | `ai` vs `auto` | 12 – 1 – 2 | 6 – 0 – 9 |
-| `ai` vs `camera` | 15 – 0 – 0 | 12 – 0 – 3 |
+| `ai` vs `camera` **(withdrawn)** | 15 – 0 – 0 | 12 – 0 – 3 |
 | `ai` vs `system` | 15 – 0 – 0 | 13 – 0 – 2 |
 
 A win is a photo whose two verdicts net out in the candidate's favour;
@@ -161,8 +180,8 @@ Judge checks for this run:
 | Same verdict after swapping A and B | 92% of pairs | 75% of pairs |
 | Position votes (A / B / tie) | 122 / 118 / 18 | 88 / 140 / 30 |
 
-The two judges agree on direction in every comparison and neither prefers
-the camera's JPEG or the system converter for any photo. The second judge
+In the unaffected comparisons, the two judges agree on direction and neither
+prefers the system converter for any photo. The second judge
 is the noisier instrument: it leans towards whichever image is shown
 second, and because both orders are judged that lean turns into ties
 rather than wins, which is why its counts are lower. Claude ran through

@@ -38,7 +38,7 @@ enum Command {
     Auto(Auto),
     /// Compare upright camera and recipe versions in one unlabelled image row
     #[command(
-        after_help = "With no --panel options, shows camera then saved. The camera uses the first non-camera panel's crop and rotation; other panels keep their own framing. Recipes are only read. Camera colour uses embedded JPEG declarations first, then RAW EXIF. Declared Adobe RGB (1998) is converted to sRGB; established sRGB rows are tagged. Unknown, conflicting or unverified camera colour produces a warning and an untagged row. Camera panels report color_declaration (source, color_space) and color_conversion."
+        after_help = "With no --panel options, shows camera then saved. A single --panel is allowed; camera alone uses neutral framing. The camera uses the first non-camera panel's crop and rotation; other panels keep their own framing. Recipes are only read. Camera colour uses embedded JPEG declarations first, then RAW EXIF. Declared Adobe RGB (1998) is converted to sRGB; established sRGB rows are tagged. Unknown, conflicting or unverified camera colour produces a warning and an untagged row. Camera panels report color_declaration (source, color_space) and color_conversion."
     )]
     Compare(Compare),
     /// Copy the embedded JPEG unchanged, including metadata; report RAW orientation and needed rotation
@@ -395,9 +395,6 @@ fn compare_versions(args: Compare) -> Result<Value> {
         return Err(Error::Params("output is also the saved recipe file; give them different names".into()));
     }
     let versions = if args.panel.is_empty() { vec!["camera".into(), "saved".into()] } else { args.panel };
-    if versions.len() < 2 {
-        return Err(Error::Params("compare needs at least two --panel options".into()));
-    }
     let mut panels = Vec::new();
     for version in versions {
         let (kind, params, recipe_file) = match version.as_str() {

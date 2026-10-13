@@ -169,6 +169,65 @@ fn camera_pixels_are_upright_and_default_report_is_ordered() {
 }
 
 #[test]
+fn single_camera_is_upright_bounded_and_ignores_saved_framing() {
+    let f = Fixture::new("single-camera");
+    let embedded = jpeg(96, 64, true);
+    let original = decoded_jpeg(&embedded);
+    let recipe = f.recipe("frame.ARW.rawsmith.json", json!({"crop": {"top": 0.5}, "rotate": 10}));
+    let saved = std::fs::read(&recipe).unwrap();
+    for orientation in [1, 3, 6, 8] {
+        let raw = f.raw(orientation, Some(&embedded));
+        let output = f.path("camera.png");
+        let report = run(&["compare", s(&raw), "--panel", "camera", "-o", s(&output), "--size", "48"], true);
+        let (image, tagged) = png(&output);
+        let (width, height) = if matches!(orientation, 6 | 8) { (64, 96) } else { (96, 64) };
+        let expected = Image {
+            width,
+            height,
+            data: (0..width * height)
+                .map(|i| {
+                    let (x, y) = (i % width, i / width);
+                    let (sx, sy) = match orientation {
+                        3 => (95 - x, 63 - y),
+                        6 => (y, 63 - x),
+                        8 => (95 - y, x),
+                        _ => (x, y),
+                    };
+                    original.at(sx, sy)
+                })
+                .collect(),
+        };
+        let expected = if matches!(orientation, 6 | 8) { expected.resized(32, 48) } else { expected.resized(48, 32) };
+        assert_eq!(report["panels"].as_array().unwrap().len(), 1);
+        assert_eq!(report["width"], image.width);
+        assert_eq!(report["height"], image.height);
+        assert_eq!(report["camera_framing_panel"], Value::Null);
+        assert_eq!(report["framing_matched"], true);
+        assert_eq!(report["warnings"], json!([]));
+        assert_eq!(report["output_color_space"], "sRGB");
+        assert!(tagged);
+        assert_eq!((image.width, image.height), (expected.width, expected.height));
+        for (actual, expected) in image.data.iter().zip(&expected.data) {
+            assert!(actual.iter().zip(expected).all(|(a, b)| (a - b).abs() < 2.0 / 65535.0));
+        }
+    }
+    assert_eq!(std::fs::read(recipe).unwrap(), saved);
+}
+
+#[test]
+fn single_developed_panel_needs_no_camera_and_matches_render() {
+    let f = Fixture::new("single-recipe");
+    let raw = f.raw(1, None);
+    let recipe = f.recipe("alternate.json", json!({"exposure": 0.3, "crop": {"top": 0.2}}));
+    let panel = format!("recipe:{}", recipe.display());
+    let output = f.path("single.png");
+    let render = f.path("render.png");
+    run(&["compare", s(&raw), "--panel", &panel, "-o", s(&output)], true);
+    run(&["render", s(&raw), "--recipe", s(&recipe), "-o", s(&render)], true);
+    assert_eq!(std::fs::read(output).unwrap(), std::fs::read(render).unwrap());
+}
+
+#[test]
 fn camera_matches_saved_crop_and_rotation_without_changing_recipes() {
     let f = Fixture::new("framing");
     let embedded = jpeg(96, 64, true);
@@ -359,7 +418,8 @@ fn bare_camera_jpeg_uses_raw_exif_and_reports_conversion() {
             let raw = f.raw_with_colour(orientation, Some(&embedded), space, interop);
             for extension in ["jpg", "png"] {
                 let output = f.path(&format!("comparison.{extension}"));
-                let report = run(&["compare", s(&raw), "-o", s(&output)], true);
+                let report = run(&["compare", s(&raw), "--panel", "camera", "-o", s(&output)], true);
+                assert_eq!(report["panels"].as_array().unwrap().len(), 1);
                 let panel = &report["panels"][0];
                 assert_eq!(
                     panel["color_declaration"],
@@ -497,7 +557,6 @@ fn all_failures_preserve_raw_recipes_and_existing_outputs() {
     for extra in [
         vec!["--size", "0"],
         vec!["--size", "bad"],
-        vec!["--panel", "saved"],
         vec!["--panel", "camera", "--panel", "nope"],
         vec!["--panel", "camera", "--panel", &invalid_panel],
         vec!["--panel", "camera", "--panel", &missing_panel],
@@ -549,6 +608,7 @@ fn comparison_help_describes_panel_and_colour_contract() {
     let help = String::from_utf8(output.stdout).unwrap();
     for text in [
         "camera, saved, default",
+        "single --panel",
         "recipe:FILE",
         "1400",
         "crop and rotation",

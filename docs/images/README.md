@@ -11,7 +11,26 @@
 Comparison images are resized JPEGs without EXIF metadata. No source RAW
 files are included. The left image is the camera's embedded JPEG; the
 right image is developed with rawsmith using the recipes in
-[`../recipes`](../recipes). Crops differ where the recipe changes framing.
+[`../recipes`](../recipes). Both panels use the recipe's crop and rotation.
+The three private-photo comparisons were regenerated after discovering that
+their previous camera panels displayed Adobe RGB values unconverted as sRGB,
+which made the camera rendering look duller and less saturated. `compare`
+now converts those camera JPEGs to sRGB and tags the combined JPEG.
+No text is drawn on the images; the README caption is
+"Camera JPEG | edited with rawsmith".
+
+Exact commands, run from the repository root with the three authorized RAWs
+in `$RAWS` (the owner's private source directory, not included here):
+
+```sh
+target/release/rawsmith compare "$RAWS/_DSC3169.ARW" --panel camera --panel recipe:docs/recipes/sunset.json -o docs/images/sunset-comparison.jpg --size 1000
+target/release/rawsmith compare "$RAWS/_DSC3175.ARW" --panel camera --panel recipe:docs/recipes/snowman.json -o docs/images/snowman-comparison.jpg --size 1000
+target/release/rawsmith compare "$RAWS/_DSC3284.ARW" --panel camera --panel recipe:docs/recipes/snow-mountain.json -o docs/images/snow-mountain-comparison.jpg --size 1000
+```
+
+Each panel's longest edge is at most 1000 px; the row has a two-pixel grey
+separator. `compare` encodes at JPEG quality 92 with an sRGB ICC profile and
+no EXIF; no separate metadata-stripping step was applied.
 
 ## One-command auto example (CC0 sample)
 
