@@ -78,6 +78,85 @@ metadata only, not pixels. Developed files contain no camera metadata.
 `output_color_space` is `"sRGB"` when a developed image was written and
 `null` otherwise. [Profile source and CC0 licence](../assets/profiles/README.md).
 
+## Comparing versions
+
+```sh
+# Camera JPEG on the left, saved edit on the right
+rawsmith compare photo.ARW -o comparison.jpg
+# Earlier recipe versus the current saved edit, in this order
+rawsmith compare photo.ARW --panel recipe:earlier.json --panel saved -o rounds.png
+# Camera, neutral default and another recipe
+rawsmith compare photo.ARW --panel camera --panel default --panel recipe:alternate.json -o versions.jpg --size 1000
+```
+
+`compare` writes one unlabelled row with a two-pixel neutral grey separator
+between panels. Repeat `--panel` in left-to-right order, selecting `camera`,
+`saved`, `default` or `recipe:FILE`. With no `--panel`, it selects `camera`
+then `saved`; an explicit selection needs at least two panels. `saved`
+reads `<raw>.rawsmith.json`, using defaults when it is missing. `default`
+always uses the neutral default recipe. A missing explicit `recipe:FILE`
+is an error. The command never saves recipes, and refuses to overwrite the
+RAW, its default sidecar, or any selected recipe (including file aliases).
+
+Every panel is rotated upright using the RAW's orientation, including the
+camera JPEG; embedded JPEG orientation metadata is ignored. Orientations
+other than 1, 3, 6 and 8 are rejected. The camera then receives the first
+non-camera panel's recipe rotation and crop. Every recipe panel retains
+its own rotation and crop. If those differ, `framing_matched` is `false`
+and `warnings` explains the difference. A camera-only row uses neutral
+framing. This matches normalized crop/rotation, not camera lens corrections
+or a camera JPEG with a different original field of view.
+
+`--size` defaults to 1400 and bounds **each panel's** longest edge, not the
+whole row. Panels shrink proportionally to the smallest bounded panel
+height, without upscaling; widths are rounded to whole pixels. JPEG uses
+quality 92; `.png` gives 16-bit output. The camera decoder accepts 8-bit RGB
+or greyscale JPEGs, with a 128 MiB decoded-buffer limit. Images carry no camera metadata.
+Encoding and staging complete before the destination is replaced; failures
+preserve existing files. Repeated comparisons are deterministic under the
+same binary/platform conditions as rendering.
+
+The report contains:
+
+- `output`, `output_replaced`, `output_color_space`.
+- `panels`, in left-to-right order: `kind`, `recipe_file` (null for camera,
+  default, or a missing saved sidecar), final `width` and `height`,
+  `framing` (`crop`, `rotate`), and `color_space`.
+- Camera panels also contain `color_declaration`: `source`
+  (`embedded-jpeg-icc`, `embedded-jpeg-exif`, `raw-exif`, or `none`) and
+  the declared `color_space`. `color_space` on the panel describes its final
+  pixels; `color_conversion` is `"Adobe RGB (1998) to sRGB"` when converted,
+  otherwise null.
+- Whole-row `width`, `height`, `separator_pixels`, `raw_orientation`,
+  `camera_framing_panel` (zero-based index; null without a camera or without
+  a non-camera reference), `framing_policy`, `framing_matched`, `warnings`.
+
+Embedded JPEG declarations take precedence over the RAW: ICC first,
+then JPEG EXIF, then RAW EXIF when the JPEG has no colour declaration.
+EXIF is read through IFD0's ExifIFD pointer (`0x8769`): ColorSpace (`0xa001`)
+and its InteropIFD pointer (`0xa005`) to InteropIndex (`0x0001`). These describe
+the camera preview's encoding, not the sensor mosaic's colour space.
+EXIF ColorSpace 1 / interoperability R98 (including ColorSpace 65535 with
+R98) and the exact bundled sRGB ICC profile establish sRGB. Other ICC
+profiles remain `ICC (unverified)`; they
+are not converted or overridden by EXIF or RAW metadata.
+
+Interoperability R03 with ColorSpace 65535 (uncalibrated), or without
+ColorSpace, declares `Adobe RGB (1998)`. Its camera pixels are converted
+before framing/resizing: gamma 563/256 to linear Adobe RGB, a D65 primary
+matrix to linear sRGB, then the standard sRGB transfer function. Colours
+outside sRGB are clipped in linear destination RGB. The declaration remains
+`Adobe RGB (1998)` in the report, with final panel `color_space: "sRGB"`
+and `color_conversion: "Adobe RGB (1998) to sRGB"`.
+
+Uncalibrated EXIF without an interoperability index remains `uncalibrated`;
+missing or conflicting declarations are `unknown`. These and unverified
+ICC profiles keep the
+warning path: camera pixels remain unconverted, `output_color_space` is
+`mixed-unmanaged`, and the row has no ICC profile or PNG sRGB chunk. For
+established or converted sRGB, no colour warning is emitted; the output is
+`sRGB`, tagged like any developed export (JPEG ICC / PNG sRGB chunk).
+
 ## Extracting a camera JPEG
 
 `extract-jpeg RAW -o camera.jpg` copies the embedded JPEG bytes unchanged,

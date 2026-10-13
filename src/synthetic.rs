@@ -13,6 +13,11 @@ pub struct Synthetic {
     pub white: u16,
     /// WB_RGGBLevels as the camera would store them.
     pub wb_levels: [i16; 4],
+    /// Colour of the camera JPEG, declared in the RAW's ExifIFD (0xa001).
+    pub exif_color_space: Option<u16>,
+    /// NUL-terminated InteropIFD index (R98 = sRGB, R03 = Adobe RGB).
+    pub interoperability_index: Option<[u8; 4]>,
+    pub embedded_jpeg: Option<Vec<u8>>,
 }
 
 impl Synthetic {
@@ -28,6 +33,9 @@ impl Synthetic {
             black: 512,
             white: 16383,
             wb_levels: [2600, 1024, 1024, 1600],
+            exif_color_space: None,
+            interoperability_index: None,
+            embedded_jpeg: None,
         }
     }
 
@@ -46,7 +54,8 @@ impl Synthetic {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        // Layout: header, IFD0, strings, raw IFD, its arrays, pixel data.
+        // Layout: header, IFD0, strings, optional EXIF/Interop, raw IFD,
+        // its arrays, pixel data, optional bare preview JPEG.
         let mut out = vec![b'I', b'I', 42, 0, 8, 0, 0, 0];
         let model = format!("{}\0", self.model);
         let entry = |tag: u16, kind: u16, count: u32, value: u32| {
@@ -57,11 +66,17 @@ impl Synthetic {
             e.extend(value.to_le_bytes());
             e
         };
-        let ifd0_entries = 4u32;
+        let has_exif = self.exif_color_space.is_some() || self.interoperability_index.is_some();
+        let ifd0_entries = 4u32 + u32::from(has_exif) + 2 * u32::from(self.embedded_jpeg.is_some());
         let ifd0_end = 8 + 2 + ifd0_entries * 12 + 4;
         let make_at = ifd0_end;
         let model_at = make_at + 5;
-        let raw_ifd_at = (model_at + model.len() as u32 + 1) & !1;
+        let exif_at = (model_at + model.len() as u32 + 1) & !1;
+        let exif_entries =
+            u32::from(self.exif_color_space.is_some()) + u32::from(self.interoperability_index.is_some());
+        let interop_at = exif_at + 2 + exif_entries * 12 + 4;
+        let raw_ifd_at =
+            if has_exif { interop_at + if self.interoperability_index.is_some() { 18 } else { 0 } } else { exif_at };
         let raw_entries = 13u32;
         let arrays_at = raw_ifd_at + 2 + raw_entries * 12 + 4;
         let (black_at, wb_at, origin_at, size_at) = (arrays_at, arrays_at + 8, arrays_at + 16, arrays_at + 24);
@@ -72,10 +87,33 @@ impl Synthetic {
         out.extend(entry(0x0110, 2, model.len() as u32, model_at));
         out.extend(entry(0x0112, 3, 1, self.orientation as u32));
         out.extend(entry(0x014a, 4, 1, raw_ifd_at));
+        if let Some(jpeg) = &self.embedded_jpeg {
+            out.extend(entry(0x0201, 4, 1, strip_at + (self.data.len() * 2) as u32));
+            out.extend(entry(0x0202, 4, 1, jpeg.len() as u32));
+        }
+        if has_exif {
+            out.extend(entry(0x8769, 4, 1, exif_at));
+        }
         out.extend(0u32.to_le_bytes());
         out.extend(b"SONY\0");
         out.extend(model.as_bytes());
-        out.resize(raw_ifd_at as usize, 0);
+        out.resize(exif_at as usize, 0);
+        if has_exif {
+            out.extend((exif_entries as u16).to_le_bytes());
+            if let Some(space) = self.exif_color_space {
+                out.extend(entry(0xa001, 3, 1, space as u32));
+            }
+            if self.interoperability_index.is_some() {
+                out.extend(entry(0xa005, 4, 1, interop_at));
+            }
+            out.extend(0u32.to_le_bytes());
+            if let Some(index) = self.interoperability_index {
+                out.extend(1u16.to_le_bytes());
+                out.extend(entry(0x0001, 2, 4, u32::from_le_bytes(index)));
+                out.extend(0u32.to_le_bytes());
+            }
+        }
+        debug_assert_eq!(out.len(), raw_ifd_at as usize);
 
         out.extend((raw_entries as u16).to_le_bytes());
         out.extend(entry(0x0100, 3, 1, self.width as u32));
@@ -106,6 +144,9 @@ impl Synthetic {
         for v in &self.data {
             out.extend(v.to_le_bytes());
         }
+        if let Some(jpeg) = &self.embedded_jpeg {
+            out.extend(jpeg);
+        }
         out
     }
 }
@@ -114,6 +155,29 @@ impl Synthetic {
 mod tests {
     use super::*;
     use crate::arw;
+    use crate::tiff::Tiff;
+
+    #[test]
+    fn preview_colour_tags_follow_the_raw_exif_chain() {
+        let mut file = Synthetic::new(64, 48, vec![600; 64 * 48]);
+        file.exif_color_space = Some(65535);
+        file.interoperability_index = Some(*b"R03\0");
+        file.embedded_jpeg = Some(b"bare preview bytes".to_vec());
+        let bytes = file.to_bytes();
+        let (tiff, first) = Tiff::new(&bytes).unwrap();
+        let ifd0 = tiff.ifd(first).unwrap();
+        assert!(tiff.int(&ifd0, 0xa001).is_none());
+        let sensor = tiff.ifd(tiff.int(&ifd0, 0x014a).unwrap() as u32).unwrap();
+        assert!(tiff.int(&sensor, 0xa001).is_none());
+        let exif = tiff.ifd(tiff.int(&ifd0, 0x8769).unwrap() as u32).unwrap();
+        assert_eq!(tiff.int(&exif, 0xa001), Some(65535));
+        let interop = tiff.ifd(tiff.int(&exif, 0xa005).unwrap() as u32).unwrap();
+        assert_eq!(tiff.string(&interop, 0x0001).as_deref(), Some("R03"));
+        let raw = arw::decode(&bytes).unwrap();
+        assert_eq!(raw.data, file.data);
+        let (at, len) = raw.embedded_jpeg.unwrap();
+        assert_eq!(&bytes[at..at + len], file.embedded_jpeg.as_ref().unwrap());
+    }
 
     #[test]
     fn synthetic_file_decodes_to_the_same_samples() {

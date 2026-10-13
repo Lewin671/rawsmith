@@ -104,6 +104,27 @@ fn rotated(image: &Image, degrees: f32) -> Image {
     out
 }
 
+/// Shared rotation and crop geometry, also applied to the camera comparison.
+pub(crate) fn framed(image: Image, orientation: u16, params: &Params) -> Image {
+    let crop = &params.crop;
+    let mut image = image.oriented(orientation);
+    if params.rotate != 0.0 {
+        image = rotated(&image, params.rotate as f32);
+    }
+    if *crop != Default::default() {
+        // At least one pixel, and never past the edge, however small the image.
+        let span = |from: f64, to: f64, size: usize| {
+            let start = ((from * size as f64).round() as usize).min(size - 1);
+            let end = ((to * size as f64).round() as usize).clamp(start + 1, size);
+            (start, end - start)
+        };
+        let ((x0, cw), (y0, ch)) =
+            (span(crop.left, crop.right, image.width), span(crop.top, crop.bottom, image.height));
+        image = image.crop(x0, y0, cw, ch);
+    }
+    image
+}
+
 /// Smooths chroma (and, at high strength, luminance) noise. Works on
 /// square-root encoded values, where sensor noise is roughly uniform.
 fn denoise(image: &mut Image, strength: f32) {
@@ -178,21 +199,7 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
         denoise(&mut image, params.denoise as f32 / 100.0);
     }
 
-    let mut image = image.oriented(raw.meta.orientation);
-    if params.rotate != 0.0 {
-        image = rotated(&image, params.rotate as f32);
-    }
-    if *crop != Default::default() {
-        // At least one pixel, and never past the edge, however small the image.
-        let span = |from: f64, to: f64, size: usize| {
-            let start = ((from * size as f64).round() as usize).min(size - 1);
-            let end = ((to * size as f64).round() as usize).clamp(start + 1, size);
-            (start, end - start)
-        };
-        let ((x0, cw), (y0, ch)) =
-            (span(crop.left, crop.right, image.width), span(crop.top, crop.bottom, image.height));
-        image = image.crop(x0, y0, cw, ch);
-    }
+    let mut image = framed(image, raw.meta.orientation, params);
     let mut scale = if half { 0.5 } else { 1.0 };
     if let Some(edge) = size.max_edge {
         let long = image.width.max(image.height);

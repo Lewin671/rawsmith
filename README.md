@@ -74,7 +74,7 @@ rawsmith edit sunset.ARW --reset \
   --set crop.top=0.1 --set crop.bottom=0.98 \
   -o sunset-edit.jpg --size 1400
 ```
-It lowers exposure, lifts shadows, adds dehaze and trims the sky, then compares the two previews.
+It lowers exposure, lifts shadows, adds dehaze and trims the sky, then opens `rawsmith compare sunset.ARW -o sunset-compare.jpg` to compare the upright camera JPEG with the current edit using the edit's framing.
 
 ```sh
 rawsmith render sunset.ARW --region 0.4,0.4,0.6,0.6 -o sunset-detail.jpg
@@ -86,6 +86,9 @@ rawsmith render sunset.ARW -o sunset-final.jpg
 ```
 It exports the full-resolution JPEG; `.png` would give 16-bit output.
 Both declare sRGB (ICC in JPEG, a standard sRGB chunk in PNG).
+`compare` uses the embedded JPEG's colour declaration, falling back to RAW
+EXIF; declared Adobe RGB camera previews are converted to sRGB and tagged.
+Unknown or unverified camera colour produces a warning and an untagged row.
 Outputs are replaced; RAWs never. Use a new output name to keep a version;
 the report's `output_replaced` field signals replacement.
 
@@ -178,7 +181,7 @@ export, as small clipped areas average away in small previews.
 ## Privacy
 
 rawsmith develops photos locally without network access. Images produced
-by `render`, `edit` and `auto` contain no EXIF, GPS or serial numbers.
+by `render`, `edit`, `auto` and `compare` contain no EXIF, GPS or serial numbers.
 `extract-jpeg` copies the camera JPEG unchanged, including its metadata;
 check or remove it before sharing.
 It also leaves stored pixels unrotated and reports `raw_orientation`,

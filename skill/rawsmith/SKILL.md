@@ -49,19 +49,35 @@ photos.
    Fix the biggest problem first: exposure and white balance, then tone
    (highlights, shadows, contrast), then colour, then local finishing.
 
-5. **Compare with the previous preview** (write each round to a new file
-   name while you are deciding).
-   For a camera reference, use `rawsmith extract-jpeg photo.ARW -o camera.jpg`.
-   It copies bytes unchanged: check `raw_orientation`, `needs_rotation`
-   and `rotation_degrees_clockwise` before comparing with an upright render.
-   Stored pixels may need 90°, 180° or 270° clockwise rotation. A viewer
-   may already apply JPEG orientation metadata, so avoid rotating twice.
-   Derived rotation fields are `null` for orientations other than 1/3/6/8;
-   check for mirroring or unsupported orientation before comparing.
-   Keep the change only if the picture is better. If not, set the values
-   back. Stop when another round would not
-   visibly improve the picture — usually after 3 to 6 rounds. More rounds
-   tend to over-process.
+5. **Compare in one image** —
+   `rawsmith compare photo.ARW -o comparison.jpg`.
+   Open it: the upright camera JPEG is on the left and the current saved
+   edit on the right, with the edit's crop and rotation applied to the
+   camera. No labels are drawn; `panels` lists them left to right with
+   `kind`, `recipe_file`, final `width`/`height`, framing and colour space.
+   To compare rounds, keep earlier recipes using separate `--recipe FILE`
+   paths, then use
+   `rawsmith compare photo.ARW --panel recipe:earlier.json --panel saved -o rounds.jpg`.
+   Repeat `--panel` for `camera`, `saved`, `default` or `recipe:FILE` (at
+   least two); a missing explicit recipe is an error. `saved` uses defaults
+   if the default sidecar is absent; `default` always ignores saved edits.
+   Recipes keep their own framing; the camera matches the first non-camera
+   panel. Read `framing_matched` and `warnings` when framing differs.
+   `--size` defaults to 1400 per panel; all panels shrink to one height.
+   Orientations outside 1/3/6/8 are rejected. Camera colour uses embedded
+   JPEG declarations first, then RAW EXIF. `color_declaration` reports
+   `source` and the original `color_space`; the panel's `color_space` is
+   its final encoding. Declared Adobe RGB (1998) is converted to sRGB
+   (out-of-gamut colours are clipped), reported in `color_conversion`;
+   declared or converted sRGB rows are tagged. Unknown, conflicting,
+   uncalibrated or unverified ICC colour keeps unconverted camera pixels,
+   a warning and `output_color_space: "mixed-unmanaged"` with no profile.
+   Use established or converted sRGB references for colour judgement.
+   `compare` never saves recipes and strips camera metadata.
+   Keep the change only if the picture is better. If not, restore the
+   earlier recipe or set the values back. Stop when another round would
+   not visibly improve the picture — usually after 3 to 6 rounds. More
+   rounds tend to over-process.
 
 6. **Check detail at 100%** before delivering —
    `rawsmith render photo.ARW --region 0.4,0.4,0.6,0.6 -o detail.jpg`
@@ -109,8 +125,9 @@ Rendering is deterministic: the same binary, RAW, recipe and render options
 give a byte-identical file, so re-rendering a restored recipe reproduces the
 earlier picture exactly.
 
-Developed images contain no camera metadata. `extract-jpeg` is a byte-for-byte
-copy of the embedded JPEG and may retain metadata; do not assume it is
+Developed images and comparison rows contain no camera metadata.
+`extract-jpeg` is a byte-for-byte copy of the embedded JPEG and may retain
+metadata; do not assume it is
 safe to share without checking it.
 
 ## Parameters that matter most

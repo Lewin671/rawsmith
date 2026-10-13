@@ -9,7 +9,7 @@ use rawsmith::color::Spaces;
 use rawsmith::error::{io_at, Error, Result};
 use rawsmith::params::{self, Params};
 use rawsmith::pipeline::{self, Size};
-use rawsmith::{arw, output, stats};
+use rawsmith::{arw, compare, output, stats};
 
 /// Develop RAW photos from a JSON recipe. Successful subcommands print JSON on stdout.
 #[derive(Parser)]
@@ -36,6 +36,11 @@ enum Command {
     Edit(Edit),
     /// Analyse the scene, save an automatic starting recipe, and optionally render a preview
     Auto(Auto),
+    /// Compare upright camera and recipe versions in one unlabelled image row
+    #[command(
+        after_help = "With no --panel options, shows camera then saved. The camera uses the first non-camera panel's crop and rotation; other panels keep their own framing. Recipes are only read. Camera colour uses embedded JPEG declarations first, then RAW EXIF. Declared Adobe RGB (1998) is converted to sRGB; established sRGB rows are tagged. Unknown, conflicting or unverified camera colour produces a warning and an untagged row. Camera panels report color_declaration (source, color_space) and color_conversion."
+    )]
+    Compare(Compare),
     /// Copy the embedded JPEG unchanged, including metadata; report RAW orientation and needed rotation
     #[command(
         after_help = "The stored JPEG pixels are not rotated. raw_orientation reports the RAW's EXIF orientation; needs_rotation and rotation_degrees_clockwise describe the rotation of stored pixels for orientations 1, 3, 6 and 8 (null for others). A viewer may already apply embedded orientation metadata; do not rotate twice."
@@ -103,6 +108,21 @@ struct Auto {
     source: Source,
     #[command(flatten)]
     target: Target,
+}
+
+#[derive(Args)]
+struct Compare {
+    /// The RAW file
+    raw: PathBuf,
+    /// Output JPEG or 16-bit PNG (output_color_space: sRGB or mixed-unmanaged); output_replaced reports whether a file was replaced.
+    #[arg(short, long)]
+    output: PathBuf,
+    /// Panel, repeat in left-to-right order: camera, saved, default, or recipe:FILE
+    #[arg(long, value_name = "VERSION")]
+    panel: Vec<String>,
+    /// Bound each panel's longest edge; panels shrink to one shared height (at least 1)
+    #[arg(long, default_value_t = 1400)]
+    size: usize,
 }
 
 impl Target {
@@ -302,6 +322,7 @@ fn run(cli: Cli) -> Result<Value> {
             }))
         }
         Command::Schema => Ok(params::schema()),
+        Command::Compare(args) => compare_versions(args),
         Command::Render(Render { source, target }) => {
             target.validate()?;
             let path = recipe_path(&source)?;
@@ -361,6 +382,54 @@ fn run(cli: Cli) -> Result<Value> {
             }))
         }
     }
+}
+
+fn compare_versions(args: Compare) -> Result<Value> {
+    if args.size == 0 {
+        return Err(Error::Params("--size must be at least 1 pixel".into()));
+    }
+    protect_raw(&args.raw, &args.output, "output")?;
+    let saved = recipe_path(&Source { raw: args.raw.clone(), recipe: None, set: vec![] })?;
+    // Protect the sidecar even when it isn't selected (or doesn't exist yet).
+    if same_file(&saved, &args.output) {
+        return Err(Error::Params("output is also the saved recipe file; give them different names".into()));
+    }
+    let versions = if args.panel.is_empty() { vec!["camera".into(), "saved".into()] } else { args.panel };
+    if versions.len() < 2 {
+        return Err(Error::Params("compare needs at least two --panel options".into()));
+    }
+    let mut panels = Vec::new();
+    for version in versions {
+        let (kind, params, recipe_file) = match version.as_str() {
+            "camera" => ("camera", Params::default(), None),
+            "default" => ("default", Params::default(), None),
+            "saved" => {
+                let (params, loaded) = load_recipe(&saved, true)?;
+                ("saved", params, loaded.then(|| saved.clone()))
+            }
+            _ => {
+                let path = version.strip_prefix("recipe:").filter(|s| !s.is_empty()).ok_or_else(|| {
+                    Error::Params(format!("unknown panel '{version}'; use camera, saved, default or recipe:FILE"))
+                })?;
+                let path = PathBuf::from(path);
+                protect_raw(&args.raw, &path, "recipe")?;
+                if same_file(&path, &args.output) {
+                    return Err(Error::Params(format!("output {} is also a recipe file", args.output.display())));
+                }
+                let params = load_recipe(&path, false)?.0;
+                ("recipe", params, Some(path))
+            }
+        };
+        panels.push(compare::Panel { kind, params, recipe_file });
+    }
+    let file = read_file(&args.raw)?;
+    let raw = arw::decode(&file)?;
+    let (image, mut report, srgb) = compare::row(&raw, &file, &panels, args.size)?;
+    let bytes = output::encode_with_color_space(&args.output, &image, 92, srgb)?;
+    report["output_replaced"] = json!(output::replace(&args.output, &bytes)?);
+    report["output"] = json!(args.output);
+    report["output_color_space"] = json!(if srgb { "sRGB" } else { "mixed-unmanaged" });
+    Ok(report)
 }
 
 fn fail(kind: &str, message: &str) -> ExitCode {

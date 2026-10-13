@@ -214,6 +214,12 @@ pub fn replace_pair(first: (&Path, &[u8]), second: (&Path, &[u8])) -> std::io::R
 /// Encodes `image` (sRGB-encoded, 0..1). The path extension selects the
 /// format: `.jpg`/`.jpeg` (8-bit, `quality` 1..100) or `.png` (16-bit, lossless).
 pub fn encode(path: &Path, image: &Image, quality: u8) -> Result<Vec<u8>> {
+    encode_with_color_space(path, image, quality, true)
+}
+
+/// Comparison rows may contain unconverted camera pixels whose space is not sRGB.
+/// In that case, omit the output profile instead of making a false declaration.
+pub fn encode_with_color_space(path: &Path, image: &Image, quality: u8, srgb: bool) -> Result<Vec<u8>> {
     let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let (w, h) = (image.width, image.height);
     let failed =
@@ -231,7 +237,9 @@ pub fn encode(path: &Path, image: &Image, quality: u8) -> Result<Vec<u8>> {
             // the assistant cannot see correctly defeats the purpose.
             encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
             encoder.set_optimized_huffman_tables(true);
-            encoder.add_icc_profile(SRGB_PROFILE).map_err(|e| failed(&e))?;
+            if srgb {
+                encoder.add_icc_profile(SRGB_PROFILE).map_err(|e| failed(&e))?;
+            }
             encoder
                 .encode(&to_rgb8(image), w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
                 .map_err(|e| failed(&e))?;
@@ -242,7 +250,9 @@ pub fn encode(path: &Path, image: &Image, quality: u8) -> Result<Vec<u8>> {
             let mut encoder = png::Encoder::new(&mut bytes, w as u32, h as u32);
             encoder.set_color(png::ColorType::Rgb);
             encoder.set_depth(png::BitDepth::Sixteen);
-            encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+            if srgb {
+                encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+            }
             encoder.set_compression(png::Compression::Fast);
             let mut writer = encoder.write_header().map_err(|e| failed(&e))?;
             writer.write_image_data(&to_rgb16_be(image)).map_err(|e| failed(&e))?;
