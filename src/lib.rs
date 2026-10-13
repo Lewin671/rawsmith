@@ -14,6 +14,7 @@ pub mod error;
 pub mod fringe;
 pub mod image;
 pub mod lens;
+pub mod noise;
 pub mod output;
 pub mod params;
 pub mod pipeline;

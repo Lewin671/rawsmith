@@ -18,7 +18,7 @@ use rawsmith::{arw, compare, output, stats};
     name = "rawsmith",
     version,
     about,
-    after_help = "Errors are JSON on stderr (exit status 1, empty stdout).\nRAW, recipe and output paths must be valid UTF-8; invalid paths are rejected before any file is written.\nRAWs are never written; outputs are replaced, so use a new output name to keep a version.\nValidation and staging failures preserve recipes and outputs; paired saves roll back commit failures unless interrupted or rollback fails."
+    after_help = "Errors are JSON on stderr (exit status 1, empty stdout).\nRAW, recipe and output paths must be valid UTF-8; invalid paths are rejected before any file is written.\nRecipes use current rendering defaults; writer versions do not pin pixels. Omitted/null denoise measures native noise; explicit 0..100 is exact.\nRAWs are never written; outputs are replaced, so use a new output name to keep a version.\nValidation and staging failures preserve recipes and outputs; paired saves roll back commit failures unless interrupted or rollback fails."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -65,7 +65,8 @@ struct Source {
     #[arg(long)]
     recipe: Option<PathBuf>,
     /// Parameter assignment (repeatable): exposure=0.5 or hsl.blue.saturation=-20 sets a
-    /// value, exposure+=0.3 or contrast-=10 changes the current one
+    /// value, exposure+=0.3 or contrast-=10 changes the current one. denoise=null
+    /// measures native noise; an explicit denoise=0..100 is exact.
     #[arg(long = "set", value_name = "PATH=VALUE", allow_hyphen_values = true)]
     set: Vec<String>,
 }
@@ -102,7 +103,7 @@ struct Edit {
     source: Source,
     #[command(flatten)]
     target: Target,
-    /// Start again from the neutral default recipe before applying --set
+    /// Start again from the finished default recipe before applying --set
     #[arg(long)]
     reset: bool,
 }
@@ -201,17 +202,46 @@ fn recipe_path(source: &Source) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn load_recipe(path: &Path, allow_missing: bool) -> Result<(Params, bool)> {
+/// The writer version is provenance, not a pin to an obsolete pixel pipeline.
+struct RecipeOrigin {
+    version: Option<String>,
+}
+
+impl RecipeOrigin {
+    fn report(&self) -> Value {
+        let current = env!("CARGO_PKG_VERSION");
+        json!({
+            "written_version": self.version,
+            "rendering_version": current,
+            "policy": "current_defaults",
+            "note": if self.version.as_deref() == Some(current) { None } else {
+                Some("Recipe rendered with current defaults (0.2: luminance tone mapping, stronger base contrast, contrast-linked colour, measured denoise when unset). Writer version does not pin rendering. Default migration retains explicit values; auto still replaces tone and colour. Use the original binary for the original look.")
+            },
+        })
+    }
+}
+
+fn recipe_origin(report: &mut Value, origin: Option<RecipeOrigin>) {
+    report["recipe_compatibility"] = origin.map_or(Value::Null, |origin| origin.report());
+}
+
+fn load_recipe(path: &Path, allow_missing: bool) -> Result<(Params, Option<RecipeOrigin>)> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
             let mut value: Value = serde_json::from_str(&text)
                 .map_err(|e| Error::Params(format!("{} is not valid JSON: {e}", path.display())))?;
-            if let Some(object) = value.as_object_mut() {
-                object.remove("rawsmith");
-            }
-            Params::from_value(value).map(|params| (params, true))
+            let version = if let Some(object) = value.as_object_mut() {
+                match object.remove("rawsmith") {
+                    Some(Value::String(version)) => Some(version),
+                    None => None,
+                    Some(_) => return Err(Error::Params("recipe rawsmith version must be a string".into())),
+                }
+            } else {
+                None
+            };
+            Params::from_value(value).map(|params| (params, Some(RecipeOrigin { version })))
         }
-        Err(e) if allow_missing && e.kind() == std::io::ErrorKind::NotFound => Ok((Params::default(), false)),
+        Err(e) if allow_missing && e.kind() == std::io::ErrorKind::NotFound => Ok((Params::default(), None)),
         Err(e) => Err(Error::Io(io_at("read recipe", path, e))),
     }
 }
@@ -322,6 +352,7 @@ fn prepare_render(raw: &arw::RawImage, params: &Params, target: &Target) -> Resu
             "output_replaced": null,
             "recipe": params.to_sparse(),
             "white_balance": rendered.white_balance,
+            "noise_reduction": rendered.noise_reduction,
             "sensor_clipped_pct": rendered.sensor_clipped_pct,
             "sensor_clipped_scope": "full_active_area",
             "region": region,
@@ -357,7 +388,7 @@ fn save_edit(raw: &arw::RawImage, recipe: &Path, params: &Params, target: &Targe
     } else {
         pipeline::white_balance(raw, params)?;
         output::replace(recipe, &recipe_data)?;
-        json!({"recipe": params.to_sparse(), "output_color_space": null, "output_replaced": null})
+        json!({"recipe": params.to_sparse(), "noise_reduction": rawsmith::noise::resolve(raw, params.denoise), "output_color_space": null, "output_replaced": null})
     };
     if target.output.is_some() {
         report["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
@@ -396,7 +427,8 @@ fn run(cli: Cli) -> Result<Value> {
             let (params, loaded) = load_recipe(&path, source.recipe.is_none())?;
             let params = params.with_assignments(&source.set)?;
             let mut report = render(&source.raw, &params, &target)?;
-            report["recipe_file"] = if loaded { json!(path) } else { Value::Null };
+            report["recipe_file"] = if loaded.is_some() { json!(path) } else { Value::Null };
+            recipe_origin(&mut report, loaded);
             Ok(report)
         }
         Command::Edit(Edit { source, target, reset }) => {
@@ -406,9 +438,11 @@ fn run(cli: Cli) -> Result<Value> {
             if let Some(out) = &target.output {
                 protect_raw(&source.raw, out, "output")?;
             }
-            let base = if reset { Params::default() } else { load_recipe(&path, true)?.0 };
+            let (base, origin) = if reset { (Params::default(), None) } else { load_recipe(&path, true)? };
             let params = base.with_assignments(&source.set)?;
-            save_edit(&read_raw(&source.raw)?, &path, &params, &target)
+            let mut report = save_edit(&read_raw(&source.raw)?, &path, &params, &target)?;
+            recipe_origin(&mut report, origin);
+            Ok(report)
         }
         Command::Auto(Auto { source, target }) => {
             target.validate()?;
@@ -418,12 +452,13 @@ fn run(cli: Cli) -> Result<Value> {
                 protect_raw(&source.raw, out, "output")?;
             }
             // White balance, crop and other non-tone settings of an existing recipe are kept.
-            let base = load_recipe(&path, true)?.0;
+            let (base, origin) = load_recipe(&path, true)?;
             let raw = read_raw(&source.raw)?;
             let proposal = rawsmith::auto::auto(&raw, &base)?;
             let params = proposal.params.with_assignments(&source.set)?;
             let mut report = save_edit(&raw, &path, &params, &target)?;
             report["decisions"] = json!(proposal.notes);
+            recipe_origin(&mut report, origin);
             Ok(report)
         }
         Command::ExtractJpeg { raw: path, output } => {
@@ -462,14 +497,15 @@ fn compare_versions(args: Compare) -> Result<Value> {
     }
     let versions = if args.panel.is_empty() { vec!["camera".into(), "saved".into()] } else { args.panel };
     let mut panels = Vec::new();
+    let mut origins = Vec::new();
     for version in versions {
         let version = version.to_str().expect("panel paths were validated before execution");
-        let (kind, params, recipe_file) = match version {
-            "camera" => ("camera", Params::default(), None),
-            "default" => ("default", Params::default(), None),
+        let (kind, params, recipe_file, origin) = match version {
+            "camera" => ("camera", Params::default(), None, None),
+            "default" => ("default", Params::default(), None, None),
             "saved" => {
                 let (params, loaded) = load_recipe(&saved, true)?;
-                ("saved", params, loaded.then(|| saved.clone()))
+                ("saved", params, loaded.as_ref().map(|_| saved.clone()), loaded)
             }
             _ => {
                 let path = version.strip_prefix("recipe:").filter(|s| !s.is_empty()).ok_or_else(|| {
@@ -480,15 +516,19 @@ fn compare_versions(args: Compare) -> Result<Value> {
                 if same_file(&path, &args.output) {
                     return Err(Error::Params(format!("output {} is also a recipe file", args.output.display())));
                 }
-                let params = load_recipe(&path, false)?.0;
-                ("recipe", params, Some(path))
+                let (params, origin) = load_recipe(&path, false)?;
+                ("recipe", params, Some(path), origin)
             }
         };
         panels.push(compare::Panel { kind, params, recipe_file });
+        origins.push(origin);
     }
     let file = read_file(&args.raw)?;
     let raw = arw::decode(&file)?;
     let (image, mut report, srgb) = compare::row(&raw, &file, &panels, args.size)?;
+    for (panel, origin) in report["panels"].as_array_mut().expect("compare panels").iter_mut().zip(origins) {
+        recipe_origin(panel, origin);
+    }
     let bytes = output::encode_with_color_space(&args.output, &image, 92, srgb)?;
     report["output_replaced"] = json!(output::replace(&args.output, &bytes)?);
     report["output"] = json!(args.output);

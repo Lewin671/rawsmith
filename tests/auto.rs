@@ -58,12 +58,13 @@ fn equal_iso_does_not_mean_equal_measured_noise() {
         )
         .unwrap();
         raw.meta.iso = Some(6400);
-        auto::auto(&raw, &Params::default()).unwrap()
+        let proposal = auto::auto(&raw, &Params::default()).unwrap();
+        rawsmith::noise::resolve(&raw, proposal.params.denoise).strength
     };
     let clean = make(0.0);
     let noisy = make(0.025);
-    println!("same ISO denoise: clean {}, noisy {}", clean.params.denoise, noisy.params.denoise);
-    assert!(noisy.params.denoise > clean.params.denoise + 20.0);
+    println!("same ISO denoise: clean {}, noisy {}", clean, noisy);
+    assert!(noisy > clean + 20.0);
 }
 
 #[test]
@@ -130,9 +131,12 @@ fn recoverable_coloured_highlights_do_not_require_dark_foreground() {
         "later tone and colour additions must not undo established channel headroom"
     );
     assert!(baseline.channel_clipped_pct > 20.0, "the control must actually clip a colour channel");
+    // Hue-preserving gamut mapping can pin a channel at the sRGB boundary
+    // even after tone compression. Do not demand desaturation to lower this
+    // count: test highlight lightness, foreground cost and disclosure instead.
     assert!(
-        report.channel_clipped_pct < baseline.channel_clipped_pct * 0.5,
-        "local compression should reduce colour clipping without global darkening"
+        report.tones.p99 < baseline.tones.p99 - 1.0,
+        "local compression should create highlight tonal room without global darkening"
     );
     assert!(
         proposal.notes.iter().any(|n| n.contains("target remains unresolved")),

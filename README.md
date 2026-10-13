@@ -36,6 +36,8 @@ the foreground is too dark. Show me a preview before exporting.”**
 ## Before and after
 
 Camera JPEG on the left, assistant edit on the right, same framing.
+These examples were rendered with the original 0.1.0 binary. Version 0.2.0
+uses a different default look; the recorded recipes do not pin old pixels.
 
 ![Snow peak: camera JPEG on the left, AI-edited rawsmith result on the right](docs/images/snow-peak-comparison.jpg)
 
@@ -134,7 +136,9 @@ from the defaults:
 - **An edit is a recipe.** `render --set` tries
   settings; `edit` saves them. The same rawsmith binary, RAW and recipe produce
   the same file, bit for bit ([exact terms](docs/cli.md)).
-  Separate recipes keep separate versions.
+  Separate recipes keep separate edits. Writer versions do not pin pixels:
+  0.2.0 applies the current curve and measured denoise defaults to older
+  sparse recipes, with a `recipe_compatibility` note in reports.
 - **A discoverable CLI.** Successful subcommands return JSON on stdout;
   errors return JSON on stderr with exit status 1 and empty stdout. `--help` and
   `--version` print plain text. `rawsmith schema` gives parameter ranges
@@ -168,9 +172,9 @@ converted from Adobe RGB to sRGB.
 | `auto` vs macOS RAW converter | 3 – 3 – 4 |
 | Default recipe vs camera JPEG | 3 – 5 – 2 |
 
-The default recipe still loses to the camera, particularly at high ISO
-where default noise reduction is a fixed low value; `auto` only draws with
-the macOS converter, and editors repeatedly noted the camera's stronger
+These results predate 0.2.0. In that evaluation the default recipe lost to
+camera JPEGs, particularly at high ISO with its fixed low noise reduction.
+`auto` only draws with the macOS converter, and editors repeatedly noted the camera's stronger
 colour and contrast. Samples are small and confidence intervals are wide;
 the separate 24-photo validation set was used to guide fixes, making its
 after-fix results optimistic development evidence, while the earlier
@@ -181,6 +185,11 @@ On the Intel i7-10700 measurement machine (8 cores, macOS), the sealed-set
 mean was 4.619 s for a 1400 px default preview, 7.342 s for `auto` with a
 preview and 5.158 s for a full-resolution JPEG export: previews now render
 the full pipeline and resize last.
+
+Version 0.2.0 strengthens the base contrast, preserves hue through tone
+mapping and derives noise reduction from measured sensor noise whenever
+`denoise` is unset. The scores and timings above were measured before that
+change.
 
 Decoder samples matched LibRaw on the original 18 test files and two
 additional CC0 lossless Bayer files (55,050,240/55,050,240 samples).

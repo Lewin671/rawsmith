@@ -69,6 +69,7 @@ fn render(raw: &RawImage, params: &Params, edge: Option<usize>) -> Render {
         report: serde_json::to_vec(&json!({
             "recipe": params.to_sparse(),
             "white_balance": scene.white_balance,
+            "noise_reduction": scene.noise_reduction,
             "sensor_clipped_pct": scene.sensor_clipped_pct,
             "stats": stats::image_stats(&image, &spaces),
             "raw_stats": stats::raw_stats(raw),
@@ -97,7 +98,12 @@ fn render_pixels_reports_and_exports_ignore_rayon_scheduling() {
         .collect();
     // A control without dehaze isolates its brightness compensation from
     // demosaicing, highlight reconstruction, denoise and local contrast.
-    for params in [Params { dehaze: 0.0, ..params.clone() }, params.clone(), Params { denoise: 85.0, ..params }] {
+    for params in [
+        Params { dehaze: 0.0, ..params.clone() },
+        Params { denoise: None, ..params.clone() },
+        params.clone(),
+        Params { denoise: Some(85.0), ..params },
+    ] {
         for edge in [None, Some(400)] {
             let reference = pools[0].install(|| render(&raw, &params, edge));
             for pool in &pools {

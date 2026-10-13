@@ -38,9 +38,20 @@ only settings that differ from the defaults, plus the rawsmith version in
   "shadows": 35.0,
   "vibrance": 20.0,
   "hsl": { "blue": { "saturation": -15.0 } },
-  "rawsmith": "0.1.1"
+  "rawsmith": "0.2.0"
 }
 ```
+
+Version 0.2.0 uses a stronger base curve, preserves colour through tone
+mapping and measures denoise when unset. Existing sparse recipes render
+under these current defaults; explicit values remain exact. Their writer
+version does not pin old rendering. `recipe_compatibility` reports
+`written_version`, `rendering_version`, `policy: "current_defaults"` and a
+`note` when the writer version differs or is absent. It is null without an
+input recipe (including `edit --reset`). For `edit`/`auto` it describes the
+input recipe; the saved recipe records the current version. `render` and
+`compare` never rewrite it. Use the original executable for the original
+look; separate recipes alone do not pin a version's defaults.
 
 An explicit `render --recipe FILE` requires that file to exist, so a
 misspelled path cannot silently export an unedited picture. `edit` and
@@ -59,6 +70,18 @@ white balance (`temperature`, `tint`), tone (`exposure`, `contrast`,
 colour (`vibrance`, `saturation`, eight `hsl` bands, shadow/highlight
 `grade`), detail (`sharpen`, `denoise`, `defringe`), local adjustments (`vignette`,
 `gradients`), and geometry (`rotate`, `crop`, `lens_corrections`).
+
+`denoise` defaults to `null`: omitted/null means native noise measurement
+with an ISO prior, shared by default rendering and `auto`. `auto` preserves
+an explicit amount. Any number in 0–100 is exact, including 0 and the former
+default 10. `noise_reduction.strength` reports the actual amount used;
+`source` is `recipe`, `measured` or `iso_prior`. `native_sqrt_noise` reports
+the native quiet-patch proxy, or null if unavailable/not sampled;
+`iso_prior` is null for explicit amounts. Measurement uses the full active
+sensor, independent of crop, region and output size.
+Use `--set denoise=null` to return to measurement. To increase a measured
+amount, read `noise_reduction.strength` and set a number first:
+`denoise+=5` rejects a null setting because there is no numeric recipe value.
 
 Neutral thin-edge false-colour protection is automatic in demosaicing and
 requires no recipe setting. `defringe` (0–100, default 0) adds stronger
@@ -99,7 +122,7 @@ rawsmith compare photo.ARW -o comparison.jpg
 rawsmith compare photo.ARW --panel camera -o camera.jpg --size 1400
 # Earlier recipe versus the current saved edit, in this order
 rawsmith compare photo.ARW --panel recipe:earlier.json --panel saved -o rounds.png
-# Camera, neutral default and another recipe
+# Camera, finished default and another recipe
 rawsmith compare photo.ARW --panel camera --panel default --panel recipe:alternate.json -o versions.jpg --size 1000
 ```
 
@@ -108,9 +131,13 @@ between panels. Repeat `--panel` in left-to-right order, selecting `camera`,
 `saved`, `default` or `recipe:FILE`. With no `--panel`, it selects `camera`
 then `saved`; a single explicit panel is also allowed, with no separator. `saved`
 reads `<raw>.rawsmith.json`, using defaults when it is missing. `default`
-always uses the neutral default recipe. A missing explicit `recipe:FILE`
+always uses the finished default recipe. A missing explicit `recipe:FILE`
 is an error. The command never saves recipes, and refuses to overwrite the
 RAW, its default sidecar, or any selected recipe (including file aliases).
+
+Developed panels include `noise_reduction` and `recipe_compatibility` with
+the same meanings as render reports. Camera panels have no noise measurement
+because their JPEG is not developed by rawsmith.
 
 Every panel is rotated upright using the RAW's orientation, including the
 camera JPEG; embedded JPEG orientation metadata is ignored. Orientations

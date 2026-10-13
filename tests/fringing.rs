@@ -22,7 +22,7 @@ fn lens_correction_and_defringe_run_before_crops_at_full_and_half_size() {
     let pools: Vec<_> = [1, 3, 8].map(|n| ThreadPoolBuilder::new().num_threads(n).build().unwrap()).into();
     for half in [false, true] {
         let size = Size { max_edge: half.then_some(160) };
-        let params = Params { denoise: 0.0, defringe: 100.0, ..Params::default() };
+        let params = Params { denoise: Some(0.0), defringe: 100.0, ..Params::default() };
         let full = pools[0].install(|| pipeline::scene(&raw, &params, size).unwrap().image);
         let off = pipeline::scene(&raw, &Params { lens_corrections: false, ..params.clone() }, size).unwrap().image;
         assert!(full.data != off.data, "lens tables must be applied in the half={half} path");
@@ -55,7 +55,7 @@ fn active_defringe_with_coarse_denoise_is_deterministic_at_every_output_size() {
         .to_bytes(),
     )
     .unwrap();
-    let params = Params { defringe: 100.0, denoise: 85.0, ..Params::default() };
+    let params = Params { defringe: 100.0, denoise: Some(85.0), ..Params::default() };
     let pools: Vec<_> = [1, 3, 8].map(|n| ThreadPoolBuilder::new().num_threads(n).build().unwrap()).into();
     let native = pools[0].install(|| pipeline::render(&raw, &params, Size::default()).unwrap().image);
     let off = pipeline::render(&raw, &Params { defringe: 0.0, ..params.clone() }, Size::default()).unwrap().image;

@@ -118,18 +118,12 @@ struct Sensor {
     all_pct: f32,
     lost_bright: f32,
     fringe_edge_pct: f32,
-    noise: Option<f32>,
 }
 
 fn sensor(raw: &RawImage, params: &Params) -> Sensor {
     let crop = raw.crop;
     let step = crop.width.max(crop.height).div_ceil(ANALYSIS_EDGE * 2).max(1) * 2;
     let (w, h) = (crop.width.div_ceil(step), crop.height.div_ceil(step));
-    let value = |x: usize, y: usize| {
-        let cell = (y & 1) * 2 + (x & 1);
-        ((raw.data[y * raw.width + x] as f32 - raw.black[cell]) / (raw.white - raw.black[cell]).max(1.0))
-            .clamp(0.0, 1.0)
-    };
     let tile = |samples: [u16; 4]| {
         let cells: [f32; 4] = std::array::from_fn(|i| {
             ((samples[i] as f32 - raw.black[i]) / (raw.white - raw.black[i]).max(1.0)).clamp(0.0, 1.0)
@@ -203,42 +197,11 @@ fn sensor(raw: &RawImage, params: &Params) -> Sensor {
     let bright = &tiles[tiles.len() * 4 / 5..];
     let lost_bright = bright.iter().map(|p| 0.5 * (p[1] + p[2])).sum::<f32>() / bright.len().max(1) as f32;
 
-    // A small stratified sample of native sensor patches, never resized or
-    // denoised. Same-colour second differences cancel a smooth gradient.
-    // The quietest quarter rejects edges/texture; a noisy flat field still
-    // has residuals everywhere. In sqrt encoding the estimate is less
-    // sensitive to signal level (shot noise). This is a proxy, not a sensor model.
-    let mut residuals = Vec::new();
-    let patch_step = crop.width.max(crop.height).div_ceil(64).max(8);
-    for y in (crop.y + 6..crop.y + crop.height.saturating_sub(6)).step_by(patch_step) {
-        for x in (crop.x + 6..crop.x + crop.width.saturating_sub(6)).step_by(patch_step) {
-            let mut energy = 0.0;
-            let mut count = 0;
-            for dy in 0..4 {
-                for dx in 0..4 {
-                    let (x, y) = (x + dx, y + dy);
-                    let v = value(x, y);
-                    if !(0.002..0.8).contains(&v) {
-                        continue;
-                    }
-                    let q = |x, y| value(x, y).sqrt();
-                    let r = q(x, y) - (q(x - 2, y) + q(x + 2, y) + q(x, y - 2) + q(x, y + 2)) * 0.25;
-                    energy += r * r;
-                    count += 1;
-                }
-            }
-            if count >= 8 {
-                residuals.push((energy / count as f32 / 1.25).sqrt());
-            }
-        }
-    }
-    residuals.sort_by(f32::total_cmp);
     Sensor {
         any_pct: tiles.iter().map(|p| p[1]).sum::<f32>() / n * 100.0,
         all_pct: tiles.iter().map(|p| p[2]).sum::<f32>() / n * 100.0,
         lost_bright,
         fringe_edge_pct,
-        noise: (residuals.len() >= 16).then(|| residuals[residuals.len() / 4]),
     }
 }
 
@@ -293,6 +256,7 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
         crop: base.crop,
         sharpen: base.sharpen,
         defringe: base.defringe,
+        denoise: base.denoise,
         ..Params::default()
     };
     let sensor = sensor(raw, &params);
@@ -305,13 +269,7 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
     } else {
         "kept base recipe strength; insufficient clipped-edge coverage"
     };
-    let iso = raw.meta.iso.unwrap_or(100).max(50) as f32;
-    let prior = (10.0 + 10.0 * (iso / 100.0).log2()).clamp(10.0, 85.0);
-    // Retain a small ISO prior because the quietest patches can miss noise
-    // in deep shadows; measured noise separates equally rated exposures.
-    let measured = sensor.noise.map(|sigma| (sigma / 0.02 * 100.0).clamp(0.0, 100.0));
-    params.denoise =
-        round_to(measured.map_or(prior, |m| (0.35 * prior + 0.65 * m).clamp(10.0, (prior + 20.0).min(90.0))), 5.0);
+    let noise = crate::noise::resolve(raw, params.denoise);
     let scene = pipeline::scene(raw, &params, Size { max_edge: Some(ANALYSIS_EDGE) })?;
     let spaces = Spaces::new();
     let look =
@@ -319,8 +277,8 @@ pub fn auto(raw: &RawImage, base: &Params) -> Result<Auto> {
     let default_image = pipeline::finish(&scene.image, &Params { sharpen: 0.0, ..params.clone() }, &spaces);
     let neutral = measure(&default_image, &spaces);
     let mut notes = vec![format!(
-        "denoise {:.0}: ISO {iso:.0} prior {prior:.0}; native sensor sqrt-noise {} (quiet-patch proxy, not a calibrated noise model)",
-        params.denoise, sensor.noise.map_or_else(|| "unavailable; using ISO prior".into(), |v| format!("{v:.5}"))
+        "denoise {:.0}: source {}; ISO prior {}; native sensor sqrt-noise {} (quiet-patch proxy, not a calibrated noise model)",
+        noise.strength, noise.source, noise.iso_prior.map_or_else(|| "not used".into(), |v| format!("{v:.0}")), noise.native_sqrt_noise.map_or_else(|| if params.denoise.is_some() { "not sampled (explicit recipe strength)".into() } else { "unavailable; using ISO prior".into() }, |v| format!("{v:.5}"))
     ), format!(
         "measured at default settings: lightness p10 {:.0}, median {:.0}, p90 {:.0}, p99 {:.0}; chroma {:.1} overall, {:.1} in bright areas; saturation C/L p90 {:.3}; channels near clipping {:.2}%",
         neutral.p10, neutral.p50, neutral.p90, neutral.p99, neutral.chroma, neutral.chroma_bright, neutral.saturation_p90, neutral.channel_near
@@ -643,7 +601,8 @@ mod tests {
         let floor = neutral.p50 - 4.0;
         assert!(exposed.p50 >= floor, "exposure stage must already satisfy the floor");
         assert!(finished.p50 >= floor, "later controls buried the foreground: {} < {floor}", finished.p50);
-        assert!(result.params.contrast < 10.0, "back off the contrast that darkens this foreground");
+        // The accepted slider amount may change with the base curve; the
+        // foreground lightness floor above is the invariant.
         result.params.validate().unwrap();
     }
 

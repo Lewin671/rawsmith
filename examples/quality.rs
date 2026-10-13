@@ -589,7 +589,7 @@ fn colour_section() -> Value {
     });
     file.wb_levels = levels;
     let raw = arw::decode(&file.to_bytes()).unwrap();
-    let neutral = Params { lens_corrections: false, denoise: 0.0, ..Params::default() };
+    let neutral = Params { lens_corrections: false, denoise: Some(0.0), ..Params::default() };
     let scene = pipeline::scene(&raw, &neutral, Size::default()).unwrap();
     let mut errors: Vec<f64> = Vec::new();
     for (i, patch) in patches.iter().enumerate() {
@@ -638,6 +638,91 @@ fn tone_section() -> Value {
     })
 }
 
+/// A finished default should add photographic contrast without buying it by
+/// desaturating highlights or adding a blanket colour multiplier.
+fn default_look_section() -> Value {
+    let spaces = Spaces::new();
+    let white = pipeline::BASE_EXPOSURE.exp2();
+    let filmic = tone::Filmic::new(0.0, white);
+    let (lo, hi) = (tone::GREY / 1.001, tone::GREY * 1.001);
+    let slope = (filmic.eval(hi) / filmic.eval(lo)).ln() / (hi / lo).ln();
+    let mut saturation_error = 0.0f32;
+    let mut hue_error = 0.0f32;
+    let mut colour_error = 0.0f32;
+    let mut luminance_error = 0.0f32;
+    let mut in_gamut_count = 0;
+    let params = Params { sharpen: 0.0, ..Params::default() };
+    // Skin, yellow leaves, blue sky, red and haze-like tints, from shadows
+    // into the shoulder. Separate avoidable desaturation from necessary
+    // gamut compression near white; include weak tints that still fit there.
+    for hue in [29.0f32, 58.0, 105.0, 142.0, 258.0, 300.0] {
+        for level in [0.005f32, 0.05, 0.18, 0.6, 1.1, 1.5] {
+            for saturation in [0.004, 0.04, 0.15] {
+                let l = level.cbrt();
+                let angle = hue.to_radians();
+                let input = spaces.from_oklab([l, saturation * l * angle.cos(), saturation * l * angle.sin()]);
+                let mapped = filmic.map_rgb(input);
+                let mapped_lab = spaces.to_oklab(mapped);
+                saturation_error =
+                    saturation_error.max((mapped_lab[1].hypot(mapped_lab[2]) / mapped_lab[0] - saturation).abs());
+                let scene = Image { width: 1, height: 1, data: vec![input.map(|v| v / white)] };
+                let output = pipeline::finish(&scene, &params, &spaces).data[0];
+                let work = color::apply(&spaces.srgb_to_work, output.map(color::srgb_decode));
+                let lab = spaces.to_oklab(work);
+                let rendered_colour = spaces.render_colour(mapped, filmic.log_slope(color::luma(input)));
+                let expected_lab = spaces.to_oklab(rendered_colour);
+                let srgb = color::apply(&spaces.work_to_srgb, rendered_colour);
+                if srgb.iter().all(|v| (0.0..=1.0).contains(v)) {
+                    in_gamut_count += 1;
+                    colour_error = colour_error.max(
+                        (lab[1].hypot(lab[2]) / lab[0] - expected_lab[1].hypot(expected_lab[2]) / expected_lab[0])
+                            .abs(),
+                    );
+                    luminance_error = luminance_error.max((color::luma(work) - filmic.eval(color::luma(input))).abs());
+                }
+                let d = (lab[2].atan2(lab[1]) - angle).to_degrees();
+                hue_error = hue_error.max(((d + 180.0).rem_euclid(360.0) - 180.0).abs());
+            }
+        }
+    }
+    let mut raw = noisy_scene(true);
+    raw.meta.iso = Some(6400);
+    let mut quiet = noisy_scene(false);
+    quiet.meta.iso = Some(6400);
+    let resolved = rawsmith::noise::resolve(&raw, None);
+    let quiet_strength = rawsmith::noise::resolve(&quiet, None).strength;
+    let scene = |denoise| pipeline::scene(&raw, &Params { denoise, ..params.clone() }, Size::default()).unwrap();
+    let default = scene(None);
+    let exact = scene(Some(resolved.strength));
+    let unsmoothed = scene(Some(0.0));
+    let chroma_rms = |image: &Image| {
+        let values: Vec<f32> = (40..image.height - 40)
+            .flat_map(|y| {
+                (40..image.width / 2 - 40).map(move |x| {
+                    let p = image.at(x, y);
+                    p[0] - p[1]
+                })
+            })
+            .collect();
+        let mean = values.iter().sum::<f32>() / values.len() as f32;
+        (values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32).sqrt()
+    };
+    json!({
+        "middle_grey_log_slope": slope,
+        "shadow_at_one_percent": filmic.eval(0.01),
+        "in_gamut_patch_count": in_gamut_count,
+        "max_saturation_error": saturation_error,
+        "max_render_colour_error": colour_error,
+        "max_hue_error_degrees": hue_error,
+        "max_luminance_error": luminance_error,
+        "measured_denoise": resolved.strength,
+        "quiet_denoise": quiet_strength,
+        "noise_strength_difference": resolved.strength - quiet_strength,
+        "default_matches_explicit_noise": default.image.data == exact.image.data,
+        "default_chroma_noise_removed_pct": (1.0 - chroma_rms(&default.image) / chroma_rms(&unsmoothed.image)) * 100.0,
+    })
+}
+
 /// Noise reduction on a noisy flat-and-edge scene.
 fn denoise_section() -> Value {
     let (w, h) = (384, 256);
@@ -652,9 +737,13 @@ fn denoise_section() -> Value {
     });
     let raw = arw::decode(&file.to_bytes()).unwrap();
     let render = |denoise: f64| {
-        pipeline::scene(&raw, &Params { denoise, lens_corrections: false, ..Params::default() }, Size::default())
-            .unwrap()
-            .image
+        pipeline::scene(
+            &raw,
+            &Params { denoise: Some(denoise), lens_corrections: false, ..Params::default() },
+            Size::default(),
+        )
+        .unwrap()
+        .image
     };
     let (noisy, smooth) = (render(0.0), render(40.0));
     // Chroma noise in a flat area, and the width of the edge between the halves.
@@ -709,9 +798,13 @@ fn high_iso_section() -> Value {
     let raw = noisy_scene(true);
     let clean = noisy_scene(false);
     let scene = |raw, denoise| {
-        pipeline::scene(raw, &Params { denoise, lens_corrections: false, ..Params::default() }, Size::default())
-            .unwrap()
-            .image
+        pipeline::scene(
+            raw,
+            &Params { denoise: Some(denoise), lens_corrections: false, ..Params::default() },
+            Size::default(),
+        )
+        .unwrap()
+        .image
     };
     let truth = scene(&clean, 0.0);
     let noisy = scene(&raw, 0.0);
@@ -782,7 +875,7 @@ fn high_iso_section() -> Value {
 fn preview_section() -> Value {
     let raw = noisy_scene(true);
     let params = Params {
-        denoise: 85.0,
+        denoise: Some(85.0),
         sharpen: 60.0,
         clarity: 20.0,
         dehaze: 15.0,
@@ -1011,6 +1104,19 @@ fn failures(report: &Value) -> Vec<String> {
         ceiling("colour_accuracy.max_delta_e", 1.0),
         ceiling("tone_and_sharpening.sharpen_overshoot_pct_of_step", 2.0),
         floor("tone_and_sharpening.sharpen_edge_slope_gain", 1.02),
+        floor("default_look.middle_grey_log_slope", 1.45),
+        ceiling("default_look.middle_grey_log_slope", 1.55),
+        ceiling("default_look.shadow_at_one_percent", 0.002),
+        floor("default_look.in_gamut_patch_count", 60.0),
+        ceiling("default_look.max_saturation_error", 0.001),
+        ceiling("default_look.max_render_colour_error", 0.001),
+        ceiling("default_look.max_hue_error_degrees", 0.2),
+        ceiling("default_look.max_luminance_error", 0.001),
+        floor("default_look.measured_denoise", 50.0),
+        floor("default_look.noise_strength_difference", 20.0),
+        floor("default_look.default_chroma_noise_removed_pct", 50.0),
+        (report["default_look"]["default_matches_explicit_noise"] != true)
+            .then(|| "default measured denoise differs from explicit resolved amount".into()),
         floor("noise_reduction.chroma_noise_reduction_pct", 25.0),
         floor("noise_reduction.edge_contrast_kept_pct", 95.0),
         floor("high_iso.minimum_blotch_removal_pct", 50.0),
@@ -1069,6 +1175,7 @@ fn main() {
         "highlight_boundaries": highlight_boundary_section(),
         "colour_accuracy": colour_section(),
         "tone_and_sharpening": tone_section(),
+        "default_look": default_look_section(),
         "noise_reduction": denoise_section(),
         "high_iso": high_iso_section(),
         "preview_consistency": preview_section(),

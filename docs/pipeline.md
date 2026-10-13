@@ -138,6 +138,17 @@ are outside its scope. The filter uses 64-row stripes with original halos rather
 an immutable full frame. At width 7008 and radius 3, the two reusable
 buffers hold at most 6.14 MB (5.85 MiB), independent of frame height.
 
+An omitted or `null` `denoise` uses the shared native sensor noise policy in
+`noise.rs`, also used by `auto`: quiet-patch square-root residuals plus an
+ISO prior, with an honest prior-only fallback when fewer than 16 patches are
+usable (details below). Measurement uses the full active sensor before white
+balance, lens correction, resizing or recipe framing. An explicit 0–100
+amount is obeyed exactly, including 0. Reports expose `noise_reduction`:
+`strength`, `source` (`recipe`, `measured` or `iso_prior`),
+`native_sqrt_noise` and `iso_prior` (null when not measured/used).
+The nullable setting stays unset in saved recipes; it is not silently pinned
+to one measurement. Strong shadow lifting can still warrant more denoising.
+
 Chroma noise is smoothed in a square-root encoding where sensor noise is
 roughly uniform. A native-resolution guided filter follows luminance edges
 and removes grain. Above `denoise` 25, a gradually blended quarter-resolution
@@ -165,17 +176,39 @@ the reduced automatic analysis path remains an approximation.
   luminance. The base layer is an edge-aware (guided) smoothing computed at
   reduced size and applied at full resolution, so large regions can be
   brightened or darkened without halos and without flattening texture.
-- A filmic sigmoid maps scene light to display range: middle grey stays
-  put and both ends roll off smoothly. An upper Hermite shoulder joins the
-  sigmoid halfway to its scene white point and reaches white with zero
-  derivative, avoiding a hard per-channel cut-off.
-  Shadows and midtones keep their hue under the curve; highlights take it
-  per channel, so bright colours fade towards yellow and white the way film
-  and camera JPEGs do. `contrast` changes the slope, `whites` the white
-  point.
+- A filmic sigmoid maps scene luminance to display range. Middle grey stays
+  at 0.18, black at zero, and both ends roll off smoothly. The zero-slider
+  exponent is 1.8, giving about 1.49 log-log contrast at middle grey with the
+  native white point (formerly 1.33 at exponent 1.6). Its toe deepens low
+  shadows continuously without a fixed black offset. An upper Hermite
+  shoulder joins the sigmoid halfway to its scene white point and reaches
+  white with zero derivative.
+  One RGB gain transports the mapped luminance, preserving chromaticity
+  and Oklab C/L, including signed matrix channels. The former blend towards per-channel highlight curves desaturated coloured
+  highlights and rotated their hue. Colour now loses chroma only when the
+  final sRGB gamut requires it, at constant Oklab lightness and hue. The subsequent contrast-linked colour rendering below adds
+  bounded colour separation. There is no fixed saturation/vibrance boost or
+  camera-style colour table.
+  `contrast` changes the slope; `whites` adjusts the display white point.
 - `blacks` and the optional point `curve` act on display values.
 
-## 8. Colour adjustments — `adjust.rs`
+## 8. Colour rendering and adjustments — `color.rs`, `adjust.rs`
+
+Default colour rendering accompanies the filmic step, before display
+white/black points and the point curve. Photographic contrast also separates
+colours. Pure luminance gain would
+remove that separation from shadows and midtones; the old per-channel
+curve supplied it there but washed out shoulder colours. Default colour
+rendering carries half the local tone contrast in log space: at scene
+luminance Y, chroma gain is `sqrt(max(1, Y F'(Y) / F(Y)))`. Oklab supplies
+hue-preserving chroma separation. This conservative policy varies with
+scene level and the contrast curve, rather than applying a fixed gain to
+all colours. The gain fades smoothly for existing C/L from 0.1 to 0.3;
+already vivid colours get no extra separation. Where the shoulder's slope
+is at most one there is no expansion or desaturation. After chroma changes,
+a common RGB normalization restores mapped luminance; neutral colours get
+no additive tint. Saturation ramps remain monotone throughout the slider
+range. Gamut compression follows at output.
 
 `vibrance`, `saturation`, the eight `hsl` bands and the two-way colour
 `grade` operate in Oklab, where hue, chroma and lightness can be changed
@@ -213,13 +246,37 @@ retained) and no amplification of flat-area luminance noise at strengths 60,
 85 and 100. These are deterministic synthetic floors, not claims about every
 real camera or photo. Fine grain and very large colour clouds may remain.
 
+`examples/quality.rs` also checks the default middle-grey log slope
+(1.45–1.55), toe at scene 0.01 (below 0.002), hue and relative-saturation
+transport through the luminance curve, contrast-linked colour rendering and
+its finished in-gamut output, and a noisy ISO-6400-like RAW's measured default. The noisy default
+must match rendering with its explicit resolved amount, exceed a quiet
+same-ISO field by at least 20 slider points and remove at least 50% chroma
+noise. These synthetic checks do not establish a camera-JPEG preference.
+
 Statistics describe the resulting output size: full-resolution statistics
 can legitimately differ from statistics of its resized version.
+
+## Recipe versions
+
+Version 0.2.0 changes pixels for existing sparse recipes. The `rawsmith`
+writer version is provenance, not a pinned pipeline: omitted fields adopt
+current defaults and explicit settings are retained. Keeping an obsolete
+pipeline would retain its colour and noise shortcomings and double the
+rendering contracts. `recipe_compatibility` reports the writer and rendering
+versions, the `current_defaults` policy and a note for different or absent
+writer versions; `compare` reports it per developed panel. Rendering and
+comparison never rewrite recipes. To reproduce the original look, use the
+original executable with the original RAW and recipe.
 
 ## Automatic starting point — `auto.rs`
 
 `rawsmith auto` keeps white balance, lens settings, framing, sharpening and
-non-zero additional defringe strength from its base recipe, and replaces global tone, colour and denoise values.
+non-zero additional defringe strength and explicit denoise amount from its
+base recipe, and replaces global tone and colour values. Unset denoise uses
+the same measured default policy as rendering. Tone and colour candidate
+measurements run through the current default curve and gamut mapping, so
+old tone/colour settings do not stack on the new base.
 When more than 0.5% of framed native tile samples border sensor loss
 (any photosite at 98%) and a strong edge (neighbouring square-root green
 difference at least 0.25), a zero base defringe becomes 50; the one-in-200
@@ -244,7 +301,7 @@ The measurements and policy are:
   complete loss cannot. The sampled map follows orientation, crop and
   rotation, but not lens resampling. These approximate decision measurements
   are distinct from the render report's full-mosaic `sensor_clipped_pct`.
-- **Noise:** up to roughly 64×64 small native patches are sampled before
+- **Noise (shared with defaults):** up to roughly 64×64 small native patches are sampled before
   resizing or denoising. Same-colour second differences against four
   neighbours remove smooth gradients. RMS in square-root sensor encoding
   is divided by the stencil's noise amplification (sqrt(1.25)); the quietest
