@@ -1,8 +1,10 @@
-//! Sony ARW reader for uncompressed and lossy-compressed raw data.
+//! Sony ARW reader for uncompressed, lossy and lossless-compressed Bayer data.
 //!
 //! An ARW is a TIFF container. IFD0 carries camera metadata and a preview
 //! JPEG, its SubIFD holds the sensor mosaic together with the levels, white
 //! balance and lens-correction tables this module extracts.
+
+mod ljpeg;
 
 use serde::Serialize;
 
@@ -75,6 +77,7 @@ pub struct RawImage {
 pub enum Compression {
     Uncompressed,
     LossyCompressed,
+    LosslessCompressed,
 }
 
 fn i16s(tiff: &Tiff, ifd: &Ifd, tag: u16) -> Option<Vec<i16>> {
@@ -195,19 +198,96 @@ fn embedded_jpeg(tiff: &Tiff, first: u32) -> Option<(usize, usize)> {
     best
 }
 
+/// Sony's four JPEG components are the cells of a 2x2 Bayer block. TIFF
+/// tile arrays are row-major even though payloads are stored column-major.
+fn decode_lossless(tiff: &Tiff, raw: &Ifd, width: usize, height: usize, bits: u8) -> Result<Vec<u16>> {
+    let need = |tag, name| tiff.int(raw, tag).ok_or_else(|| Error::Format(format!("missing lossless {name}")));
+    let tw = need(0x0142, "tile width")?;
+    let th = need(0x0143, "tile height")?;
+    if !(2..=512).contains(&tw) || !(2..=512).contains(&th) || tw % 2 != 0 || th % 2 != 0 {
+        return Err(Error::Format("invalid lossless tile dimensions".into()));
+    }
+    // This camera's largest padded frame is 7168x5120. Bound memory and
+    // decoding work independently of dimensions claimed by an untrusted IFD.
+    if width > 8192
+        || height > 8192
+        || width * height > 40_000_000
+        || !width.is_multiple_of(2)
+        || !height.is_multiple_of(2)
+    {
+        return Err(Error::Format("implausible lossless sensor dimensions".into()));
+    }
+    let (tw, th) = (tw as usize, th as usize);
+    let (cols, rows) = (width.div_ceil(tw), height.div_ceil(th));
+    let count = cols * rows;
+    if count > 4096 || count * tw * th > 50_000_000 {
+        return Err(Error::Format("implausible lossless tile count".into()));
+    }
+    let array = |tag, name| {
+        if tiff.count(raw, tag) != Some(count) {
+            return Err(Error::Format(format!("invalid lossless {name} count")));
+        }
+        tiff.ints(raw, tag, count).ok_or_else(|| Error::Format(format!("missing lossless {name}")))
+    };
+    let offsets = array(0x0144, "tile offsets")?;
+    let sizes = array(0x0145, "tile byte counts")?;
+    let mut ranges = Vec::with_capacity(count);
+    for (&offset, &size) in offsets.iter().zip(&sizes) {
+        if !(1..=2_000_000).contains(&size) {
+            return Err(Error::Format("implausible lossless tile byte count".into()));
+        }
+        let range = usize::try_from(offset)
+            .ok()
+            .zip(usize::try_from(size).ok())
+            .and_then(|(start, len)| {
+                start.checked_add(len).filter(|&end| end <= tiff.data.len()).map(|end| (start, end))
+            })
+            .ok_or_else(|| Error::Format("lossless tile extends past the end of the file".into()))?;
+        ranges.push(range);
+    }
+    let mut ordered = ranges.clone();
+    ordered.sort_unstable();
+    if ordered.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+        return Err(Error::Format("overlapping lossless tiles".into()));
+    }
+    // Validate every header before allocating the sensor mosaic, retaining
+    // only ranges rather than thousands of tables with separate allocations.
+    for &(start, end) in &ranges {
+        ljpeg::Tile::parse(&tiff.data[start..end], tw / 2, th / 2, bits)?;
+    }
+    let mut data = vec![0u16; width * height];
+    for (i, &(start, end)) in ranges.iter().enumerate() {
+        let values = ljpeg::Tile::parse(&tiff.data[start..end], tw / 2, th / 2, bits)?.decode()?;
+        let (left, top) = (i % cols * tw, i / cols * th);
+        for y in 0..th.min(height - top) {
+            for x in 0..tw.min(width - left) {
+                let component = (y % 2) * 2 + x % 2;
+                data[(top + y) * width + left + x] = values[((y / 2) * (tw / 2) + x / 2) * 4 + component];
+            }
+        }
+    }
+    Ok(data)
+}
+
 pub fn decode(file: &[u8]) -> Result<RawImage> {
     let (tiff, first) = Tiff::new(file)?;
     let ifd0 = tiff.ifd(first)?;
     let meta = metadata(&tiff, &ifd0);
 
-    // The mosaic lives in a SubIFD with a CFA photometric interpretation.
+    // Sony stores Bayer and reduced-size YCbCr RAWs in a SubIFD.
     let raw = tiff
         .ints(&ifd0, TAG_SUBIFD, 8)
         .unwrap_or_default()
         .into_iter()
         .filter_map(|at| tiff.ifd(at as u32).ok())
-        .find(|ifd| tiff.int(ifd, 0x0106) == Some(32803))
+        .find(|ifd| matches!(tiff.int(ifd, 0x0106), Some(32803 | 6)))
         .ok_or_else(|| Error::Format("no raw image data found in this file".into()))?;
+
+    if tiff.int(&raw, 0x0106) == Some(6) {
+        return Err(Error::Unsupported(
+            "reduced-size Sony YCbCr RAW is not supported; lossless Bayer L and APS-C M are supported".into(),
+        ));
+    }
 
     let need =
         |tag: u16, name: &str| tiff.int(&raw, tag).ok_or_else(|| Error::Format(format!("raw image is missing {name}")));
@@ -222,7 +302,7 @@ pub fn decode(file: &[u8]) -> Result<RawImage> {
         .checked_mul(height)
         .filter(|&n| n > 0 && n <= 400_000_000)
         .ok_or_else(|| Error::Format(format!("implausible raw size {width}x{height}")))?;
-    let strip = need(0x0111, "its data offset")? as usize;
+    let strip = tiff.int(&raw, 0x0111).unwrap_or(-1) as usize;
     let strip_bytes = |len: usize| {
         strip
             .checked_add(len)
@@ -230,6 +310,7 @@ pub fn decode(file: &[u8]) -> Result<RawImage> {
             .ok_or_else(|| Error::Format("raw data extends past the end of the file".into()))
     };
     let data: Vec<u16> = match compression {
+        7 => decode_lossless(&tiff, &raw, width, height, bits as u8)?,
         1 if (12..=16).contains(&bits) => {
             strip_bytes(samples * 2)?.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b)).collect()
         }
@@ -240,7 +321,7 @@ pub fn decode(file: &[u8]) -> Result<RawImage> {
         _ => {
             return Err(Error::Unsupported(format!(
                 "raw encoding (compression {compression}, {bits} bits, width {width}) is not supported; \
-                 uncompressed and lossy-compressed ARW are"
+                 uncompressed, lossy-compressed and lossless-compressed Bayer ARW are"
             )))
         }
     };
@@ -287,7 +368,11 @@ pub fn decode(file: &[u8]) -> Result<RawImage> {
     }
 
     Ok(RawImage {
-        compression: if compression == 1 { Compression::Uncompressed } else { Compression::LossyCompressed },
+        compression: match compression {
+            1 => Compression::Uncompressed,
+            7 => Compression::LosslessCompressed,
+            _ => Compression::LossyCompressed,
+        },
         data,
         width,
         height,

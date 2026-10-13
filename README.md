@@ -9,8 +9,16 @@ The assistant looks at previews, adjusts the edit and checks detail before
 exporting. rawsmith runs locally, leaves your RAW untouched and saves the
 edit as a small JSON recipe you can inspect and render again.
 
-rawsmith supports only uncompressed or lossy-compressed Sony A7 IV
-(ILCE-7M4) ARW, on macOS and Linux.
+rawsmith supports Sony A7 IV (ILCE-7M4) Bayer ARW on macOS and Linux.
+
+| Sensor encoding | Supported modes |
+|---|---|
+| Uncompressed | Full frame and APS-C |
+| Lossy-compressed | Full frame and APS-C |
+| Lossless-compressed | Full-frame L and APS-C M (14-bit Bayer) |
+| Reduced-size lossless YCbCr | Unsupported: full-frame M/S and APS-C S |
+
+[Format details and sample verification](docs/formats.md).
 
 ## Try it
 
@@ -178,15 +186,17 @@ mean was 4.619 s for a 1400 px default preview, 7.342 s for `auto` with a
 preview and 5.158 s for a full-resolution JPEG export: previews now render
 the full pipeline and resize last.
 
-Decoder samples matched LibRaw on all 18 test files. Synthetic tests also
-check demosaicing, highlight reconstruction, colour, noise reduction and
+Decoder samples matched LibRaw on the original 18 test files and two
+additional CC0 lossless Bayer files (55,050,240/55,050,240 samples).
+Synthetic tests also check demosaicing, highlight reconstruction, colour, noise reduction and
 sharpening against known answers. [Full measurements, method and limits](docs/benchmark.md).
 
 ## Limits
 
-Only Sony A7 IV ARW, uncompressed or lossy-compressed, is supported.
-Lossless-compressed ARW is not supported yet. Other cameras need a colour
-matrix and a test file; see [CONTRIBUTING.md](CONTRIBUTING.md).
+Only Sony A7 IV Bayer ARW is supported. Lossless full-frame M/S and APS-C
+S store reduced-size YCbCr rather than Bayer and return `unsupported`.
+Other cameras need a colour matrix and a test file; see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 Local edits are graduated filters. There are no brushes, subject masks,
 spot removal or dust removal. Output is sRGB JPEG or 16-bit PNG, without

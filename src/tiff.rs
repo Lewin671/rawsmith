@@ -90,6 +90,11 @@ impl<'a> Tiff<'a> {
         Ok(ifd)
     }
 
+    /// Exact element count, for arrays whose geometry must agree with the IFD.
+    pub fn count(&self, ifd: &Ifd, tag: u16) -> Option<usize> {
+        Some(ifd.entries.get(&tag)?.count as usize)
+    }
+
     /// Reads up to `limit` integer values of any integral TIFF type.
     pub fn ints(&self, ifd: &Ifd, tag: u16, limit: usize) -> Option<Vec<i64>> {
         let e = ifd.entries.get(&tag)?;

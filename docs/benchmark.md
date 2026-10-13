@@ -18,12 +18,51 @@ and historical development runs. Timings were measured on an Intel i7-10700
 
 `examples/dump.rs` writes the decoded sensor samples; they are compared with
 LibRaw's (`rawpy`) sample for sample, together with black level, white
-level and as-shot white balance.
+level and as-shot white balance. The dump header is JSON (dimensions,
+all four black levels, white, normalized RGB white balance, CFA, crop,
+orientation and compression), followed by little-endian u16 sensor data.
 
 | Files | Result |
 |---|---|
 | 15 uncompressed 14-bit ARW (Sony A7 IV, private test set) | identical |
 | 2 uncompressed + 1 lossy-compressed ARW (A7 IV, CC0, [raw.pixls.us](https://raw.pixls.us)) | identical |
+
+Lossless addition, checked 2026-10-13 with rawpy 0.27.1 / LibRaw 0.22.1:
+
+| CC0 ILCE-7M4 file / mode | Sensor samples matching LibRaw | Black / white / WB / active area entries matching |
+|---|---|---|
+| [6929, full-frame L](https://raw.pixls.us/getfile.php/6929/nice/Sony%20-%20ILCE-7M4%20-%2014bit%20(4:3).ARW) | 36,700,160 / 36,700,160 | 4/4 · 1/1 · 3/3 · 4/4 |
+| [6934, APS-C M](https://raw.pixls.us/getfile.php/6934/nice/Sony%20-%20ILCE-7M4%20-%2014bit%20(4:3).ARW) | 18,350,080 / 18,350,080 | 4/4 · 1/1 · 3/3 · 4/4 |
+| 6930, full-frame M (YCbCr 4:2:0) | Unsupported; no match claimed | Not applicable |
+| 6931, full-frame S (YCbCr 4:2:2) | Unsupported; no match claimed | Not applicable |
+| 6935, APS-C S (YCbCr 4:2:2) | Unsupported; no match claimed | Not applicable |
+
+Total for supported lossless modes: **55,050,240 / 55,050,240** sensor
+samples, 8/8 black levels, 2/2 white levels, 6/6 normalized RGB WB gains
+and 8/8 active-area coordinates. Padded sensor dimensions match 4/4 and
+CFA cells match 8/8. The active area comparison uses rawpy's
+`crop_left_margin`, `crop_top_margin`, `crop_width` and `crop_height`,
+not its differently defined `width`/`height` fields.
+
+All five files were downloaded outside the repository, SHA-256 checked
+against the raw.pixls.us listing and recorded with URLs and CC0 licence
+in the sample directory's `SOURCES.md`. A rawpy virtualenv and a local
+`crosscheck.py`/`crosscheck.json` retain the reproducible check. No separately
+labelled APS-C L sample was present. The site's 4:3 listing labels do not
+establish the picture aspect: the verified active crops are 7008×4672 and
+4608×3072 (3:2). The full-frame L and APS-C M files were rendered at full
+resolution and compared with their embedded JPEGs using `rawsmith compare`;
+visual review found matching framing, upright orientation and plausible
+matching green/yellow foliage and red/blue signs, without visible tile seams
+or component swaps. Native-resolution detail crops were also inspected.
+Default rendering has lighter shadows/lower contrast than the camera;
+this checks decoding geometry and gross colour, not photographic quality.
+Both real files have orientation 1; rotated capture is not established by
+these two samples.
+The three YCbCr files return JSON `unsupported` for inspect/render/compare;
+they cannot be rendered by the current Bayer pipeline. These limitations,
+observed layouts and clean implementation references are in
+[formats.md](formats.md).
 
 ## 2. Ground-truth quality (`cargo run --release --example quality`)
 

@@ -20,9 +20,10 @@ affected paths and retains the old output backup, when one exists, at the
 reported recovery path. Do not assume a two-file transaction survived a
 crash.
 
-`inspect.compression` reports the sensor encoding as `uncompressed` or
-`lossy-compressed`. Unsupported encodings (including lossless-compressed
-ARW) still return an `unsupported` error rather than a successful report.
+`inspect.compression` reports the sensor encoding as `uncompressed`,
+`lossy-compressed` or `lossless-compressed`. Lossless Bayer full-frame L
+and APS-C M are supported; reduced-size YCbCr full-frame M/S and APS-C S
+return an `unsupported` error. See [supported formats](formats.md).
 
 ## Recipes and output options
 

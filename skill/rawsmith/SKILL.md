@@ -32,8 +32,10 @@ photos.
 1. **Inspect** — `rawsmith inspect photo.ARW`
    Camera settings, as-shot white balance, and how the sensor was exposed
    (`saturated_pct`: data that is gone for good; `headroom_stops`: unused
-   highlight room). `compression` distinguishes `uncompressed` from
-   `lossy-compressed`; lossless-compressed ARW remains unsupported.
+   highlight room). `compression` reports `uncompressed`,
+   `lossy-compressed` or `lossless-compressed`. Lossless Bayer full-frame L
+   and APS-C M are supported. Reduced-size YCbCr full-frame M/S and APS-C S
+   return `unsupported`; changing recipes cannot make those modes decode.
 
 2. **Start from auto** — `rawsmith auto photo.ARW -o preview.jpg --size 1400`
    Analyses the scene, saves a starting recipe next to the RAW
@@ -322,8 +324,16 @@ each file, then review the previews and refine only those that need it.
 
 ## Limits
 
-Sony ARW (uncompressed and lossy-compressed) from supported cameras only;
-`inspect` reports an `unsupported` error otherwise. Local adjustments are
-limited to graduated filters: no brushes, subject masks, or spot and dust
+Sony A7 IV (ILCE-7M4) only.
+
+| Encoding | Supported modes |
+|---|---|
+| Uncompressed Bayer | Full frame and APS-C |
+| Lossy-compressed Bayer | Full frame and APS-C |
+| Lossless-compressed Bayer | Full-frame L and APS-C M |
+| Lossless YCbCr | Unsupported: full-frame M/S and APS-C S |
+
+An unsupported mode returns a JSON `unsupported` error before writing.
+Local adjustments are limited to graduated filters: no brushes, subject masks, or spot and dust
 removal. If you see sensor dust, a stray object or a hot pixel, tell the
 user; cropping is the only workaround. Output is sRGB.
