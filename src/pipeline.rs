@@ -163,11 +163,14 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
     let half = size.max_edge.is_some_and(|edge| edge as f32 <= full_edge * 0.5);
 
     let mut image = if half { demosaic::half(&mosaic) } else { demosaic::full(&mosaic) };
-    let clipped = demosaic::reconstruct_highlights(&mut image, mosaic.clip);
+    let clipped = mosaic.saturated_fraction();
+    demosaic::reconstruct_highlights(&mut image, mosaic.clip);
     drop(mosaic);
     if params.lens_corrections {
         if let Some(tables) = &raw.lens {
-            image = lens::correct(&image, tables);
+            if let Some(corrected) = lens::correct(&image, tables) {
+                image = corrected;
+            }
         }
     }
     image.map(|p| color::apply(&cam_to_work, p));

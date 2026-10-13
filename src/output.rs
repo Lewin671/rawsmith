@@ -55,13 +55,10 @@ pub fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut name = path.as_os_str().to_owned();
     name.push(format!(".{}.tmp", std::process::id()));
     let staging = std::path::PathBuf::from(name);
-    // `create_new` refuses an existing name without following it.
-    let written = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staging)
-        .and_then(|mut file| file.write_all(bytes))
-        .and_then(|()| std::fs::rename(&staging, path));
+    // `create_new` refuses an existing name without following it. If it
+    // fails, whatever has that name is not ours and is left alone.
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&staging)?;
+    let written = file.write_all(bytes).and_then(|()| std::fs::rename(&staging, path));
     if written.is_err() {
         let _ = std::fs::remove_file(&staging);
     }
@@ -154,6 +151,23 @@ mod tests {
             }
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn replace_swaps_the_file_and_never_touches_a_squatter() {
+        let path = std::env::temp_dir().join(format!("rawsmith-replace-{}.txt", std::process::id()));
+        replace(&path, b"one").unwrap();
+        replace(&path, b"two").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"two");
+        // Something else already has the staging name: fail and leave it alone.
+        let mut squatter = path.clone().into_os_string();
+        squatter.push(format!(".{}.tmp", std::process::id()));
+        std::fs::write(&squatter, b"not ours").unwrap();
+        assert!(replace(&path, b"three").is_err());
+        assert_eq!(std::fs::read(&squatter).unwrap(), b"not ours");
+        assert_eq!(std::fs::read(&path).unwrap(), b"two");
+        std::fs::remove_file(&squatter).unwrap();
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

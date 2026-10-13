@@ -24,6 +24,29 @@ impl Mosaic {
     }
 }
 
+impl Mosaic {
+    /// Fraction of the picture where the sensor itself saturated: 2x2 cells
+    /// with at least one photosite at its limit. Measured on the photosites,
+    /// so it does not depend on how they are interpolated afterwards.
+    pub fn saturated_fraction(&self) -> f32 {
+        let (w, h) = (self.width / 2, self.height / 2);
+        let saturated: usize = (0..h)
+            .into_par_iter()
+            .map(|y| {
+                (0..w)
+                    .filter(|&x| {
+                        (0..4).any(|cell| {
+                            self.data[(y * 2 + cell / 2) * self.width + x * 2 + cell % 2]
+                                >= self.clip[self.cfa[cell] as usize] * CLIP_MARGIN
+                        })
+                    })
+                    .count()
+            })
+            .sum();
+        saturated as f32 / (w * h).max(1) as f32
+    }
+}
+
 pub fn prepare(raw: &RawImage, wb: [f32; 3]) -> Mosaic {
     let crop = raw.crop;
     let mut data = vec![0.0f32; crop.width * crop.height];
@@ -164,7 +187,8 @@ const CLIP_MARGIN: f32 = 0.98;
 /// estimated from the channels that did not clip plus the typical offset
 /// between them, measured on pixels just outside the clipped areas. Without
 /// this, blown highlights turn magenta once white balance scales the channels
-/// apart. Returns the fraction of pixels that had at least one clipped channel.
+/// apart. Returns the fraction of pixels that had a channel at its limit
+/// after demosaicing (use `Mosaic::saturated_fraction` for what the sensor lost).
 pub fn reconstruct_highlights(image: &mut Image, clip: [f32; 3]) -> f32 {
     let level = [clip[0] * CLIP_MARGIN, clip[1] * CLIP_MARGIN, clip[2] * CLIP_MARGIN];
     let (w, h) = (image.width, image.height);

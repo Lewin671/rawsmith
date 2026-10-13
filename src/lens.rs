@@ -47,7 +47,9 @@ fn cubic(image: &Image, channel: usize, x: f32, y: f32) -> f32 {
 }
 
 /// Applies the embedded corrections to a white-balanced camera-RGB image.
-pub fn correct(image: &Image, tables: &LensTables) -> Image {
+/// Returns `None` when the tables describe an impossible lens (damaged
+/// file); the caller then leaves the picture uncorrected.
+pub fn correct(image: &Image, tables: &LensTables) -> Option<Image> {
     let (w, h) = (image.width, image.height);
     let (cx, cy) = ((w as f32 - 1.0) * 0.5, (h as f32 - 1.0) * 0.5);
     let half_diagonal = (cx * cx + cy * cy).sqrt();
@@ -73,6 +75,10 @@ pub fn correct(image: &Image, tables: &LensTables) -> Image {
     let green = scale(None, 1.0);
     let fill = (0..=64).map(|i| green.at(edge_radius + (1.0 - edge_radius) * i as f32 / 64.0)).fold(f32::MIN, f32::max);
     let scales = [scale(Some(&tables.ca_red), fill), scale(None, fill), scale(Some(&tables.ca_blue), fill)];
+    // Real lenses stay within a few tens of percent of 1.
+    if !scales.iter().all(|s| s.0.iter().all(|v| (0.25..=4.0).contains(v))) {
+        return None;
+    }
     // Light falloff the lens caused, as a gain that undoes it.
     let gain = Radial(tables.vignetting.iter().map(|&v| ((v as f32 / 8192.0 - 1.0).exp2() - 0.5).exp2()).collect());
 
@@ -91,7 +97,7 @@ pub fn correct(image: &Image, tables: &LensTables) -> Image {
             }
         }
     });
-    out
+    Some(out)
 }
 
 #[cfg(test)]
@@ -106,7 +112,10 @@ mod tests {
         }
         let tables =
             LensTables { distortion: vec![0; 16], ca_red: vec![0; 16], ca_blue: vec![0; 16], vignetting: vec![0; 16] };
-        let out = correct(&image, &tables);
+        let out = correct(&image, &tables).unwrap();
+        // A table no lens could have is refused, not turned into NaN.
+        let broken = LensTables { distortion: vec![-16384; 16], ..tables.clone() };
+        assert!(correct(&image, &broken).is_none());
         for (a, b) in image.data.iter().zip(&out.data) {
             for c in 0..3 {
                 assert!((a[c] - b[c]).abs() < 1e-4);
@@ -125,7 +134,8 @@ mod tests {
         let ramp: Vec<i16> = (0..16).map(|i| -(i * 40)).collect();
         let vignetting: Vec<i16> = (0..16).map(|i| i * 800).collect();
         let out =
-            correct(&image, &LensTables { distortion: ramp, ca_red: vec![0; 16], ca_blue: vec![0; 16], vignetting });
+            correct(&image, &LensTables { distortion: ramp, ca_red: vec![0; 16], ca_blue: vec![0; 16], vignetting })
+                .unwrap();
         // Centre untouched; the right edge now shows content from further in, brighter.
         assert!((out.at(100, 50)[0] - 100.0).abs() < 1.5);
         let source_x = 99.5 + (190.0 - 99.5) * 0.985;
@@ -138,7 +148,8 @@ mod tests {
                 ca_blue: vec![0; 16],
                 vignetting: vec![0; 16],
             },
-        );
+        )
+        .unwrap();
         assert!(flat.at(190, 50)[0] < 189.5);
     }
 }
