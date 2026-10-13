@@ -129,8 +129,17 @@ surfaces, including their corners, are protected. It changes chroma while
 preserving linear luminance, so it cannot reconstruct missing edge shape or
 highlight detail. The automatic demosaic protection above runs even at `defringe=0`.
 This control adds stronger post-processing for residual fringes; it does
-not disable the demosaic fix. Additional suppression is off by default
-because genuinely purple detail only a few sensor pixels wide can be affected.
+not disable the demosaic fix. The same control also calms false colour on
+scattered bright dots: sky seen through a thicket of twigs lands on one or
+two photosites at a time, and each dot demosaics into a different pastel.
+Where luminance changes at least fourfold within two pixels, a pixel's
+chroma moves towards the median chroma of its 5x5 neighbourhood by the
+defringe strength (fading in over the next stop of contrast). Colour with
+real extent is its own median and is returned bit for bit; linear luminance
+is preserved. Additional suppression is off by default because genuinely
+purple detail only a few sensor pixels wide can be affected, and a coloured
+point one or two pixels across, such as a distant lamp, cannot be told from
+a false-colour dot.
 Previews resize the filtered native-resolution result; inspect a full-resolution
 region before keeping the setting, since resizing can hide residual fringes
 and damage to fine colour. Broad purple casts and wide out-of-focus halos
@@ -156,13 +165,28 @@ luminance-guided chroma base correction also suppresses correlated colour
 blotches over a 48-native-pixel radius. A shared boundary mask from the
 quarter-resolution chroma and luminance guides protects strong colour
 discontinuities across the filter's support,
-including boundaries with little luminance contrast. Above 50, luminance
-smoothing joins in: square-root Rec.2020 luminance blends gradually toward
-the chroma-cleaned reconstruction, then is filtered using that reconstruction as its guide.
-This avoids restoring matrix-correlated colour noise as luminance grain,
-with lower regularisation than the former sqrt-RGB luminance proxy. Up to
-50, chroma changes preserve linear Rec.2020 luminance exactly; higher values
-set final luminance from the filtered estimator through a common RGB gain.
+including boundaries with little luminance contrast.
+
+Luminance grain is removed by wavelet shrinkage of square-root Rec.2020
+luminance over four undecimated B3-spline scales. The noise level is the
+slider itself (100 stands for a square-root sensor noise of 0.02, of which
+0.74 reaches the finest band after demosaicing; coarser bands hold 0.46,
+0.22 and 0.12 of that, measured on quiet areas of ISO 100-6400 frames), so
+it comes from the sensor measurement and never from the picture's own
+detail. In flat areas coefficients below 2.2 noise levels (3.3 in the
+finest band, where isolated extremes would survive as specks) are removed
+with a non-negative garrote. Where a band's local energy clearly exceeds
+its noise the threshold falls to noise squared over signal, which keeps
+low-contrast texture, and where the smoother plane has a clear slope an
+edge is passing through and its detail is left alone. The threshold fades
+in between strengths 10 and 40: ISO 100 frames keep their faint grain and
+finest texture, and up to 10 chroma changes preserve linear Rec.2020
+luminance exactly. Above 50 the input to this step also blends toward the
+chroma-cleaned reconstruction, which avoids restoring matrix-correlated
+colour noise as luminance grain. Final luminance is set through a common
+RGB gain. Texture weaker than the noise cannot be told from it and is
+smoothed with it; settings above the measured amount ask for more smoothing
+than the noise needs and take proportionally more fine texture.
 Orientation, `rotate` and `crop` follow. Output rendering keeps native resolution here;
 the reduced automatic analysis path remains an approximation.
 
@@ -275,10 +299,13 @@ percentiles and channel error; the current path is exactly equal before
 output quantisation. This guarantee is relative to the same area resize,
 not an arbitrary viewer filter or separately compressed JPEG. PNG rounding
 and JPEG quantisation/compression can introduce additional differences.
-The high-ISO-like synthetic scene separately checks both low-frequency
-chroma axes (at least 50% RMS removal), fine texture projection (at least 90%
-retained) and no amplification of flat-area luminance noise at strengths 60,
-85 and 100. These are deterministic synthetic floors, not claims about every
+The high-ISO-like synthetic scene (square-root noise 0.014, as measured at
+ISO 6400) separately checks both low-frequency chroma axes (at least 50% RMS
+removal) and, at the strength matching its noise, flat-area luminance noise
+(at least 70% removed) and the projection of a fine texture four noise
+levels high (at least 90% retained). Strengths 85 and 100 are reported as
+well: they remove more and keep less. These are deterministic synthetic
+floors, not claims about every
 real camera or photo. Fine grain and very large colour clouds may remain.
 
 `examples/quality.rs` also checks the default middle-grey log slope
@@ -294,7 +321,11 @@ can legitimately differ from statistics of its resized version.
 
 ## Recipe versions
 
-Version 0.2.0 changes pixels for existing sparse recipes. The `rawsmith`
+Versions 0.2.0 and 0.4.0 change pixels for existing recipes: 0.2.0 through
+the default tone and colour, 0.4.0 wherever `denoise` resolves above 10
+(luminance grain is now removed) or `defringe` is above zero (coloured
+specks are calmed too). Recipes that develop a low-ISO photo without
+defringe render the same bytes in 0.3.0 and 0.4.0. The `rawsmith`
 writer version is provenance, not a pinned pipeline: omitted fields adopt
 current defaults and explicit settings are retained. Keeping an obsolete
 pipeline would retain its colour and noise shortcomings and double the

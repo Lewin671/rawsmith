@@ -20,15 +20,24 @@ out.mkdir(exist_ok=True)
 results = []
 for name in ('h43', 'h14'):
     raw = pathlib.Path(root) / (name + '.ARW')
-    for workload in ('export', 'preview', 'auto'):
+    # The first three develop the photo every time. The reuse workloads are a
+    # later render of the same photo in an editing session: its developed
+    # scene is already stored, as after the first `auto` or preview.
+    for workload in ('export', 'preview', 'auto', 'reuse-export', 'reuse-preview'):
+        reuse = workload.startswith('reuse-')
+        scenes = {'RAWSMITH_CACHE_DIR': str(out / 'scenes')} if reuse else {'RAWSMITH_CACHE_MB': '0'}
+        env = {**{k: v for k, v in os.environ.items() if not k.startswith('RAWSMITH_CACHE_')}, 'RAWSMITH_PROFILE': '1', **scenes}
+        if reuse:
+            (out / 'prime.json').write_text('{}\n')
+            subprocess.run(['./target/release/rawsmith', 'render', str(raw), '--recipe', str(out / 'prime.json'), '-o', str(out / 'prime.jpg'), '--size', '1'], env=env, capture_output=True, check=True)
         runs = []
         for repeat in range(3):
             tag = f'{name}-{workload}-{repeat}'
             (out / (tag + '.json')).write_text('{}\n')
             args = ['./target/release/rawsmith', 'auto' if workload == 'auto' else 'render', str(raw), '--recipe', str(out / (tag + '.json')), '-o', str(out / (tag + '.jpg'))]
-            if workload != 'export':
+            if not workload.endswith('export'):
                 args += ['--size', '1400']
-            result = subprocess.run(['/usr/bin/time', '-l'] + args, env={**os.environ, 'RAWSMITH_PROFILE': '1'}, capture_output=True, text=True, check=True)
+            result = subprocess.run(['/usr/bin/time', '-l'] + args, env=env, capture_output=True, text=True, check=True)
             (out / (tag + '.stdout')).write_text(result.stdout)
             (out / (tag + '.stderr')).write_text(result.stderr)
             stages = {}

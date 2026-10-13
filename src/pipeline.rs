@@ -47,6 +47,9 @@ pub struct Scene {
     /// Pixels per pixel of the full-resolution upright image.
     pub scale: f32,
     pub noise_reduction: crate::noise::NoiseReduction,
+    /// `reused`, `stored` or `off`: whether native development was read from
+    /// or written to the scene cache. The pixels are identical either way.
+    pub scene_reuse: &'static str,
 }
 
 fn camera_matrix(raw: &RawImage) -> Result<color::Mat3> {
@@ -149,6 +152,15 @@ pub(crate) fn framed(image: Image, orientation: u16, params: &Params) -> Image {
 /// Smooths chroma (and, at high strength, luminance) noise. Works on
 /// square-root encoded values, where sensor noise is roughly uniform.
 fn denoise(image: &mut Image, strength: f32) {
+    // Low-ISO frames keep their faint grain and finest texture; the
+    // luminance threshold reaches its full height by ISO 800 (strength 40).
+    let t = ((strength - 0.1) / 0.3).clamp(0.0, 1.0);
+    denoise_with(image, strength, 2.2 * t * t * (3.0 - 2.0 * t));
+}
+
+/// `luma_threshold` is in units of the luminance noise level; zero smooths
+/// chroma only and preserves linear luminance exactly.
+fn denoise_with(image: &mut Image, strength: f32, luma_threshold: f32) {
     if strength <= 0.0 {
         return;
     }
@@ -200,17 +212,23 @@ fn denoise(image: &mut Image, strength: f32) {
         coarse(&mut cb);
     }
     drop(guides);
-    // Luminance smoothing only in the upper half of the slider.
-    let luma_strength = ((strength - 0.5) * 2.0).max(0.0);
-    let original_luma = (luma_strength > 0.0).then(|| Plane::from_fn(image, |p| color::luma(p).max(0.0).sqrt()));
+    // The slider is the noise estimate: 100 stands for a square-root sensor
+    // noise of 0.02, of which 0.74 reaches the finest luminance band after
+    // demosaicing.
+    let luma_sigma = 0.74 * 0.02 * strength;
+    // Above half strength the chroma-cleaned estimate also replaces part of
+    // the luminance itself.
+    let luma_blend = ((strength - 0.5) * 2.0).max(0.0);
+    let smooth_luma = luma_threshold > 0.0;
+    let original_luma = smooth_luma.then(|| Plane::from_fn(image, |p| color::luma(p).max(0.0).sqrt()));
     image.data.par_iter_mut().enumerate().for_each(|(i, p)| {
         // With chroma-only smoothing, luminance restoration is per-pixel:
         // keep the same sqrt/square round trip without a separate plane/pass.
-        let original = if luma_strength == 0.0 { color::luma(*p).max(0.0).sqrt() } else { 0.0 };
+        let original = if smooth_luma { 0.0 } else { color::luma(*p).max(0.0).sqrt() };
         // Invert the encoded guide, keeping it unchanged by chroma smoothing.
         let g = y.data[i] - (cr.data[i] + cb.data[i]) * 0.25;
         *p = [g + cr.data[i], g, g + cb.data[i]].map(|v| v.max(0.0).powi(2));
-        if luma_strength == 0.0 {
+        if !smooth_luma {
             let gain = original.max(0.0).powi(2) / color::luma(*p).max(1e-10);
             *p = p.map(|v| v * gain);
         }
@@ -225,8 +243,9 @@ fn denoise(image: &mut Image, strength: f32) {
         // At high strength, use the chroma-cleaned luminance estimate as well:
         // the camera colour matrix correlates colour noise with noisy Y.
         // Restoring all of that Y would bring the removed noise back as grain.
-        input.data.par_iter_mut().zip(&guide.data).for_each(|(v, g)| *v += (*g - *v) * luma_strength);
-        let luma = Guided::new(&guide, 2).into_filter(input, 0.00005 * luma_strength * luma_strength);
+        input.data.par_iter_mut().zip(&guide.data).for_each(|(v, g)| *v += (*g - *v) * luma_blend);
+        drop(guide);
+        let luma = crate::image::wavelet_denoise(input, luma_sigma, luma_threshold);
         image.data.par_iter_mut().enumerate().for_each(|(i, p)| {
             let gain = luma.data[i].max(0.0).powi(2) / color::luma(*p).max(1e-10);
             *p = p.map(|v| v * gain);
@@ -305,18 +324,20 @@ pub struct Render {
     pub white_balance: WhiteBalance,
     pub sensor_clipped_pct: f64,
     pub noise_reduction: crate::noise::NoiseReduction,
+    pub scene_reuse: &'static str,
 }
 
 /// Develop at native resolution through sharpening, then resize encoded
 /// pixels. Nonlinear tone/gamut operations cannot be commuted with averaging;
 /// scaling radii alone would still misrepresent noise, clipping and contrast.
 pub fn render(raw: &RawImage, params: &Params, size: Size) -> Result<Render> {
-    let Scene { image, white_balance, sensor_clipped_pct, noise_reduction, .. } = scene(raw, params, Size::default())?;
+    let Scene { image, white_balance, sensor_clipped_pct, noise_reduction, scene_reuse, .. } =
+        scene(raw, params, Size::default())?;
     let finished = finish_owned(image, params, &Spaces::new());
     let stage = crate::profile::Stage::new("output resize");
     let image = size.apply(finished);
     drop(stage);
-    Ok(Render { image, white_balance, sensor_clipped_pct, noise_reduction })
+    Ok(Render { image, white_balance, sensor_clipped_pct, noise_reduction, scene_reuse })
 }
 
 /// Builds the scene-linear image for a recipe. A reduced size is an
@@ -327,47 +348,74 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
     let noise_reduction = crate::noise::resolve(raw, params.denoise);
     let cam_to_work = color::camera_to_working(&camera_matrix(raw)?);
     let (white_balance, gains) = white_balance(raw, params)?;
-    let mosaic = demosaic::prepare(raw, gains);
 
     // What the final picture's long edge will be at full resolution.
     let crop = &params.crop;
     let (cw, ch) = ((crop.right - crop.left) as f32, (crop.bottom - crop.top) as f32);
     let upright = if matches!(raw.meta.orientation, 6 | 8) {
-        (mosaic.height, mosaic.width)
+        (raw.crop.height, raw.crop.width)
     } else {
-        (mosaic.width, mosaic.height)
+        (raw.crop.width, raw.crop.height)
     };
     let full_edge = (upright.0 as f32 * cw).max(upright.1 as f32 * ch);
     // Half-resolution demosaicing samples each CFA tile, with automatic
     // neutral-edge colour protection, only for reduced candidate analysis.
     let half = size.max_edge.is_some_and(|edge| edge as f32 <= full_edge * 0.5);
 
+    // Native development depends on the sensor data and these settings only;
+    // orientation, rotation and crop follow, so reframing reuses it as well.
+    let key = (!half)
+        .then(|| {
+            crate::cache::key(&crate::cache::Inputs {
+                raw,
+                gains,
+                camera_to_working: cam_to_work,
+                lens_corrections: params.lens_corrections,
+                defringe: params.defringe,
+                denoise: noise_reduction.strength,
+            })
+        })
+        .flatten();
     drop(stage);
-    let stage = crate::profile::Stage::new("demosaic");
-    let mut image = if half { demosaic::half(&mosaic) } else { demosaic::full(&mosaic) };
+    let stage = crate::profile::Stage::new("scene reuse");
+    let reused = key.as_ref().and_then(crate::cache::load);
     drop(stage);
-    let stage = crate::profile::Stage::new("sensor/highlights");
-    let (_, _, clipped) = crate::stats::sensor_clipping(raw);
-    demosaic::reconstruct_highlights(&mut image, mosaic.clip);
-    drop(mosaic);
-    drop(stage);
-    let stage = crate::profile::Stage::new("lens/matrix/fringe");
-    if params.lens_corrections {
-        if let Some(tables) = &raw.lens {
-            if let Some(corrected) = lens::correct(&image, tables) {
-                image = corrected;
+    let (image, clipped, scene_reuse) = if let Some(image) = reused {
+        (image, crate::stats::sensor_clipping(raw).2, "reused")
+    } else {
+        let stage = crate::profile::Stage::new("noise/prepare");
+        let mosaic = demosaic::prepare(raw, gains);
+        drop(stage);
+        let stage = crate::profile::Stage::new("demosaic");
+        let mut image = if half { demosaic::half(&mosaic) } else { demosaic::full(&mosaic) };
+        drop(stage);
+        let stage = crate::profile::Stage::new("sensor/highlights");
+        let (_, _, clipped) = crate::stats::sensor_clipping(raw);
+        demosaic::reconstruct_highlights(&mut image, mosaic.clip);
+        drop(mosaic);
+        drop(stage);
+        let stage = crate::profile::Stage::new("lens/matrix/fringe");
+        if params.lens_corrections {
+            if let Some(tables) = &raw.lens {
+                if let Some(corrected) = lens::correct(&image, tables) {
+                    image = corrected;
+                }
             }
         }
-    }
-    image.map(|p| color::apply(&cam_to_work, p));
-    crate::fringe::suppress(&mut image, params.defringe as f32 / 100.0, if half { 2 } else { 3 });
-    drop(stage);
-    let stage = crate::profile::Stage::new("denoise");
-    if !half {
-        denoise(&mut image, noise_reduction.strength as f32 / 100.0);
-    }
+        image.map(|p| color::apply(&cam_to_work, p));
+        crate::fringe::suppress(&mut image, params.defringe as f32 / 100.0, if half { 2 } else { 3 });
+        drop(stage);
+        let stage = crate::profile::Stage::new("denoise");
+        if !half {
+            denoise(&mut image, noise_reduction.strength as f32 / 100.0);
+        }
+        drop(stage);
+        let stage = crate::profile::Stage::new("scene store");
+        let stored = key.as_ref().is_some_and(|key| crate::cache::store(key, &image));
+        drop(stage);
+        (image, clipped, if stored { "stored" } else { "off" })
+    };
 
-    drop(stage);
     let stage = crate::profile::Stage::new("geometry/scene resize");
     let mut image = framed(image, raw.meta.orientation, params);
     let mut scale = if half { 0.5 } else { 1.0 };
@@ -383,7 +431,7 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
         }
     }
     drop(stage);
-    Ok(Scene { image, white_balance, sensor_clipped_pct: clipped, scale, noise_reduction })
+    Ok(Scene { image, white_balance, sensor_clipped_pct: clipped, scale, noise_reduction, scene_reuse })
 }
 
 /// Unsharp mask on the encoded image's luminance, limited to the local
@@ -464,12 +512,12 @@ pub fn render_mask(raw: &RawImage, params: &Params, size: Size, index: usize) ->
             params.masks.len()
         )));
     }
-    let Scene { mut image, white_balance, sensor_clipped_pct, noise_reduction, .. } =
+    let Scene { mut image, white_balance, sensor_clipped_pct, noise_reduction, scene_reuse, .. } =
         scene(raw, params, Size::default())?;
     prepare_local(&mut image, params);
     let masks = crate::local::Masks::new(&image, params, &Spaces::new());
     let mask = masks.view(index, image.width, image.height);
-    Ok(Render { image: size.apply(mask), white_balance, sensor_clipped_pct, noise_reduction })
+    Ok(Render { image: size.apply(mask), white_balance, sensor_clipped_pct, noise_reduction, scene_reuse })
 }
 
 fn finish_owned(mut image: Image, params: &Params, spaces: &Spaces) -> Image {
@@ -554,8 +602,6 @@ mod tests {
         let value = 0.661_649_1_f32.powi(2);
         let params = Params { denoise: Some(52.44140625), ..Params::default() };
         let strength = params.denoise.unwrap() as f32 / 100.0;
-        let luma_strength = (strength - 0.5) * 2.0;
-        assert_eq!(0.00005 * luma_strength * luma_strength, f32::EPSILON);
         for (w, h) in [(64, 48), (1, 1), (1, 7), (7, 1), (3, 2)] {
             let mut image = Image { width: w, height: h, data: vec![[value; 3]; w * h] };
             denoise(&mut image, strength);
@@ -660,7 +706,7 @@ mod tests {
             p.map(|v| v * gain)
         });
         let original = image.clone();
-        denoise(&mut image, 0.5);
+        denoise_with(&mut image, 0.5, 0.0);
         for (a, b) in image.data.iter().zip(&original.data) {
             assert!((color::luma(*a) - color::luma(*b)).abs() < 1e-7);
         }

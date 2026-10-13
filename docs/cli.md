@@ -43,7 +43,9 @@ only settings that differ from the defaults, plus the rawsmith version in
 ```
 
 Version 0.2.0 uses a stronger base curve, preserves colour through tone
-mapping and measures denoise when unset. Existing sparse recipes render
+mapping and measures denoise when unset. Version 0.4.0 removes luminance
+grain wherever `denoise` resolves above 10 and extends `defringe` to
+coloured specks. Existing sparse recipes render
 under these current defaults; explicit values remain exact. Their writer
 version does not pin old rendering. `recipe_compatibility` reports
 `written_version`, `rendering_version`, `policy: "current_defaults"` and a
@@ -52,6 +54,29 @@ input recipe (including `edit --reset`). For `edit`/`auto` it describes the
 input recipe; the saved recipe records the current version. `render` and
 `compare` never rewrite it. Use the original executable for the original
 look; separate recipes alone do not pin a version's defaults.
+
+### Reusing the developed frame
+
+Everything up to noise reduction depends only on the RAW and on
+`temperature`, `tint`, `lens_corrections`, `defringe` and `denoise`.
+`render`, `edit`, `auto` and `compare` keep that developed, scene-linear
+frame on disk and start later renders of the same photo from it; changing
+any other setting, including crop and rotation, reuses it. The stored
+values are the exact float bits development produced, so outputs and
+reports are byte-identical with and without reuse. Reports say what
+happened in `scene_reuse`: `reused`, `stored` or `off`.
+
+A frame is identified by the sensor data, those settings and the content
+of the running executable, so another build never reads it. Frames live in
+`rawsmith-scenes-<user>` under the system temporary directory, private to
+the user (a directory another account owns or can write is not used). A 33
+MP frame takes about 390 MB; the most recently used 6000 MB are kept and
+frames unused for a day are removed. `RAWSMITH_CACHE_DIR` moves the
+directory and `RAWSMITH_CACHE_MB` sets the limit, with `0` turning reuse
+off. Frames under a megapixel are not stored. A stored frame carries a
+checksum of its pixels; one that fails it, or any failure to read or write,
+develops the photo as usual. Cleaning up removes only files this cache
+wrote, so the directory may hold other things.
 
 An explicit `render --recipe FILE` requires that file to exist, so a
 misspelled path cannot silently export an unedited picture. `edit` and
@@ -78,6 +103,9 @@ recipe version mismatches and unresolved/unreachable/unavailable auto bounds.
 120 characters plus an ellipsis and any failure qualifiers from later clauses).
 Omit `--brief` for complete decisions, recipe settings, histogram, hue/chroma
 statistics and noise diagnostics. Full reports also include these export fields.
+`auto` analyses the photo before applying any `--set`; when assignments are
+given, the last decision lists them and says the earlier decisions describe
+the proposal before them.
 
 For recipe-only `edit`/`auto`, both reports have `output_bytes: null` and
 `quality: null`; brief `output` and `stats` are also `null`. Brief reports
@@ -285,6 +313,21 @@ RAW, its default sidecar, or any selected recipe (including file aliases).
 Developed panels include `noise_reduction` and `recipe_compatibility` with
 the same meanings as render reports. Camera panels have no noise measurement
 because their JPEG is not developed by rawsmith.
+
+Every panel has a `look`: lightness percentiles `p1`, `p5`, `p50`, `p95`,
+`p99` and `spread`, mean chroma, pure white and pure black percentages, and
+`colours`, the share, chroma and lightness of each colour family holding at
+least 5% of the colourful pixels. When the row has a camera panel with
+established colour, each developed panel in the camera's framing also has
+`losses_against_camera`: plain sentences for what that version gave up
+against the camera's rendering — darkest tones lifted by five points or
+more, lightness spread below 80% of the camera's, one point more pure white
+or two more pure black, a colour family at under 80% of its chroma (and
+whether it also became paler), or one that nearly disappeared. A colour at
+over 150% is reported as well. These are measurements to check by eye, not
+faults: fog is meant to be soft. An empty list means none of these was
+measured, not that the edit is better. Panels with another framing have no
+such list.
 
 Every panel is rotated upright using the RAW's orientation, including the
 camera JPEG; embedded JPEG orientation metadata is ignored. Orientations

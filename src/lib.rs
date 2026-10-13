@@ -7,6 +7,7 @@
 pub mod adjust;
 pub mod arw;
 pub mod auto;
+pub mod cache;
 pub mod color;
 pub mod compare;
 pub mod demosaic;

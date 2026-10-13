@@ -1,4 +1,76 @@
-# Pixel-preserving render optimisation
+# Render performance
+
+Two rounds of work are recorded here. The second, for 0.4.0, comes first;
+the pixel-preserving optimisation it builds on follows unchanged.
+
+## 0.4.0: reusing the developed frame
+
+An assistant renders one photo many times while only finishing settings
+change. The frame after noise reduction depends on the RAW, white balance,
+lens corrections, defringe and denoise alone, so the CLI now keeps it on
+disk between commands ([how](cli.md#reusing-the-developed-frame)) and later
+renders start from it. The same release changed luminance noise reduction
+on purpose, which costs time when a frame is developed.
+
+Same host, method and two files as below; medians of three serial runs of
+`scripts/perf-render.py` with `--features render-profile`. "First" develops
+the photo with reuse off; "later" is a render whose frame was stored by an
+earlier command. 0.3.0 has no reuse, so every render was a first render.
+
+| Workload | ISO 100 s, 0.3.0 → first → later | ISO 100 RSS GB | ISO 4000 s, 0.3.0 → first → later | ISO 4000 RSS GB |
+|---|---:|---:|---:|---:|
+| Native JPEG | 3.49 → 3.50 → 1.86 | 2.09 → 2.09 → 1.18 | 4.62 → 4.88 → 1.90 | 2.30 → 2.30 → 1.19 |
+| 1400 px preview | 2.89 → 2.90 → 1.29 | 1.91 → 1.91 → 0.97 | 3.97 → 4.25 → 1.29 | 2.10 → 2.10 → 0.97 |
+| auto + 1400 px preview | 5.80 → 4.65 | 2.18 → 2.15 | 7.18 → 6.22 | 2.35 → 2.30 |
+
+A complete loop on an uninstrumented build (auto with preview, compare,
+three edits with previews including a crop, colour and a mask, compare, two
+native regions, native export; two repetitions agreed within 0.2 s) took
+38.3 s on 0.3.0 and 25.4 s with reuse at ISO 100, and 47.3 s and 27.6 s at
+ISO 4000. An edit with a preview fell from 3.65 and 4.63 s to 2.07 s. All
+nine outputs at ISO 100 are byte-identical to 0.3.0's; at ISO 4000 they
+differ because noise reduction does.
+
+What changed:
+
+- A later render reads the stored frame (0.13 s for 393 MB) instead of
+  developing it (1.7 s at ISO 100, 3.0 s at ISO 4000), and never holds the
+  mosaic or the denoiser's planes, which is where the RSS goes.
+- Luminance noise reduction is wavelet shrinkage (see
+  [pipeline.md](pipeline.md)). At ISO 4000 the denoise stage takes 2.36 s
+  where it took 2.04 s; at ISO 100, where it does not run, the stage is
+  unchanged.
+- `auto` measured one candidate rendering on a single thread, with a
+  colour conversion and two large sorts; conversions and sorts are now
+  parallel with sums kept in pixel order, and repeated candidates are not
+  rendered twice. Recipes and decisions are identical on all 34 development
+  photos. The camera reference is decoded at the smallest size the analysis
+  needs instead of in full (0.08–0.12 s instead of 0.44–0.50 s), which
+  moves its measured tones by a few tenths of a lightness point and changed
+  one setting by one step in 2 of 34 recipes. Analysis fell from 1.9–2.2 s
+  to 0.9–1.1 s.
+
+Correctness: the commit that added reuse, before noise reduction changed,
+passes the historical render hashes on the reference host, and CLI tests
+compare every output and report with and without reuse across sizes,
+regions, crops, rotation, masks, curves and both formats. The hashes in
+`tests/determinism.rs` were recorded again for the new noise reduction.
+
+Tried and not kept:
+
+- Replacing the system library's cube root and power in finishing with
+  plain-arithmetic roots accurate to float rounding. Finishing a later
+  render is 0.9–1.5 s, about 40% of its CPU time in `powf` and `cbrtf`. On the
+  reference host the replacement made the colour stage slower (0.88 →
+  1.30 s) and was removed.
+- Developing previews at reduced resolution remains deferred for the
+  reasons under "Correctness and remaining targets"; with reuse the
+  optimistic saving is the finishing time of a later render, about 1 s.
+
+The 2 GB RSS objective is met by later renders and remains unmet by first
+renders at ISO 4000 (2.30 GB).
+
+# Pixel-preserving render optimisation (0.3.0)
 
 Measured on the reference Intel Core i7-10700 (8 cores / 16 threads),
 macOS 12.6, Rust 1.99.0, with two 33 MP Sony A7 IV files at ISO 100 and ISO 4000. The baseline
@@ -128,7 +200,8 @@ python3 scripts/perf-render.py after /path/to/reference/raw-directory
 
 The script uses the two designated reference filenames, isolated `{}`
 recipes, the default JPEG quality (92), native JPEG exports, 1400 px previews, and `auto` with
-1400 px output. It writes images, recipes, stdout, stderr and summary JSON
+1400 px output, all with frame reuse off, then `reuse-export` and
+`reuse-preview` against a frame it stores first in its own directory. It writes images, recipes, stdout, stderr and summary JSON
 under `/tmp/rawsmith-perf-<label>`. A label contains only letters, digits,
 underscores or hyphens. It owns no host scheduler or lock.
 

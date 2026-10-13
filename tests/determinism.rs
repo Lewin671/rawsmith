@@ -155,8 +155,10 @@ fn auto_recipe_and_decisions_ignore_rayon_scheduling() {
     }
 }
 
-// FNV-1a over dimensions, exact float bits and encoded files. Golden values
-// were recorded on main (631d308), before any optimisation, in release mode.
+// FNV-1a over dimensions, exact float bits and encoded files, in release mode.
+// The values recorded on main (631d308) held through every pixel-preserving
+// change up to the scene cache; they were recorded again when luminance
+// noise reduction changed the pixels on purpose (wavelet shrinkage).
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 fn hash_bytes(bytes: impl IntoIterator<Item = u8>) -> u64 {
     bytes.into_iter().fold(0xcbf29ce484222325, |hash, byte| (hash ^ byte as u64).wrapping_mul(0x100000001b3))
@@ -190,30 +192,30 @@ fn main_render_golden_hashes() {
         }
     }
     let expected: &[u64] = &[
-        0xb85b0817698d8297,
-        0x225074ecba9346ee,
-        0xff5346cde7745533,
-        0xa301a07a56b875da,
-        0xe77c5f29e1b872e9,
-        0xe77c5f29e1b872e9,
-        0x94777d3e7a0671b2,
-        0x9fb186f21f77de67,
-        0x2d151a4699053646,
-        0xf6be77d6d3b054c0,
-        0xd4b409d878d803a4,
-        0xd4b409d878d803a4,
-        0xae1fb123233d60d6,
-        0x906341e98c89b73a,
-        0xd35423824830a1b3,
-        0x6e47f37db21bf7c5,
-        0x6891e9608954e1fc,
-        0x6891e9608954e1fc,
-        0x727730d2942d5042,
-        0x152a3389e6fd12a7,
-        0xd19985231e48a861,
-        0x764518a50d09d4e3,
-        0x73b8be2377867744,
-        0x73b8be2377867744,
+        0xe882d2d98b7e5a9c,
+        0xa4df9fb8b62dd3a4,
+        0x66c6a06ee809ca48,
+        0xc337735206ec15c4,
+        0xed9de9190f920da0,
+        0xed9de9190f920da0,
+        0xcd0e28ba09c13276,
+        0xc7e0cee16623d65b,
+        0xc188c4964461745f,
+        0x89084e8a09bab0be,
+        0x855c669123865fb7,
+        0x855c669123865fb7,
+        0xa54101639f6bfe39,
+        0xb56ae940fe5846a7,
+        0x64d45881ab937f3b,
+        0xd94674ae6685c324,
+        0xbb23fc0cd0d28b4a,
+        0xbb23fc0cd0d28b4a,
+        0x15ccd239af1d00ba,
+        0x59ec735360191ef3,
+        0x134cd09c9d852735,
+        0x272189a85e6362f6,
+        0x9a6d6cc46513ce74,
+        0x9a6d6cc46513ce74,
     ];
     assert_eq!(got, expected);
 }

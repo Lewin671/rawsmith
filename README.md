@@ -127,6 +127,14 @@ from the defaults.
 - **Previews match resized exports.** Previews develop at full resolution,
   including noise reduction, tone and sharpening, then area-resize the
   finished sRGB pixels. Check 100% detail for artefacts hidden by resizing.
+- **Rounds are quick.** The developed frame of a photo is kept in the
+  temporary directory between commands, so changing tone, colour, crop or
+  masks does not develop the RAW again, and the picture is the same bytes
+  either way ([details](docs/cli.md#reusing-the-developed-frame)).
+- **It says what an edit cost.** `compare` lists what each version gave up
+  against the camera's rendering: a lifted black point, flatter tones, new
+  clipping, a colour gone weak. An assistant chasing an idea tends not to
+  see those.
 - **An edit is a recipe.** `render --set` tries
   settings; `edit` saves them. The same rawsmith binary, RAW and recipe produce
   the same file, bit for bit ([exact terms](docs/cli.md)).
@@ -177,15 +185,17 @@ the camera, `auto` is at least as good as the camera, and the clear gain
 comes from the assistant's judgement — cropping, deciding what should be
 bright, and choosing a palette.
 
-On the reference Intel i7-10700 (8 cores / 16 threads, macOS), a 33 MP
-ISO 100 file now takes 2.89 s for a 1400 px default preview, 5.80 s for
-`auto` with a preview, and 3.49 s for a native JPEG export. The ISO 4000
-file takes 3.97 / 7.18 / 4.62 s respectively. A typical edited recipe
-(curve, colour, masks) adds about a second to a preview. Peak RSS ranges from 1.91 to
-2.35 GB across these workloads. These are medians of three serial runs
-with allocation diagnostics enabled; pixels and encoded files match the
-pre-optimisation main build. Previews still develop at native resolution
-and resize last. [Before/after stages, method and remaining targets](docs/performance.md).
+On the reference Intel i7-10700 (8 cores / 16 threads, macOS), the first
+render of a 33 MP ISO 100 file takes 2.90 s for a 1400 px default preview,
+4.65 s for `auto` with a preview, and 3.50 s for a native JPEG export; an
+ISO 4000 file takes 4.25 / 6.22 / 4.88 s. Every later render of the same
+photo in an editing session reuses its developed frame: 1.29 s for a
+preview and 1.86–1.90 s for a native export at either ISO, with peak RSS
+of 0.97–1.19 GB instead of 1.91–2.30 GB. A typical edited recipe (curve,
+colour, masks) adds about 0.8 s. These are medians of three serial runs
+with allocation diagnostics enabled. Reused renders are byte-identical to
+fresh ones; previews still develop at native resolution and resize last.
+[Stages, method and what was tried](docs/performance.md).
 
 Decoder samples matched LibRaw on the original 18 test files and two
 additional CC0 lossless Bayer files (55,050,240/55,050,240 samples).
@@ -205,9 +215,9 @@ masks, local white balance, spot removal or dust removal.
 
 Known rendering weaknesses: with the sun in frame, pulling `highlights`
 far down shows the blown core as a disc with a visible edge where the
-camera shows a soft glow; fine branches against a blown sky can keep a few
-coloured specks at 100%; high-ISO luminance grain is a little coarser than
-the camera's.
+camera shows a soft glow; fine branches against a blown sky can keep some
+pastel specks at 100% even with `defringe`; at high ISO, texture weaker
+than the noise is smoothed away with it.
 
 Output is sRGB JPEG or 16-bit PNG, without
 camera metadata.

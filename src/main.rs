@@ -243,21 +243,21 @@ impl RecipeOrigin {
             "rendering_version": current,
             "policy": "current_defaults",
             "note": if self.version.as_deref().is_some_and(same_defaults) { None } else {
-                Some("Recipe rendered with current defaults (0.2: luminance tone mapping, stronger base contrast, contrast-linked colour, measured denoise when unset). Writer version does not pin rendering. Default migration retains explicit values; auto still replaces tone and colour. Use the original binary for the original look.")
+                Some("Recipe rendered with current defaults (0.2: luminance tone mapping, stronger base contrast, contrast-linked colour, measured denoise when unset; 0.4: denoise also removes luminance grain from strength 10 up, defringe also calms coloured specks). Writer version does not pin rendering. Default migration retains explicit values; auto still replaces tone and colour. Use the original binary for the original look.")
             },
         })
     }
 }
 
-/// Defaults last changed in 0.2.0; recipes written by that version or later
-/// (up to this one) render the same pixels here.
+/// Rendering last changed in 0.4.0 (noise reduction and defringe); recipes
+/// written by that version or later (up to this one) render the same pixels here.
 fn same_defaults(written: &str) -> bool {
     let parse = |v: &str| -> Option<(u64, u64, u64)> {
         let mut parts = v.split('.').map(|p| p.parse().ok());
         Some((parts.next()??, parts.next()??, parts.next()??))
     };
     match (parse(written), parse(env!("CARGO_PKG_VERSION"))) {
-        (Some(written), Some(current)) => written >= (0, 2, 0) && written <= current,
+        (Some(written), Some(current)) => written >= (0, 4, 0) && written <= current,
         _ => false,
     }
 }
@@ -498,6 +498,7 @@ fn prepare_render(raw: &arw::RawImage, params: &Params, target: &Target) -> Resu
         "noise_reduction": rendered.noise_reduction,
         "sensor_clipped_pct": rendered.sensor_clipped_pct,
         "sensor_clipped_scope": "full_active_area",
+        "scene_reuse": rendered.scene_reuse,
         "region": region,
         "stats": stats::image_stats(&image, &spaces),
         "elapsed_ms": started.elapsed().as_millis() as u64,
@@ -622,7 +623,15 @@ fn run(cli: Cli) -> Result<Value> {
             drop(file);
             let params = proposal.params.with_assignments(&source.set)?;
             let mut report = save_edit(&raw, &path, &params, &target)?;
-            report["decisions"] = json!(proposal.notes);
+            let mut decisions = proposal.notes;
+            if !source.set.is_empty() {
+                // The analysis ran before these assignments and did not see them.
+                decisions.push(format!(
+                    "overrides applied after this analysis: {}; the decisions above describe the proposal before them, so their settings and measured bounds may not match the saved recipe",
+                    source.set.join(", ")
+                ));
+            }
+            report["decisions"] = json!(decisions);
             recipe_origin(&mut report, origin);
             Ok(editing_report(report, &target, true))
         }
@@ -721,6 +730,7 @@ fn main() -> ExitCode {
         }
         Err(e) => return fail("usage", e.to_string().trim()),
     };
+    rawsmith::cache::configure(rawsmith::cache::Config::from_env());
     match run(cli) {
         Ok(value) => {
             println!("{}", serde_json::to_string_pretty(&value).expect("reports always serialise"));

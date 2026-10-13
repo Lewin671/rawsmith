@@ -27,8 +27,9 @@ For stage diagnostics build with `--features render-profile` and set
 `RAWSMITH_PROFILE=1`; diagnostics go to stderr without changing report JSON.
 See [performance measurements](docs/performance.md) for fields, workload
 runner and allocation/RSS distinctions. Pure optimisations must preserve
-pixel bits, reports and encoded bytes. The historical render hashes in
-`tests/determinism.rs` are the Intel macOS baseline; portable original-filter
+pixel bits, reports and encoded bytes. The render hashes in
+`tests/determinism.rs` are the Intel macOS baseline; record them again only
+for a change that is meant to alter pixels, and say so in the test; portable original-filter
 and scheduling controls also run on other platforms.
 
 ## Changing image quality

@@ -67,6 +67,37 @@ class WorkDirectoryTests(unittest.TestCase):
                     command(SimpleNamespace(work=str(self.work)))
                 self.assertEqual((images / "keep.txt").read_text(), "unrelated files")
 
+    def test_render_refuses_inputs_inside_the_directory_it_clears(self):
+        self.marked()
+        outside = self.base / "inputs"
+        outside.mkdir()
+        binary = outside / "rawsmith"
+        binary.write_text("#!/bin/sh\n")
+        (outside / "a.ARW").write_bytes(b"raw outside")
+        (self.work / "verdicts-keep.json").write_text("{}")
+        for inside in ("images", "blind", "recipes"):
+            directory = self.work / inside
+            directory.mkdir()
+            (directory / "a.ARW").write_bytes(b"raw bytes")
+            (directory / "a.json").write_text("{}")
+        (self.work / "tasks.json").write_text("[]")
+        inner_binary = self.work / "images" / "rawsmith"
+        inner_binary.write_text("#!/bin/sh\n")
+        before = {path: path.read_bytes() for path in self.work.rglob("*") if path.is_file()}
+        cases = [
+            dict(raws=self.work / "images", recipes=None, rawsmith=binary),
+            dict(raws=self.work / "blind", recipes=None, rawsmith=binary),
+            dict(raws=self.work, recipes=None, rawsmith=binary),
+            dict(raws=outside, recipes=self.work / "recipes", rawsmith=binary),
+            dict(raws=outside, recipes=None, rawsmith=inner_binary),
+        ]
+        for case in cases:
+            with self.subTest(case=case):
+                error = io.StringIO()
+                with self.assertRaises(SystemExit), contextlib.redirect_stderr(error):
+                    photos.cmd_render(SimpleNamespace(work=str(self.work), **{k: v and str(v) for k, v in case.items()}))
+                self.assertEqual({path: path.read_bytes() for path in self.work.rglob("*") if path.is_file()}, before)
+
     def test_invalid_markers_are_not_adopted(self):
         marker = self.marked()
         invalid = [

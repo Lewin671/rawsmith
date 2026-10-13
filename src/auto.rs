@@ -10,6 +10,7 @@ use crate::error::Result;
 use crate::image::Image;
 use crate::params::Params;
 use crate::pipeline::{self, Size};
+use rayon::prelude::*;
 
 /// Long edge of the analysis image.
 const ANALYSIS_EDGE: usize = 640;
@@ -58,11 +59,15 @@ fn measure(image: &Image, spaces: &Spaces) -> Measure {
     let mut saturation = Vec::new();
     let mut neutral_bright = 0usize;
     let mut highlight_clipped = 0usize;
+    // The colour conversion is the expensive part and independent per pixel;
+    // the sums below stay in pixel order so results do not depend on threads.
+    let labs: Vec<[f32; 3]> =
+        image.data.par_iter().map(|p| spaces.to_oklab(apply(&spaces.srgb_to_work, p.map(srgb_decode)))).collect();
     let mut samples: Vec<(f32, f32)> = image
         .data
         .iter()
-        .map(|p| {
-            let lab = spaces.to_oklab(apply(&spaces.srgb_to_work, p.map(srgb_decode)));
+        .zip(&labs)
+        .map(|(p, lab)| {
             let sample = (lab[0] * 100.0, (lab[1] * lab[1] + lab[2] * lab[2]).sqrt() * 100.0);
             if sample.0 > 90.0 && p.iter().any(|&v| v >= 0.998) {
                 highlight_clipped += 1;
@@ -79,8 +84,10 @@ fn measure(image: &Image, spaces: &Spaces) -> Measure {
             sample
         })
         .collect();
-    samples.sort_by(|a, b| a.0.total_cmp(&b.0));
-    saturation.sort_by(f32::total_cmp);
+    drop(labs);
+    // Stable, so equal lightness keeps pixel order whatever the thread count.
+    samples.par_sort_by(|a, b| a.0.total_cmp(&b.0));
+    saturation.par_sort_unstable_by(f32::total_cmp);
     let n = samples.len();
     let at = |p: f32| samples[((n - 1) as f32 * p) as usize].0;
     let mean = samples.iter().map(|s| s.0).sum::<f32>() / n as f32;
@@ -272,7 +279,7 @@ pub fn auto_with_file(raw: &RawImage, base: &Params, file: &[u8]) -> Result<Auto
     // would leave too few pixels and shift the reference percentiles.
     let kept = (base.crop.right - base.crop.left).min(base.crop.bottom - base.crop.top).clamp(0.05, 1.0);
     let camera_edge = ((ANALYSIS_EDGE as f64 / kept).ceil() as usize).min(CAMERA_EDGE_LIMIT);
-    match crate::compare::row(raw, file, &panels, camera_edge) {
+    match crate::compare::analysis_row(raw, file, &panels, camera_edge) {
         Ok((image, report, true)) => {
             // The single camera panel is already upright. Apply the recipe's
             // rotation/crop once, without running developing controls on it.
@@ -331,8 +338,20 @@ fn propose(raw: &RawImage, base: &Params, camera: Option<Measure>, camera_note: 
     let noise = crate::noise::resolve(raw, params.denoise);
     let scene = pipeline::scene(raw, &params, Size { max_edge: Some(ANALYSIS_EDGE) })?;
     let spaces = Spaces::new();
-    let look =
-        |p: &Params| measure(&pipeline::finish(&scene.image, &Params { sharpen: 0.0, ..p.clone() }, &spaces), &spaces);
+    // The searches below often return to settings they have already tried
+    // (a bisection end point, a trial repeated after it is accepted).
+    let measured: std::cell::RefCell<Vec<(Params, std::rc::Rc<Measure>)>> = Default::default();
+    let look = |p: &Params| {
+        if let Some((_, known)) = measured.borrow().iter().find(|(tried, _)| tried == p) {
+            return known.clone();
+        }
+        let fresh = std::rc::Rc::new(measure(
+            &pipeline::finish(&scene.image, &Params { sharpen: 0.0, ..p.clone() }, &spaces),
+            &spaces,
+        ));
+        measured.borrow_mut().push((p.clone(), fresh.clone()));
+        fresh
+    };
     let default_image = pipeline::finish(&scene.image, &Params { sharpen: 0.0, ..params.clone() }, &spaces);
     let neutral = measure(&default_image, &spaces);
     let mut notes = vec![format!(
