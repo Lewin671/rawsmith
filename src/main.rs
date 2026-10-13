@@ -242,10 +242,23 @@ impl RecipeOrigin {
             "written_version": self.version,
             "rendering_version": current,
             "policy": "current_defaults",
-            "note": if self.version.as_deref() == Some(current) { None } else {
+            "note": if self.version.as_deref().is_some_and(same_defaults) { None } else {
                 Some("Recipe rendered with current defaults (0.2: luminance tone mapping, stronger base contrast, contrast-linked colour, measured denoise when unset). Writer version does not pin rendering. Default migration retains explicit values; auto still replaces tone and colour. Use the original binary for the original look.")
             },
         })
+    }
+}
+
+/// Defaults last changed in 0.2.0; recipes written by that version or later
+/// (up to this one) render the same pixels here.
+fn same_defaults(written: &str) -> bool {
+    let parse = |v: &str| -> Option<(u64, u64, u64)> {
+        let mut parts = v.split('.').map(|p| p.parse().ok());
+        Some((parts.next()??, parts.next()??, parts.next()??))
+    };
+    match (parse(written), parse(env!("CARGO_PKG_VERSION"))) {
+        (Some(written), Some(current)) => written >= (0, 2, 0) && written <= current,
+        _ => false,
     }
 }
 

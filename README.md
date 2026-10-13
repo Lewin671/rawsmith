@@ -180,7 +180,8 @@ bright, and choosing a palette.
 On the reference Intel i7-10700 (8 cores / 16 threads, macOS), a 33 MP
 ISO 100 file now takes 2.89 s for a 1400 px default preview, 5.80 s for
 `auto` with a preview, and 3.49 s for a native JPEG export. The ISO 4000
-file takes 3.97 / 7.18 / 4.62 s respectively. Peak RSS ranges from 1.91 to
+file takes 3.97 / 7.18 / 4.62 s respectively. A typical edited recipe
+(curve, colour, masks) adds about a second to a preview. Peak RSS ranges from 1.91 to
 2.35 GB across these workloads. These are medians of three serial runs
 with allocation diagnostics enabled; pixels and encoded files match the
 pre-optimisation main build. Previews still develop at native resolution

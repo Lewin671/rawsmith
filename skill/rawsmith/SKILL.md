@@ -102,7 +102,8 @@ keep a version.
 6. **Check at 100%** —
    `rawsmith render photo.ARW --region 0.4,0.4,0.6,0.6 -o detail.jpg --brief`
    (`left,top,right,bottom` as fractions of the finished, cropped
-   picture). Look at the subject, the darkest area you lifted, a patch of
+   picture; always full resolution, so it cannot be combined with
+   `--size` — use a smaller region instead). Look at the subject, the darkest area you lifted, a patch of
    smooth sky, and any hard edge against a bright background. Strong
    settings are where artefacts come from: noise in lifted shadows,
    blotches from `dehaze`/`clarity` in smooth areas, jagged edges from
