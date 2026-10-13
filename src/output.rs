@@ -65,9 +65,121 @@ pub fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     written
 }
 
-/// Writes `image` (sRGB-encoded, 0..1) to `path`. The extension selects the
+struct Temporary {
+    path: std::path::PathBuf,
+    remove_on_drop: bool,
+}
+
+impl Drop for Temporary {
+    fn drop(&mut self) {
+        if self.remove_on_drop {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn temporary_name(path: &Path) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".rawsmith.{}.{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    name.into()
+}
+
+fn reserve_temporary<T>(path: &Path, create: impl Fn(&Path) -> std::io::Result<T>) -> std::io::Result<(Temporary, T)> {
+    for _ in 0..100 {
+        let candidate = temporary_name(path);
+        match create(&candidate) {
+            Ok(value) => return Ok((Temporary { path: candidate, remove_on_drop: true }, value)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "cannot reserve a temporary output name"))
+}
+
+fn stage(path: &Path, bytes: &[u8]) -> std::io::Result<Temporary> {
+    use std::io::Write;
+    let (temporary, mut file) =
+        reserve_temporary(path, |candidate| std::fs::OpenOptions::new().write(true).create_new(true).open(candidate))?;
+    // Keep the create_new handle: reopening the name could follow a swapped-in link.
+    file.write_all(bytes)?;
+    Ok(temporary)
+}
+
+fn backup(path: &Path) -> std::io::Result<Option<Temporary>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    if metadata.is_file() {
+        return reserve_temporary(path, |candidate| std::fs::hard_link(path, candidate))
+            .map(|(temporary, ())| Some(temporary));
+    }
+    if metadata.is_symlink() {
+        let target = std::fs::read_link(path)?;
+        #[cfg(unix)]
+        return reserve_temporary(path, |candidate| std::os::unix::fs::symlink(&target, candidate))
+            .map(|(temporary, ())| Some(temporary));
+        #[cfg(windows)]
+        return reserve_temporary(path, |candidate| std::os::windows::fs::symlink_file(&target, candidate))
+            .map(|(temporary, ())| Some(temporary));
+        #[cfg(not(any(unix, windows)))]
+        return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "cannot back up a symbolic link"));
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{} is not a file", path.display())))
+}
+
+/// Replaces two distinct destinations, restoring the first if committing the
+/// second fails. Both files are staged before either destination changes.
+/// This handles ordinary I/O failures; the two renames are not jointly atomic
+/// and do not provide recovery after process termination or power loss.
+pub fn replace_pair(first: (&Path, &[u8]), second: (&Path, &[u8])) -> std::io::Result<()> {
+    let resolved_name = |path: &Path| {
+        let absolute = std::path::absolute(path).ok()?;
+        Some(std::fs::canonicalize(absolute.parent()?).ok()?.join(absolute.file_name()?))
+    };
+    if first.0 == second.0 || resolved_name(first.0).is_some_and(|name| Some(name) == resolved_name(second.0)) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "paired outputs must have different names"));
+    }
+    let first_stage = stage(first.0, first.1)?;
+    let second_stage = stage(second.0, second.1)?;
+    let mut previous = backup(first.0)?;
+    std::fs::rename(&first_stage.path, first.0)?;
+    if let Err(commit_error) = std::fs::rename(&second_stage.path, second.0) {
+        let restored = match &previous {
+            Some(previous) => std::fs::rename(&previous.path, first.0),
+            None => std::fs::remove_file(first.0),
+        };
+        if let Err(restore_error) = restored {
+            let recovery = match &mut previous {
+                Some(previous) => {
+                    previous.remove_on_drop = false;
+                    format!("old output remains at {}", previous.path.display())
+                }
+                None => "there was no previous output to back up".into(),
+            };
+            return Err(std::io::Error::new(
+                commit_error.kind(),
+                format!(
+                    "cannot commit {}: {commit_error}; cannot restore {}: {restore_error}; {recovery}",
+                    second.0.display(),
+                    first.0.display()
+                ),
+            ));
+        }
+        return Err(std::io::Error::new(
+            commit_error.kind(),
+            format!("cannot commit {}: {commit_error}; {} restored", second.0.display(), first.0.display()),
+        ));
+    }
+    Ok(())
+}
+
+/// Encodes `image` (sRGB-encoded, 0..1). The path extension selects the
 /// format: `.jpg`/`.jpeg` (8-bit, `quality` 1..100) or `.png` (16-bit, lossless).
-pub fn write(path: &Path, image: &Image, quality: u8) -> Result<()> {
+pub fn encode(path: &Path, image: &Image, quality: u8) -> Result<Vec<u8>> {
     let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let (w, h) = (image.width, image.height);
     let failed =
@@ -88,7 +200,7 @@ pub fn write(path: &Path, image: &Image, quality: u8) -> Result<()> {
             encoder
                 .encode(&to_rgb8(image), w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
                 .map_err(|e| failed(&e))?;
-            replace(path, &bytes).map_err(|e| failed(&e))
+            Ok(bytes)
         }
         "png" => {
             let mut bytes = Vec::new();
@@ -100,15 +212,166 @@ pub fn write(path: &Path, image: &Image, quality: u8) -> Result<()> {
             let mut writer = encoder.write_header().map_err(|e| failed(&e))?;
             writer.write_image_data(&to_rgb16_be(image)).map_err(|e| failed(&e))?;
             writer.finish().map_err(|e| failed(&e))?;
-            replace(path, &bytes).map_err(|e| failed(&e))
+            Ok(bytes)
         }
         _ => Err(Error::Params(format!("unsupported output format '.{extension}'; use .jpg or .png"))),
     }
 }
 
+/// Encodes and replaces one image without opening an existing file for writing.
+pub fn write(path: &Path, image: &Image, quality: u8) -> Result<()> {
+    let bytes = encode(path, image, quality)?;
+    replace(path, &bytes).map_err(|e| Error::Io(std::io::Error::other(format!("cannot write {}: {e}", path.display()))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct PairFixture(std::path::PathBuf);
+
+    impl PairFixture {
+        fn new() -> Self {
+            let dir = temporary_name(&std::env::temp_dir().join("rawsmith-pair"));
+            std::fs::create_dir(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn path(&self, name: &str) -> std::path::PathBuf {
+            self.0.join(name)
+        }
+
+        fn assert_names(&self, expected: &[&str]) {
+            let mut names: Vec<_> = std::fs::read_dir(&self.0)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect();
+            names.sort();
+            let mut expected: Vec<_> = expected.iter().map(|name| name.to_string()).collect();
+            expected.sort();
+            assert_eq!(names, expected, "temporary files must be cleaned up");
+        }
+    }
+
+    impl Drop for PairFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn pair_staging_failure_changes_neither_destination() {
+        let f = PairFixture::new();
+        let first = f.path("preview");
+        let second = f.path("missing/recipe");
+        std::fs::write(&first, b"old preview").unwrap();
+        assert!(replace_pair((&first, b"new preview"), (&second, b"new recipe")).is_err());
+        assert_eq!(std::fs::read(&first).unwrap(), b"old preview");
+        assert!(!second.exists());
+        f.assert_names(&["preview"]);
+    }
+
+    #[test]
+    fn temporary_name_collision_preserves_the_foreign_file() {
+        let f = PairFixture::new();
+        let foreign = std::cell::RefCell::new(None);
+        let (temporary, file) = reserve_temporary(&f.path("preview"), |candidate| {
+            if foreign.borrow().is_none() {
+                std::fs::write(candidate, b"not ours")?;
+                *foreign.borrow_mut() = Some(candidate.to_owned());
+            }
+            std::fs::OpenOptions::new().write(true).create_new(true).open(candidate)
+        })
+        .unwrap();
+        drop(file);
+        drop(temporary);
+        let foreign = foreign.into_inner().unwrap();
+        assert_eq!(std::fs::read(&foreign).unwrap(), b"not ours");
+        assert_eq!(std::fs::read_dir(&f.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn pair_second_commit_failure_restores_the_old_inode() {
+        let f = PairFixture::new();
+        let (first, second, original) = (f.path("preview"), f.path("recipe"), f.path("original"));
+        std::fs::write(&original, b"old preview").unwrap();
+        std::fs::hard_link(&original, &first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        std::fs::write(second.join("keep"), b"untouched").unwrap();
+        assert!(replace_pair((&first, b"new preview"), (&second, b"new recipe")).is_err());
+        assert_eq!(std::fs::read(&first).unwrap(), b"old preview");
+        assert_eq!(std::fs::read(&original).unwrap(), b"old preview");
+        assert_eq!(std::fs::read(second.join("keep")).unwrap(), b"untouched");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let (restored, original) = (std::fs::metadata(&first).unwrap(), std::fs::metadata(&original).unwrap());
+            assert_eq!((restored.dev(), restored.ino()), (original.dev(), original.ino()));
+        }
+        f.assert_names(&["preview", "recipe", "original"]);
+    }
+
+    #[test]
+    fn pair_second_commit_failure_removes_a_new_first_destination() {
+        let f = PairFixture::new();
+        let (first, second) = (f.path("preview"), f.path("recipe"));
+        std::fs::create_dir(&second).unwrap();
+        assert!(replace_pair((&first, b"new preview"), (&second, b"new recipe")).is_err());
+        assert!(!first.exists());
+        assert!(second.is_dir());
+        f.assert_names(&["recipe"]);
+    }
+
+    #[test]
+    fn pair_success_replaces_names_without_writing_through_hard_links() {
+        let f = PairFixture::new();
+        let (first, second, original) = (f.path("preview"), f.path("recipe"), f.path("original"));
+        std::fs::write(&original, b"original").unwrap();
+        std::fs::hard_link(&original, &first).unwrap();
+        std::fs::hard_link(&original, &second).unwrap();
+        replace_pair((&first, b"new preview"), (&second, b"new recipe")).unwrap();
+        assert_eq!(std::fs::read(&first).unwrap(), b"new preview");
+        assert_eq!(std::fs::read(&second).unwrap(), b"new recipe");
+        assert_eq!(std::fs::read(&original).unwrap(), b"original");
+        f.assert_names(&["preview", "recipe", "original"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pair_preserves_symlink_targets_and_restores_dangling_links() {
+        let f = PairFixture::new();
+        let (first, second, original) = (f.path("preview"), f.path("recipe"), f.path("original"));
+        std::fs::write(&original, b"original").unwrap();
+        std::os::unix::fs::symlink("original", &first).unwrap();
+        std::os::unix::fs::symlink("original", &second).unwrap();
+        replace_pair((&first, b"new preview"), (&second, b"new recipe")).unwrap();
+        assert_eq!(std::fs::read(&first).unwrap(), b"new preview");
+        assert_eq!(std::fs::read(&second).unwrap(), b"new recipe");
+        assert_eq!(std::fs::read(&original).unwrap(), b"original");
+        std::fs::remove_file(&second).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        for target in ["original", "missing"] {
+            std::fs::remove_file(&first).unwrap();
+            std::os::unix::fs::symlink(target, &first).unwrap();
+            assert!(replace_pair((&first, b"new preview"), (&second, b"new recipe")).is_err());
+            assert_eq!(std::fs::read_link(&first).unwrap(), Path::new(target));
+            assert_eq!(std::fs::read(&original).unwrap(), b"original");
+            f.assert_names(&["preview", "recipe", "original"]);
+        }
+    }
+
+    #[test]
+    fn pair_rejects_two_names_for_the_same_destination() {
+        let f = PairFixture::new();
+        let first = f.path("preview");
+        std::fs::write(&first, b"original").unwrap();
+        std::fs::create_dir(f.path("sub")).unwrap();
+        for second in [first.clone(), f.path("sub/../preview")] {
+            assert!(replace_pair((&first, b"new preview"), (&second, b"new recipe")).is_err());
+            assert_eq!(std::fs::read(&first).unwrap(), b"original");
+            f.assert_names(&["preview", "sub"]);
+        }
+    }
 
     /// A colourful picture with sharp edges and fine texture, sRGB-encoded.
     fn picture(width: usize, height: usize) -> Image {
