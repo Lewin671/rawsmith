@@ -47,6 +47,9 @@ pub struct Scene {
     /// Pixels per pixel of the full-resolution upright image.
     pub scale: f32,
     pub noise_reduction: crate::noise::NoiseReduction,
+    /// `reused`, `stored` or `off`: whether native development was read from
+    /// or written to the scene cache. The pixels are identical either way.
+    pub scene_reuse: &'static str,
 }
 
 fn camera_matrix(raw: &RawImage) -> Result<color::Mat3> {
@@ -305,18 +308,20 @@ pub struct Render {
     pub white_balance: WhiteBalance,
     pub sensor_clipped_pct: f64,
     pub noise_reduction: crate::noise::NoiseReduction,
+    pub scene_reuse: &'static str,
 }
 
 /// Develop at native resolution through sharpening, then resize encoded
 /// pixels. Nonlinear tone/gamut operations cannot be commuted with averaging;
 /// scaling radii alone would still misrepresent noise, clipping and contrast.
 pub fn render(raw: &RawImage, params: &Params, size: Size) -> Result<Render> {
-    let Scene { image, white_balance, sensor_clipped_pct, noise_reduction, .. } = scene(raw, params, Size::default())?;
+    let Scene { image, white_balance, sensor_clipped_pct, noise_reduction, scene_reuse, .. } =
+        scene(raw, params, Size::default())?;
     let finished = finish_owned(image, params, &Spaces::new());
     let stage = crate::profile::Stage::new("output resize");
     let image = size.apply(finished);
     drop(stage);
-    Ok(Render { image, white_balance, sensor_clipped_pct, noise_reduction })
+    Ok(Render { image, white_balance, sensor_clipped_pct, noise_reduction, scene_reuse })
 }
 
 /// Builds the scene-linear image for a recipe. A reduced size is an
@@ -327,47 +332,74 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
     let noise_reduction = crate::noise::resolve(raw, params.denoise);
     let cam_to_work = color::camera_to_working(&camera_matrix(raw)?);
     let (white_balance, gains) = white_balance(raw, params)?;
-    let mosaic = demosaic::prepare(raw, gains);
 
     // What the final picture's long edge will be at full resolution.
     let crop = &params.crop;
     let (cw, ch) = ((crop.right - crop.left) as f32, (crop.bottom - crop.top) as f32);
     let upright = if matches!(raw.meta.orientation, 6 | 8) {
-        (mosaic.height, mosaic.width)
+        (raw.crop.height, raw.crop.width)
     } else {
-        (mosaic.width, mosaic.height)
+        (raw.crop.width, raw.crop.height)
     };
     let full_edge = (upright.0 as f32 * cw).max(upright.1 as f32 * ch);
     // Half-resolution demosaicing samples each CFA tile, with automatic
     // neutral-edge colour protection, only for reduced candidate analysis.
     let half = size.max_edge.is_some_and(|edge| edge as f32 <= full_edge * 0.5);
 
+    // Native development depends on the sensor data and these settings only;
+    // orientation, rotation and crop follow, so reframing reuses it as well.
+    let key = (!half)
+        .then(|| {
+            crate::cache::key(&crate::cache::Inputs {
+                raw,
+                gains,
+                camera_to_working: cam_to_work,
+                lens_corrections: params.lens_corrections,
+                defringe: params.defringe,
+                denoise: noise_reduction.strength,
+            })
+        })
+        .flatten();
     drop(stage);
-    let stage = crate::profile::Stage::new("demosaic");
-    let mut image = if half { demosaic::half(&mosaic) } else { demosaic::full(&mosaic) };
+    let stage = crate::profile::Stage::new("scene reuse");
+    let reused = key.as_ref().and_then(crate::cache::load);
     drop(stage);
-    let stage = crate::profile::Stage::new("sensor/highlights");
-    let (_, _, clipped) = crate::stats::sensor_clipping(raw);
-    demosaic::reconstruct_highlights(&mut image, mosaic.clip);
-    drop(mosaic);
-    drop(stage);
-    let stage = crate::profile::Stage::new("lens/matrix/fringe");
-    if params.lens_corrections {
-        if let Some(tables) = &raw.lens {
-            if let Some(corrected) = lens::correct(&image, tables) {
-                image = corrected;
+    let (image, clipped, scene_reuse) = if let Some(image) = reused {
+        (image, crate::stats::sensor_clipping(raw).2, "reused")
+    } else {
+        let stage = crate::profile::Stage::new("noise/prepare");
+        let mosaic = demosaic::prepare(raw, gains);
+        drop(stage);
+        let stage = crate::profile::Stage::new("demosaic");
+        let mut image = if half { demosaic::half(&mosaic) } else { demosaic::full(&mosaic) };
+        drop(stage);
+        let stage = crate::profile::Stage::new("sensor/highlights");
+        let (_, _, clipped) = crate::stats::sensor_clipping(raw);
+        demosaic::reconstruct_highlights(&mut image, mosaic.clip);
+        drop(mosaic);
+        drop(stage);
+        let stage = crate::profile::Stage::new("lens/matrix/fringe");
+        if params.lens_corrections {
+            if let Some(tables) = &raw.lens {
+                if let Some(corrected) = lens::correct(&image, tables) {
+                    image = corrected;
+                }
             }
         }
-    }
-    image.map(|p| color::apply(&cam_to_work, p));
-    crate::fringe::suppress(&mut image, params.defringe as f32 / 100.0, if half { 2 } else { 3 });
-    drop(stage);
-    let stage = crate::profile::Stage::new("denoise");
-    if !half {
-        denoise(&mut image, noise_reduction.strength as f32 / 100.0);
-    }
+        image.map(|p| color::apply(&cam_to_work, p));
+        crate::fringe::suppress(&mut image, params.defringe as f32 / 100.0, if half { 2 } else { 3 });
+        drop(stage);
+        let stage = crate::profile::Stage::new("denoise");
+        if !half {
+            denoise(&mut image, noise_reduction.strength as f32 / 100.0);
+        }
+        drop(stage);
+        let stage = crate::profile::Stage::new("scene store");
+        let stored = key.as_ref().is_some_and(|key| crate::cache::store(key, &image));
+        drop(stage);
+        (image, clipped, if stored { "stored" } else { "off" })
+    };
 
-    drop(stage);
     let stage = crate::profile::Stage::new("geometry/scene resize");
     let mut image = framed(image, raw.meta.orientation, params);
     let mut scale = if half { 0.5 } else { 1.0 };
@@ -383,7 +415,7 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
         }
     }
     drop(stage);
-    Ok(Scene { image, white_balance, sensor_clipped_pct: clipped, scale, noise_reduction })
+    Ok(Scene { image, white_balance, sensor_clipped_pct: clipped, scale, noise_reduction, scene_reuse })
 }
 
 /// Unsharp mask on the encoded image's luminance, limited to the local
@@ -464,12 +496,12 @@ pub fn render_mask(raw: &RawImage, params: &Params, size: Size, index: usize) ->
             params.masks.len()
         )));
     }
-    let Scene { mut image, white_balance, sensor_clipped_pct, noise_reduction, .. } =
+    let Scene { mut image, white_balance, sensor_clipped_pct, noise_reduction, scene_reuse, .. } =
         scene(raw, params, Size::default())?;
     prepare_local(&mut image, params);
     let masks = crate::local::Masks::new(&image, params, &Spaces::new());
     let mask = masks.view(index, image.width, image.height);
-    Ok(Render { image: size.apply(mask), white_balance, sensor_clipped_pct, noise_reduction })
+    Ok(Render { image: size.apply(mask), white_balance, sensor_clipped_pct, noise_reduction, scene_reuse })
 }
 
 fn finish_owned(mut image: Image, params: &Params, spaces: &Spaces) -> Image {

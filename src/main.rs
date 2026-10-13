@@ -498,6 +498,7 @@ fn prepare_render(raw: &arw::RawImage, params: &Params, target: &Target) -> Resu
         "noise_reduction": rendered.noise_reduction,
         "sensor_clipped_pct": rendered.sensor_clipped_pct,
         "sensor_clipped_scope": "full_active_area",
+        "scene_reuse": rendered.scene_reuse,
         "region": region,
         "stats": stats::image_stats(&image, &spaces),
         "elapsed_ms": started.elapsed().as_millis() as u64,
@@ -721,6 +722,7 @@ fn main() -> ExitCode {
         }
         Err(e) => return fail("usage", e.to_string().trim()),
     };
+    rawsmith::cache::configure(rawsmith::cache::Config::from_env());
     match run(cli) {
         Ok(value) => {
             println!("{}", serde_json::to_string_pretty(&value).expect("reports always serialise"));
