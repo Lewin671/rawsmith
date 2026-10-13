@@ -127,7 +127,7 @@ python3 scripts/perf-render.py after /path/to/reference/raw-directory
 ```
 
 The script uses the two designated reference filenames, isolated `{}`
-recipes, quality 94, native JPEG exports, 1400 px previews, and `auto` with
+recipes, the default JPEG quality (92), native JPEG exports, 1400 px previews, and `auto` with
 1400 px output. It writes images, recipes, stdout, stderr and summary JSON
 under `/tmp/rawsmith-perf-<label>`. A label contains only letters, digits,
 underscores or hyphens. It owns no host scheduler or lock.
