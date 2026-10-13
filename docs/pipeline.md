@@ -215,16 +215,123 @@ can legitimately differ from statistics of its resized version.
 
 ## Automatic starting point — `auto.rs`
 
-`rawsmith auto` does not predict settings from the raw data. It renders
-candidates on a small copy and measures them: exposure is searched so the
-bright part of the picture reaches a target lightness (near white for
-neutral highlights such as snow and fog, lower for colourful ones such as a
-sunset sky) without washing out midtones or adding clipping; shadows,
-highlights, contrast, black point and vibrance follow from the measured
-tone distribution. Every decision is reported in words and saved as
-ordinary recipe values.
-An existing recipe's white balance, geometry, lens corrections, sharpening
-and additional defringe strength are retained; denoise is chosen from ISO.
+`rawsmith auto` keeps white balance, lens settings, framing, sharpening and
+additional defringe strength from its base recipe, and replaces global tone, colour and denoise values.
+It evaluates ordinary recipe settings on a 640 px scene. `decisions`
+reports the evidence, confidence, bounds and settings, including decisions
+to leave an adjustment at zero. There are no new recipe parameters.
+
+The measurements and policy are:
+
+- **Sensor loss:** a stratified sample of native 2×2 Bayer tiles measures
+  black-subtracted saturation before white balance and reconstruction.
+  A photosite at 98% of its range is counted as near saturation, the same
+  safety margin as reconstruction. Any-site and all-four-site loss are
+  reported separately. Tiles are ranked by their two green samples;
+  the brightest fifth's loss weights partial loss by one half and complete
+  loss by one. Partial loss can retain texture in surviving channels;
+  complete loss cannot. The sampled map follows orientation, crop and
+  rotation, but not lens resampling. These approximate decision measurements
+  are distinct from the render report's full-mosaic `sensor_clipped_pct`.
+- **Noise:** up to roughly 64×64 small native patches are sampled before
+  resizing or denoising. Same-colour second differences against four
+  neighbours remove smooth gradients. RMS in square-root sensor encoding
+  is divided by the stencil's noise amplification (sqrt(1.25)); the quietest
+  quarter of patch estimates rejects much texture. The estimate sets an
+  amount relative to 0.02, the denoiser's maximum square-root regularisation
+  scale. The proposal combines 65% measured amount with 35% ISO prior
+  (`10 + 10 log2(ISO/100)`, capped at 85), bounded to 10–90 and rounded to
+  five. The amount is also capped at the ISO prior +20 because uniformly
+  fine texture can resemble noise. Fewer than 16 usable patches falls back to the prior. This is a
+  noise proxy, not calibrated sensor characterisation: textured frames,
+  very dark patches, white-balance/channel gains and lens shading can bias
+  it. It does not measure slow colour mottling. Review detail at 100%.
+- **High-key evidence:** a broad bright-neutral area (Oklab L > 55,
+  C < 3, both on a 0–100 scale) must coexist with a meaningful p90–p10
+  range. Approximate completely sensor-lost coverage is subtracted from
+  bright-neutral coverage: a blown white background cannot establish a
+  diffuse white subject. Confidence rises over 35–65% usable coverage and a
+  12–24 point range, and fades for chromatic highlights (C 3–6).
+  Low mean chroma alone cannot identify snow or fog: grey water, walls
+  and clear shaded snow are ambiguous. The classifier describes a tonal
+  distribution, not semantic recognition of a subject. Confidence values
+  are heuristic gate strengths, not calibrated probabilities.
+- **Exposure and highlight cost:** local shadow/highlight adjustments
+  precede exposure. The ordinary median target stays within two lightness
+  points of the metered rendering; high-key evidence permits up to 18
+  additional points. When complete loss occupies at least half the frame,
+  the median cannot meter the rest: global exposure stays at zero and its
+  search is skipped. Exposure otherwise searches up to +0.5 EV (up to +1.2 with
+  strong high-key evidence). Bright limits are L90 90, reduced by up to
+  eight points for colourful highlights, and L99 96 to retain tonal room.
+  A wide bright/median separation (35–60 points) establishes backlight.
+  Sensor loss in its bright area relaxes highlight targets and reduces
+  highlight suppression: darkening lost information does not restore it.
+  Where sampled complete loss covers at least 1% of the frame, p99 is no
+  longer constrained below white; at 10%, the same holds for p90. These
+  cutoffs follow percentile coverage: such percentiles can be occupied by
+  sensor-lost pixels and cannot establish recoverable highlight texture.
+  Regardless of highlight limits, the median may not fall more than four
+  lightness points below the metered default. The additional negative EV
+  bound moves from −0.8 towards −0.25 as backlight and sensor loss become
+  certain. Seven bisections find the foreground floor, seven search for
+  exposure. Pure-white clipping growth is limited to 0.2 percentage
+  points where feasible; any-channel output clipping is also bounded by
+  sampled any-site sensor loss +0.2 points. This permits irretrievable
+  lamps/sun but detects otherwise recoverable coloured highlights. If
+  exposure reaches its foreground floor, additional local highlight trials
+  (five-point steps, down to −50) are accepted only if highlight measurements
+  improve and the same median floor still holds. Where channel clipping
+  requires action, it must itself decrease: an sRGB gamut-boundary colour
+  can pin a channel even at moderate lightness and is not necessarily a
+  recoverable highlight. Do not repeatedly flatten such colours. An unresolved target is
+  reported when
+  the foreground floor takes precedence. A starting point cannot separate
+  a bright sky from a dark subject as a local edit can.
+- **Haze evidence:** an 8×8 grid must contain raised dark channels with
+  muted colour and subdued but nonzero texture, alongside blocks with
+  firmer contrast. Per-block p90–p10 ranges of 2–20 lightness points,
+  dark-channel p10 of encoded 0.18–0.35, C/L of 0.025–0.18 and median
+  below 85 form soft evidence. Veiled coverage must exceed 10% and
+  textured coverage 5%; full confidence requires 35% / 20%. High-key
+  confidence suppresses dehaze. Uniform grey, smooth coloured sky and
+  a raised global black level alone cannot justify it. With evidence,
+  dehaze is capped at 15; atmospheric depth can intentionally remain soft.
+- **Contrast and points:** contrast is at most +10 and fades for both
+  flat and already contrasty distributions. Black deepening is capped at
+  −5 and suppressed for backlight and high-key subjects. High-key whites
+  are capped at +30, scaled by squared confidence to avoid whitening
+  ambiguous fog; trial renders reduce them in steps of five if L99
+  exceeds 96 or pure-white clipping grows by more than 0.2 points. This
+  leaves bright snow room rather than forcing black/white endpoints.
+- **Final tone headroom:** dehaze, contrast and white-point additions are
+  checked together against the exposure/local-highlight rendering. Whites,
+  then dehaze, then contrast are reduced in steps of five if they grow
+  any-channel clipping by more than 0.05 percentage points or pure white
+  by 0.2 points. Thus later additions cannot quietly undo highlight
+  protection. This guard does not promise to remove clipping already
+  present at the foreground/local-compression bounds.
+- **Colour:** the upper tenth of relative Oklab chroma C/L (excluding
+  L <= 20) detects vivid subjects even among grey or dark surroundings.
+  A boost of at most +20 fades from C/L 0.07 to 0.16 and as pixels with
+  any sRGB channel >= 0.98 rise from 0.1% to 1%. Nearly neutral frames
+  get no boost. Trials reduce vibrance in steps of five if any-channel
+  clipping (>= 0.998) grows by more than 0.05 percentage points or near
+  clipping grows by 0.2 points. Pure-white clipping alone misses vivid
+  colours and lamps. Clarity stays at zero: global statistics cannot
+  reliably separate helpful texture from skin, noise and optical blur.
+
+These bounds express conservative perceptual changes, output headroom and
+sensor/filter behaviour; they are not fitted to individual photo recipes.
+Weak or conflicting evidence yields less adjustment. White balance is
+reported, never guessed from blue shade or warm light.
+
+The added native sampling, grid statistics, colour percentile sorting and
+candidate passes affect **auto analysis only**. Saved recipes render through
+the existing pipeline with no additional per-pixel stages. Auto does more
+small-image candidate work (14 exposure trials versus seven, plus bounded
+highlight/white/colour trials); performance must be measured on the designated host,
+not inferred from these correctness runs.
 
 ## Clipping in render reports — `stats.rs`
 

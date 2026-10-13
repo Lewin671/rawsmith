@@ -37,8 +37,9 @@ photos.
 
 2. **Start from auto** — `rawsmith auto photo.ARW -o preview.jpg --size 1400`
    Analyses the scene, saves a starting recipe next to the RAW
-   (`photo.ARW.rawsmith.json`) and explains each decision. Auto is a
-   competent, conservative starting point, not the finished edit.
+   (`photo.ARW.rawsmith.json`) and explains each decision. Auto proposes a
+   measured starting point. Read its evidence and bounds;
+   ambiguous scenes and local lighting still need visual editing.
 
 3. **Look** at `preview.jpg` (open the file — numbers alone are not enough)
    and read `stats` in the output. Decide what the picture needs. Name the
@@ -106,10 +107,16 @@ recipe it prints includes the trial values, but the recipe file is not
 touched; repeat the `--set` with `edit` to keep it), and
 `rawsmith edit ... --reset` to start over.
 
-Auto only sets global tone and colour. It never changes white balance,
+Auto sets global tone, colour and denoise. It measures sensor loss, native
+noise, relative colourfulness and spatial tone evidence; weak evidence leaves
+smaller adjustments, and clarity stays at zero. Its foreground bound can
+leave bright sky above the highlight target because lost sensor information
+cannot be recovered by darkening the subject. Check channel clipping as well
+as pure white, and review the reported confidence before accepting the start.
+Auto only applies global adjustments. It never changes white balance,
 crops, or adds gradients, so a landscape with a bright sky usually still
-needs a gradient, and its `decisions` mention a colour cast when it sees
-one in the greys.
+needs a gradient. Its `decisions` report a cast when greys dominate a
+confident high-key scene. Blue shade and warm lighting are left as shot.
 
 The recipe lives next to the RAW by default. To keep it elsewhere, or to
 keep several versions of one photo, pass the same `--recipe FILE` to every
@@ -280,7 +287,8 @@ export report before deciding that highlight or shadow detail is safe.
   cast. Sunsets want their warmth; do not "correct" it.
 - Lifting shadows reveals noise. After a strong lift check a dark region
   at 100% and raise `denoise` if needed. The defaults (`sharpen` 40,
-  `denoise` 10; auto raises `denoise` with ISO) are a starting point.
+  `denoise` 10; auto combines measured native noise with an ISO prior) are a
+  starting point.
   `denoise` smooths chroma grain first, adds a broader chroma correction
   gradually above 25, and mild luminance smoothing above 50. High values
   retain fine luminance texture but cannot recover focus or motion blur;
@@ -288,8 +296,8 @@ export report before deciding that highlight or shadow detail is safe.
 - For the 100% check choose the subject, the darkest area you lifted,
   and a patch of plain sky (dust shows there, especially after `dehaze`
   or a darkening gradient).
-- Snow and fog: auto aims high already, but grey snow is the classic
-  failure. Bright snow sits around lightness 85–93 at `tones.p95`; use
+- Snow and fog: auto needs broad bright neutrals and a tonal range before
+  lifting them; uniform grey water and atmospheric scenes are ambiguous. Bright snow sits around lightness 85–93 at `tones.p95`; use
   `exposure` and `whites` to get there while texture remains.
 - `dehaze` also darkens deep shadows a little and deepens the colour of
   the haze itself; pair it with `shadows` if the foreground sinks.

@@ -121,12 +121,14 @@ fn render_pixels_reports_and_exports_ignore_rayon_scheduling() {
 
 #[test]
 fn auto_recipe_and_decisions_ignore_rayon_scheduling() {
-    // A low-contrast, coloured haze scene that auto actually dehazes (neutral
-    // fog would be exempt as a high-key subject).
+    // A subdued atmospheric veil with distant texture and a contrasty
+    // foreground. Uniform coloured gradients alone must no longer trigger haze.
     let raw = arw::decode(
         &Synthetic::from_camera_rgb(640, 480, |x, y| {
-            let level = 0.18 + 0.035 * x as f32 / 640.0 + 0.01 * ((x * 17 + y * 29) % 101) as f32 / 101.0;
-            [level * 0.42, level, level * 0.75]
+            let texture = if (x / 20 + y / 20) % 2 == 0 { -1.0 } else { 1.0 };
+            let level = if y < 320 { 0.12 + texture * 0.015 } else { 0.055 + texture * 0.045 };
+            let (r, b) = if y < 320 { (0.70, 1.15) } else { (1.0, 1.0) };
+            [level * r / (2600.0 / 1024.0), level, level * b / (1600.0 / 1024.0)]
         })
         .to_bytes(),
     )
