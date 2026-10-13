@@ -45,6 +45,14 @@ fractions of the upright, cropped picture and renders that region at full
 resolution; it cannot be combined with `--size`. Output is sRGB JPEG or
 16-bit PNG, selected by the output extension.
 
+With the same executable binary on the same platform (OS/runtime versions
+and CPU architecture/features), identical RAW bytes, effective recipe
+settings and render options (`--size`, `--region`, output format and JPEG
+quality) produce bit-identical pixels, JPEG/PNG bytes and report statistics,
+regardless of Rayon thread count or scheduling. Report timing and paths are
+not part of this guarantee. A matching version number alone, different
+builds or different platforms do not guarantee bit-identical results.
+
 For the complete editing workflow and guidance on reading statistics, see
 [the editing skill](../skill/rawsmith/SKILL.md). Command-specific options
 are available through `rawsmith <command> --help`.

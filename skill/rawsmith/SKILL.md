@@ -80,6 +80,10 @@ keep several versions of one photo, pass the same `--recipe FILE` to every
 explicit recipe file does not exist. Even without a preview, edits check
 the RAW and white balance before saving.
 
+Rendering is deterministic: the same binary, RAW, recipe and render options
+give a byte-identical file, so re-rendering a restored recipe reproduces the
+earlier picture exactly.
+
 Developed images contain no camera metadata. `extract-jpeg` is a byte-for-byte
 copy of the embedded JPEG and may retain metadata; do not assume it is
 safe to share without checking it.

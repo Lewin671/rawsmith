@@ -115,6 +115,15 @@ fn erode(plane: &Plane, radius: usize) -> Plane {
     out
 }
 
+/// Mean log luminance with a fixed addition order, independent of Rayon's
+/// task splits. Keep the expensive logarithms parallel; only the small list
+/// of block totals is merged serially. f64 avoids drift on large images.
+fn mean_log_luma(image: &Image) -> f32 {
+    let sums: Vec<f64> =
+        image.data.par_chunks(4096).map(|block| block.iter().map(|p| luma(*p).max(1e-5).ln() as f64).sum()).collect();
+    (sums.iter().sum::<f64>() / image.data.len() as f64) as f32
+}
+
 /// Removes atmospheric haze (dark channel prior, He et al.): haze adds a
 /// veil of airlight that lifts the darkest channel everywhere; estimating
 /// that veil and subtracting it restores contrast and colour with distance.
@@ -152,9 +161,7 @@ pub fn dehaze(image: &mut Image, strength: f32) {
 
     let floor = 1.0 - 0.9 * strength;
     let (fx, fy) = (sw as f32 / w as f32, sh as f32 / h as f32);
-    let mean_luma =
-        |image: &Image| image.data.par_iter().map(|p| luma(*p).max(1e-5).ln()).sum::<f32>() / image.data.len() as f32;
-    let before = mean_luma(image);
+    let before = mean_log_luma(image);
     image.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         let sy = (y as f32 + 0.5) * fy - 0.5;
         for (x, p) in row.iter_mut().enumerate() {
@@ -168,7 +175,7 @@ pub fn dehaze(image: &mut Image, strength: f32) {
     });
     // Subtracting the veil darkens the picture; restore its overall
     // (geometric mean) brightness so dehaze changes contrast, not exposure.
-    let gain = (before - mean_luma(image)).exp().clamp(1.0, 2.0);
+    let gain = (before - mean_log_luma(image)).exp().clamp(1.0, 2.0);
     image.map(|p| p.map(|v| v * gain));
 }
 

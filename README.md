@@ -115,8 +115,9 @@ The published recipe records the resulting edit:
   and a full-resolution JPEG 4.3 s on 33 MP files in the published
   [v0.1.0 benchmark](docs/benchmark.md) (Intel i7-10700, 8 cores, macOS).
 - **An edit is a recipe.** `render --set` tries
-  settings; `edit` saves them. The same RAW, recipe and engine
-  version reproduce the picture. Separate recipes keep separate versions.
+  settings; `edit` saves them. The same rawsmith binary, RAW and recipe produce
+  the same file, bit for bit ([exact terms](docs/cli.md)).
+  Separate recipes keep separate versions.
 - **A discoverable CLI.** Successful subcommands return JSON on stdout;
   errors return JSON on stderr with a nonzero exit code. `--help` and
   `--version` print plain text. `rawsmith schema` gives parameter ranges

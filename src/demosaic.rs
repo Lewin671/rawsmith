@@ -204,7 +204,7 @@ pub fn reconstruct_highlights(image: &mut Image, clip: [f32; 3]) -> f32 {
     // minus the k-th other channel.
     let others = |c: usize| [(c + 1) % 3, (c + 2) % 3];
     let reach = (w.max(h) / 400).max(2) as isize;
-    let sums = (0..h)
+    let rows: Vec<_> = (0..h)
         .into_par_iter()
         .map(|y| {
             let mut acc = [[(0.0f64, 0u64); 2]; 3];
@@ -232,17 +232,17 @@ pub fn reconstruct_highlights(image: &mut Image, clip: [f32; 3]) -> f32 {
             }
             acc
         })
-        .reduce(
-            || [[(0.0, 0); 2]; 3],
-            |mut a, b| {
-                for c in 0..3 {
-                    for k in 0..2 {
-                        a[c][k] = (a[c][k].0 + b[c][k].0, a[c][k].1 + b[c][k].1);
-                    }
-                }
-                a
-            },
-        );
+        .collect();
+    // Indexed collection preserves row order. Even f64 addition is not
+    // associative: a parallel reduction would let scheduling choose offsets.
+    let sums = rows.into_iter().fold([[(0.0, 0); 2]; 3], |mut a, b| {
+        for c in 0..3 {
+            for k in 0..2 {
+                a[c][k] = (a[c][k].0 + b[c][k].0, a[c][k].1 + b[c][k].1);
+            }
+        }
+        a
+    });
     let offset = sums.map(|pair| pair.map(|(s, n)| if n > 100 { (s / n as f64) as f32 } else { 0.0 }));
 
     image.data.par_iter_mut().zip(&clipped).for_each(|(p, &mask)| {
