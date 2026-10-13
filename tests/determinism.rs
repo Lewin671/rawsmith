@@ -61,7 +61,7 @@ fn render(raw: &RawImage, params: &Params, edge: Option<usize>) -> Render {
     let scene = pipeline::scene(raw, params, Size { max_edge: edge }).unwrap();
     assert!(scene.sensor_clipped_pct > 0.0, "the sun must exercise highlight reconstruction");
     let spaces = Spaces::new();
-    let image = pipeline::finish(&scene.image, params, &spaces);
+    let image = pipeline::render(raw, params, Size { max_edge: edge }).unwrap().image;
     Render {
         scene: pixel_bits(&scene.image),
         pixels: pixel_bits(&image),
@@ -97,7 +97,7 @@ fn render_pixels_reports_and_exports_ignore_rayon_scheduling() {
         .collect();
     // A control without dehaze isolates its brightness compensation from
     // demosaicing, highlight reconstruction, denoise and local contrast.
-    for params in [Params { dehaze: 0.0, ..params.clone() }, params] {
+    for params in [Params { dehaze: 0.0, ..params.clone() }, params.clone(), Params { denoise: 85.0, ..params }] {
         for edge in [None, Some(400)] {
             let reference = pools[0].install(|| render(&raw, &params, edge));
             for pool in &pools {

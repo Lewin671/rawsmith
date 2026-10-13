@@ -72,7 +72,9 @@ Outputs are replaced; RAWs never. Use a new output name to keep a version.
 replacing a symlink (even a dangling one); the link target is not written.
 This field concerns the output image, not the saved recipe.
 
-`--size` sets the longest edge. `--region left,top,right,bottom` uses
+`--size` sets the longest edge by area-resizing the finished full-resolution
+render, after noise reduction, tone and sharpening. It does not reduce the
+resolution of those stages or their working memory. `--region left,top,right,bottom` uses
 fractions of the upright, cropped picture and renders that region at full
 resolution; it cannot be combined with `--size`. Output is sRGB JPEG or
 16-bit PNG, selected by the output extension. JPEG embeds a compact ICC v2 sRGB

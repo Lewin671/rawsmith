@@ -31,10 +31,10 @@ values, or from `temperature` / `tint` through the camera's colour matrix.
 Full-resolution demosaicing is edge-directed: green is interpolated along
 the direction of least change with a Laplacian correction from the
 co-located colour (Hamilton–Adams, with soft direction weights), then red
-and blue from interpolated colour differences. When the requested output is
-at most half the sensor size, each 2×2 Bayer tile becomes one pixel instead:
-exact, artefact-free and four times cheaper — this is what makes previews
-fast.
+and blue from interpolated colour differences. Previews and exports use the
+same native-resolution demosaic. Automatic candidate analysis alone uses an
+approximate reduced scene: each 2×2 Bayer tile becomes one pixel. This
+analysis image is not an output preview.
 
 ## 3. Highlight reconstruction — `demosaic.rs`
 
@@ -61,10 +61,22 @@ colour.
 
 ## 6. Noise reduction and geometry — `pipeline.rs`
 
-Chroma noise is smoothed with a guided filter that follows luminance edges,
-in a square-root encoding where sensor noise is roughly uniform; luminance
-smoothing joins in the upper half of the `denoise` range. Orientation,
-`rotate` and `crop` follow, then the resize to the requested size.
+Chroma noise is smoothed in a square-root encoding where sensor noise is
+roughly uniform. A native-resolution guided filter follows luminance edges
+and removes grain. Above `denoise` 25, a gradually blended quarter-resolution
+luminance-guided chroma base correction also suppresses correlated colour
+blotches over a 48-native-pixel radius. A shared boundary mask from the
+quarter-resolution chroma and luminance guides protects strong colour
+discontinuities across the filter's support,
+including boundaries with little luminance contrast. Above 50, luminance
+smoothing joins in: square-root Rec.2020 luminance blends gradually toward
+the chroma-cleaned reconstruction, then is filtered using that reconstruction as its guide.
+This avoids restoring matrix-correlated colour noise as luminance grain,
+with lower regularisation than the former sqrt-RGB luminance proxy. Up to
+50, chroma changes preserve linear Rec.2020 luminance exactly; higher values
+set final luminance from the filtered estimator through a common RGB gain.
+Orientation, `rotate` and `crop` follow. Output rendering keeps native resolution here;
+the reduced automatic analysis path remains an approximation.
 
 ## 7. Tone — `tone.rs`
 
@@ -91,10 +103,34 @@ independently.
 ## 9. Output — `output.rs`
 
 Colours outside sRGB are brought inside by reducing chroma at constant
-lightness and hue. The result is sharpened with an unsharp mask limited to
-the local range (edges steepen, they do not halo), encoded as sRGB,
-dithered to 8 bits for JPEG or written as 16-bit PNG. Output files carry no
-EXIF, GPS or serial numbers.
+lightness and hue. The result is encoded as sRGB, sharpened on encoded
+luminance with an unsharp mask limited to the local range (edges steepen,
+they do not halo), clamped, then dithered to 8 bits for JPEG or written as
+16-bit PNG. Output files carry no EXIF, GPS or serial numbers.
+
+Only after tone, colour, gamut mapping, encoded-luminance sharpening and
+clamping is the finished sRGB image area-averaged to `--size`. This gives the
+same noise, sharpness and tone as resizing a full render with the same area
+filter, rather than changing spatial radii or processing averaged linear
+pixels. Previews therefore do full-resolution work and use full-resolution
+working memory. `compare` uses this path for developed panels too.
+
+`examples/quality.rs --check` compares a noisy synthetic RAW at several sizes
+against the downscaled full render, with noise standard deviation, edge
+acutance, mean, p1/p50/p95/p99 and maximum channel error. Its tolerances are
+1% relative for noise/acutance and 0.001 in encoded 0–1 units for mean,
+percentiles and channel error; the current path is exactly equal before
+output quantisation. This guarantee is relative to the same area resize,
+not an arbitrary viewer filter or separately compressed JPEG. PNG rounding
+and JPEG quantisation/compression can introduce additional differences.
+The high-ISO-like synthetic scene separately checks both low-frequency
+chroma axes (at least 50% RMS removal), fine texture projection (at least 90%
+retained) and no amplification of flat-area luminance noise at strengths 60,
+85 and 100. These are deterministic synthetic floors, not claims about every
+real camera or photo. Fine grain and very large colour clouds may remain.
+
+Statistics describe the resulting output size: full-resolution statistics
+can legitimately differ from statistics of its resized version.
 
 ## Automatic starting point — `auto.rs`
 

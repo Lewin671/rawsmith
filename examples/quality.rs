@@ -9,7 +9,7 @@
 
 use rawsmith::color::{self, Spaces};
 use rawsmith::demosaic::{self, Mosaic};
-use rawsmith::image::Image;
+use rawsmith::image::{Image, Plane};
 use rawsmith::params::Params;
 use rawsmith::pipeline::{self, Size};
 use rawsmith::synthetic::Synthetic;
@@ -434,6 +434,168 @@ fn denoise_section() -> Value {
     })
 }
 
+/// ISO-6400-like shot noise plus spatially correlated chroma, with smooth
+/// shadow/fog, a luminance step and fine achromatic texture. This models the
+/// noise frequencies, not a particular camera's ISO calibration.
+fn noisy_scene(noise: bool) -> arw::RawImage {
+    let (w, h) = (768, 512);
+    let mut rng = Rng(6400);
+    let grain: Vec<f32> = (0..w * h).map(|_| rng.gauss()).collect();
+    let blotch = Plane { width: w, height: h, data: (0..w * h).map(|_| rng.gauss()).collect() }.blur(8.0);
+    let sigma = (blotch.data.iter().map(|v| v * v).sum::<f32>() / (w * h) as f32).sqrt();
+    let cam = color::camera_matrix("ILCE-7M4").unwrap();
+    let file = Synthetic::from_camera_rgb(w, h, |x, y| {
+        let texture = if x > w / 2 { 0.004 * (x as f32 * 1.1).sin() * (y as f32 * 0.7).cos() } else { 0.0 };
+        let level = if x < w / 2 { 0.025 } else { 0.075 + texture };
+        let c = color::apply(&cam, color::apply(&color::REC2020_TO_XYZ, [level; 3]));
+        let i = y * w + x;
+        let chroma = if noise { blotch.data[i] / sigma * 0.012 } else { 0.0 };
+        let shot = if noise { grain[i] * 0.035 } else { 0.0 };
+        [0, 1, 2].map(|channel| {
+            let encoded = c[channel].max(0.0).sqrt() + shot + [chroma, -chroma * 0.5, chroma * 0.7][channel];
+            encoded.max(0.0).powi(2)
+        })
+    });
+    arw::decode(&file.to_bytes()).unwrap()
+}
+
+fn high_iso_section() -> Value {
+    let raw = noisy_scene(true);
+    let clean = noisy_scene(false);
+    let scene = |raw, denoise| {
+        pipeline::scene(raw, &Params { denoise, lens_corrections: false, ..Params::default() }, Size::default())
+            .unwrap()
+            .image
+    };
+    let truth = scene(&clean, 0.0);
+    let noisy = scene(&raw, 0.0);
+    let chroma = |im: &Image, channel: usize| {
+        Plane::from_fn(im, |p| p[channel].max(0.0).sqrt() - p[1].max(0.0).sqrt()).blur(8.0)
+    };
+    let error = |im: &Image, channel: usize| {
+        let (p, q) = (chroma(im, channel), chroma(&truth, channel));
+        let mut sum = 0.0f64;
+        let mut n = 0;
+        for y in 48..im.height - 48 {
+            for x in 48..im.width / 2 - 48 {
+                sum += (p.data[y * im.width + x] - q.data[y * im.width + x]).powi(2) as f64;
+                n += 1;
+            }
+        }
+        (sum / n as f64).sqrt()
+    };
+    let detail = |im: &Image| {
+        let p = Plane::from_fn(im, |p| color::luma(p).max(0.0).sqrt());
+        let base = p.blur(3.0);
+        p.data.iter().zip(&base.data).map(|(a, b)| a - b).collect::<Vec<_>>()
+    };
+    let reference = detail(&truth);
+    let retention = |im: &Image| {
+        let got = detail(im);
+        let (mut cross, mut power) = (0.0f64, 0.0f64);
+        for y in 48..im.height - 48 {
+            for x in im.width / 2 + 48..im.width - 48 {
+                let i = y * im.width + x;
+                cross += (got[i] * reference[i]) as f64;
+                power += reference[i].powi(2) as f64;
+            }
+        }
+        cross / power * 100.0
+    };
+    let luma_noise = |im: &Image| {
+        let got = detail(im);
+        let mut power = 0.0f64;
+        let mut n = 0;
+        for y in 48..im.height - 48 {
+            for x in 48..im.width / 2 - 48 {
+                let i = y * im.width + x;
+                power += (got[i] - reference[i]).powi(2) as f64;
+                n += 1;
+            }
+        }
+        (power / n as f64).sqrt()
+    };
+    let rows: Vec<_> = [60.0, 85.0, 100.0]
+        .into_iter()
+        .map(|denoise| {
+            let smooth = scene(&raw, denoise);
+            json!({"denoise": denoise,
+            "low_frequency_chroma_removed_pct": ([0, 2].map(|c| round((1.0 - error(&smooth, c) / error(&noisy, c)) * 100.0, 2))),
+            "luminance_noise_removed_pct": round((1.0 - luma_noise(&smooth) / luma_noise(&noisy)) * 100.0, 2),
+            "fine_texture_kept_pct": round(retention(&smooth), 2)})
+        })
+        .collect();
+    json!({"settings": rows,
+        "minimum_blotch_removal_pct": rows.iter().flat_map(|v| v["low_frequency_chroma_removed_pct"].as_array().unwrap()).map(|v| v.as_f64().unwrap()).fold(f64::INFINITY, f64::min),
+        "minimum_luminance_noise_removed_pct": rows.iter().map(|v| v["luminance_noise_removed_pct"].as_f64().unwrap()).fold(f64::INFINITY, f64::min),
+        "minimum_texture_kept_pct": rows.iter().map(|v| v["fine_texture_kept_pct"].as_f64().unwrap()).fold(f64::INFINITY, f64::min)})
+}
+
+/// Compare the actual small RAW render with an area-resized, finished full
+/// render. Tone, local contrast, dehaze and sharpening are all enabled.
+fn preview_section() -> Value {
+    let raw = noisy_scene(true);
+    let params = Params {
+        denoise: 85.0,
+        sharpen: 60.0,
+        clarity: 20.0,
+        dehaze: 15.0,
+        highlights: -20.0,
+        shadows: 30.0,
+        lens_corrections: false,
+        ..Params::default()
+    };
+    let render = |size| pipeline::render(&raw, &params, Size { max_edge: size }).unwrap().image;
+    let full = render(None);
+    let mut rows = Vec::new();
+    for size in [191, 384, 511] {
+        let small = render(Some(size));
+        let reference = full.resized(small.width, small.height);
+        let measure = |im: &Image| {
+            let y = Plane::from_fn(im, |p| 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]);
+            let mut flat = Vec::new();
+            for row in im.height / 8..im.height * 7 / 8 {
+                for x in im.width / 8..im.width * 3 / 8 {
+                    flat.push(y.data[row * im.width + x] as f64);
+                }
+            }
+            let mean = flat.iter().sum::<f64>() / flat.len() as f64;
+            let noise = (flat.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / flat.len() as f64).sqrt();
+            let acutance = (im.height / 8..im.height * 7 / 8)
+                .map(|row| {
+                    (im.width / 2 - 3..im.width / 2 + 3)
+                        .map(|x| (y.data[row * im.width + x + 1] - y.data[row * im.width + x]).abs() as f64)
+                        .fold(0.0, f64::max)
+                })
+                .sum::<f64>()
+                / (im.height * 7 / 8 - im.height / 8) as f64;
+            let mut values = y.data.iter().map(|v| *v as f64).collect::<Vec<_>>();
+            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            values.sort_by(f64::total_cmp);
+            let percentiles = [0.01, 0.50, 0.95, 0.99].map(|p| values[((values.len() - 1) as f64 * p) as usize]);
+            (noise, acutance, mean, percentiles)
+        };
+        let (a, b) = (measure(&small), measure(&reference));
+        let pixel_error = small
+            .data
+            .iter()
+            .zip(&reference.data)
+            .flat_map(|(a, b)| (0..3).map(move |c| (a[c] - b[c]).abs() as f64))
+            .fold(0.0, f64::max);
+        rows.push(json!({"size":size,
+            "small": {"noise_stddev":a.0,"edge_acutance":a.1,"mean":a.2,"percentiles":a.3},
+            "downscaled_full": {"noise_stddev":b.0,"edge_acutance":b.1,"mean":b.2,"percentiles":b.3},
+            "noise_relative_error_pct": (a.0/b.0-1.0).abs()*100.0,
+            "acutance_relative_error_pct": (a.1/b.1-1.0).abs()*100.0,
+            "mean_error": (a.2-b.2).abs(),
+            "percentile_max_error": a.3.iter().zip(b.3).map(|(a,b)| (a-b).abs()).fold(0.0,f64::max),
+            "max_pixel_error":pixel_error}));
+    }
+    let max = |key: &str| rows.iter().map(|v| v[key].as_f64().unwrap()).fold(0.0, f64::max);
+    json!({"max_noise_error_pct":max("noise_relative_error_pct"),"max_acutance_error_pct":max("acutance_relative_error_pct"),
+        "max_mean_error":max("mean_error"),"max_percentile_error":max("percentile_max_error"),"max_pixel_error":max("max_pixel_error"),"sizes":rows})
+}
+
 fn round(v: f64, places: i32) -> f64 {
     let k = 10f64.powi(places);
     (v * k).round() / k
@@ -459,6 +621,14 @@ fn failures(report: &Value) -> Vec<String> {
         floor("tone_and_sharpening.sharpen_edge_slope_gain", 1.02),
         floor("noise_reduction.chroma_noise_reduction_pct", 25.0),
         floor("noise_reduction.edge_contrast_kept_pct", 95.0),
+        floor("high_iso.minimum_blotch_removal_pct", 50.0),
+        floor("high_iso.minimum_texture_kept_pct", 90.0),
+        floor("high_iso.minimum_luminance_noise_removed_pct", 0.0),
+        ceiling("preview_consistency.max_noise_error_pct", 1.0),
+        ceiling("preview_consistency.max_acutance_error_pct", 1.0),
+        ceiling("preview_consistency.max_mean_error", 0.001),
+        ceiling("preview_consistency.max_percentile_error", 0.001),
+        ceiling("preview_consistency.max_pixel_error", 0.001),
         (report["tone_and_sharpening"]["tone_curve_monotone"] != true)
             .then(|| "tone curve is not monotone".to_string()),
     ]
@@ -475,6 +645,8 @@ fn main() {
         "colour_accuracy": colour_section(),
         "tone_and_sharpening": tone_section(),
         "noise_reduction": denoise_section(),
+        "high_iso": high_iso_section(),
+        "preview_consistency": preview_section(),
     });
     println!("{}", serde_json::to_string_pretty(&report).unwrap());
     if std::env::args().any(|a| a == "--check") {

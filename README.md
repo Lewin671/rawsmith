@@ -119,9 +119,11 @@ The published recipe records the resulting edit:
 - **Images and numbers together.** Render reports include tone percentiles,
   clipping, colour cast and a 3×3 brightness grid. An assistant can look
   at the picture and check what its last adjustment did.
-- **Fast previews, full-resolution checks.** A 1400 px preview took 0.4 s
-  and a full-resolution JPEG 4.3 s on 33 MP files in the published
-  [v0.1.0 benchmark](docs/benchmark.md) (Intel i7-10700, 8 cores, macOS).
+- **Previews match resized exports.** Previews develop at full resolution,
+  including noise reduction, tone and sharpening, then area-resize the
+  finished sRGB pixels. Check 100% detail for artefacts hidden by resizing.
+  The [v0.1.0 benchmark](docs/benchmark.md) used the earlier approximate
+  preview path; its preview timings do not describe this path.
 - **An edit is a recipe.** `render --set` tries
   settings; `edit` saves them. The same rawsmith binary, RAW and recipe produce
   the same file, bit for bit ([exact terms](docs/cli.md)).

@@ -72,7 +72,7 @@ struct Target {
     /// Output image (sRGB ICC JPEG or sRGB 16-bit PNG, reported as output_color_space); output_replaced reports whether a file was replaced.
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// Longest edge in pixels (at least 1) [default: full resolution]. Small sizes render much faster.
+    /// Longest edge in pixels (at least 1) [default: full resolution]. Resizes the finished full-resolution render.
     #[arg(long)]
     size: Option<usize>,
     /// Render only this part of the picture at full resolution, to check fine
@@ -290,9 +290,9 @@ fn distinct(recipe: &Path, target: &Target) -> Result<()> {
 fn prepare_render(raw: &arw::RawImage, params: &Params, target: &Target) -> Result<(Value, Option<Vec<u8>>)> {
     let started = Instant::now();
     let region = target.region.as_deref().map(parse_region).transpose()?;
-    let scene = pipeline::scene(raw, params, Size { max_edge: target.size })?;
+    let rendered = pipeline::render(raw, params, Size { max_edge: target.size })?;
     let spaces = Spaces::new();
-    let mut image = pipeline::finish(&scene.image, params, &spaces);
+    let mut image = rendered.image;
     if let Some([x0, y0, x1, y1]) = region {
         let (w, h) = (image.width as f32, image.height as f32);
         let (x, y) = ((x0 * w) as usize, (y0 * h) as usize);
@@ -305,8 +305,8 @@ fn prepare_render(raw: &arw::RawImage, params: &Params, target: &Target) -> Resu
             "output_color_space": target.output.as_ref().map(|_| "sRGB"),
             "output_replaced": null,
             "recipe": params.to_sparse(),
-            "white_balance": scene.white_balance,
-            "sensor_clipped_pct": scene.sensor_clipped_pct,
+            "white_balance": rendered.white_balance,
+            "sensor_clipped_pct": rendered.sensor_clipped_pct,
             "stats": stats::image_stats(&image, &spaces),
             "elapsed_ms": started.elapsed().as_millis() as u64,
         }),
