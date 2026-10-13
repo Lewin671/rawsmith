@@ -340,10 +340,10 @@ fn store_in(dir: &Path, limit: u64, key: &Key, image: &Image) -> bool {
 }
 
 /// Whether a directory entry is one of this cache's own files: the name it
-/// would have generated, starting with its magic (or empty, for a staging
-/// file interrupted before its first write). The directory may be one the
-/// user chose and may hold other things; nothing else is ever removed.
-fn own_file(path: &Path, len: u64) -> Option<bool> {
+/// would have generated and starting with its magic. The directory may be
+/// one the user chose and may hold other things; nothing else is ever
+/// removed, not even an empty file under such a name.
+fn own_file(path: &Path) -> Option<bool> {
     let stem = path.file_stem()?.to_str()?;
     let extension = path.extension()?.to_str()?;
     let staging =
@@ -353,9 +353,6 @@ fn own_file(path: &Path, len: u64) -> Option<bool> {
         || !(extension == "scene" || staging)
     {
         return None;
-    }
-    if staging && len == 0 {
-        return Some(true);
     }
     let mut magic = [0u8; MAGIC.len()];
     // Earlier formats of this cache are its own too.
@@ -375,7 +372,7 @@ fn trim(dir: &Path, limit: u64) {
         if !meta.is_file() {
             continue;
         }
-        let Some(staging) = own_file(&path, meta.len()) else { continue };
+        let Some(staging) = own_file(&path) else { continue };
         let age = meta.modified().ok().and_then(|at| now.duration_since(at).ok()).unwrap_or_default();
         if !staging && age <= MAX_AGE {
             scenes.push((age, meta.len(), path));
@@ -507,23 +504,25 @@ mod tests {
             File::options().write(true).open(dir.join(name)).unwrap().set_modified(old).unwrap();
         }
         fs::create_dir(dir.join(format!("{}.scene", "f".repeat(32)))).unwrap();
-        // This cache's own leftovers: an expired scene, an abandoned staging
-        // file, and one interrupted before its first write.
+        // An empty file is nobody's in particular, whatever it is called.
+        let empty = path(&dir, &[4; 16]).with_extension("tmp4243");
+        fs::write(&empty, b"").unwrap();
+        File::options().write(true).open(&empty).unwrap().set_modified(old).unwrap();
+        // This cache's own leftovers: an expired scene and an abandoned staging file.
         let expired = path(&dir, &[2; 16]);
         fs::copy(path(&dir, &[1; 16]), &expired).unwrap();
         let abandoned = path(&dir, &[3; 16]).with_extension("tmp4242");
         fs::copy(path(&dir, &[1; 16]), &abandoned).unwrap();
-        let empty = path(&dir, &[4; 16]).with_extension("tmp4243");
-        fs::write(&empty, b"").unwrap();
-        for file in [&expired, &abandoned, &empty] {
+        for file in [&expired, &abandoned] {
             File::options().write(true).open(file).unwrap().set_modified(old).unwrap();
         }
         // A limit below one scene evicts everything of its own.
         trim(&dir, size * 9);
-        assert!(!expired.exists() && !abandoned.exists() && !empty.exists());
+        assert!(!expired.exists() && !abandoned.exists());
         assert!(load_from(&dir, &[1; 16]).is_some());
         trim(&dir, 1);
         assert!(!path(&dir, &[1; 16]).exists());
+        assert_eq!(fs::read(&empty).unwrap(), b"");
         for name in foreign {
             assert_eq!(fs::read(dir.join(name)).unwrap(), b"not a stored scene", "{name}");
         }
