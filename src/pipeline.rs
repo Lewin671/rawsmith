@@ -46,6 +46,7 @@ pub struct Scene {
     pub sensor_clipped_pct: f64,
     /// Pixels per pixel of the full-resolution upright image.
     pub scale: f32,
+    pub noise_reduction: crate::noise::NoiseReduction,
 }
 
 fn camera_matrix(raw: &RawImage) -> Result<color::Mat3> {
@@ -292,22 +293,24 @@ pub struct Render {
     pub image: Image,
     pub white_balance: WhiteBalance,
     pub sensor_clipped_pct: f64,
+    pub noise_reduction: crate::noise::NoiseReduction,
 }
 
 /// Develop at native resolution through sharpening, then resize encoded
 /// pixels. Nonlinear tone/gamut operations cannot be commuted with averaging;
 /// scaling radii alone would still misrepresent noise, clipping and contrast.
 pub fn render(raw: &RawImage, params: &Params, size: Size) -> Result<Render> {
-    let Scene { image, white_balance, sensor_clipped_pct, .. } = scene(raw, params, Size::default())?;
+    let Scene { image, white_balance, sensor_clipped_pct, noise_reduction, .. } = scene(raw, params, Size::default())?;
     let finished = finish(&image, params, &Spaces::new());
     drop(image);
-    Ok(Render { image: size.apply(finished), white_balance, sensor_clipped_pct })
+    Ok(Render { image: size.apply(finished), white_balance, sensor_clipped_pct, noise_reduction })
 }
 
 /// Builds the scene-linear image for a recipe. A reduced size is an
 /// approximation for automatic candidate analysis only; use `render` for
 /// previews and exports so every spatial/nonlinear stage precedes resizing.
 pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
+    let noise_reduction = crate::noise::resolve(raw, params.denoise);
     let cam_to_work = color::camera_to_working(&camera_matrix(raw)?);
     let (white_balance, gains) = white_balance(raw, params)?;
     let mosaic = demosaic::prepare(raw, gains);
@@ -339,7 +342,7 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
     image.map(|p| color::apply(&cam_to_work, p));
     crate::fringe::suppress(&mut image, params.defringe as f32 / 100.0, if half { 2 } else { 3 });
     if !half {
-        denoise(&mut image, params.denoise as f32 / 100.0);
+        denoise(&mut image, noise_reduction.strength as f32 / 100.0);
     }
 
     let mut image = framed(image, raw.meta.orientation, params);
@@ -355,7 +358,7 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
             scale *= k;
         }
     }
-    Ok(Scene { image, white_balance, sensor_clipped_pct: clipped, scale })
+    Ok(Scene { image, white_balance, sensor_clipped_pct: clipped, scale, noise_reduction })
 }
 
 /// Unsharp mask on the encoded image's luminance, limited to the local
@@ -447,19 +450,9 @@ pub fn finish(scene: &Image, params: &Params, spaces: &Spaces) -> Image {
     let black = -params.blacks as f32 / 100.0 * 0.08;
     let white_point = 1.0 - params.whites as f32 / 100.0 * 0.25;
     let curve = (!params.curve.is_empty()).then(|| tone::curve_lut(&params.curve, 1025));
-    let scene_white = base.exp2();
     let ops = ColorOps::new(params, spaces);
-    // Shadows and midtones keep their hue and saturation under the curve;
-    // highlights take the curve per channel, which rolls bright colours off
-    // towards yellow and white the way film and cameras do.
-    let ratio_strength = 0.5;
     image.map(|p| {
-        let per_channel = p.map(|v| filmic.eval(v));
-        let y = color::luma(p).max(1e-6);
-        let k = filmic.eval(y) / y;
-        let t = ((y - tone::GREY) / (0.6 * scene_white - tone::GREY)).clamp(0.0, 1.0);
-        let ratio_mix = ratio_strength * (1.0 - t * t * (3.0 - 2.0 * t));
-        let mut p = [0, 1, 2].map(|c| per_channel[c] + (p[c].max(0.0) * k - per_channel[c]) * ratio_mix);
+        let mut p = spaces.render_colour(filmic.map_rgb(p), filmic.log_slope(color::luma(p)));
         if black != 0.0 || white_point != 1.0 || curve.is_some() {
             p = p.map(|v| {
                 let mut e = srgb_encode(v);
@@ -486,8 +479,8 @@ mod tests {
     #[test]
     fn denoise_preserves_perfectly_flat_image_at_epsilon_regulariser() {
         let value = 0.661_649_1_f32.powi(2);
-        let params = Params { denoise: 52.44140625, ..Params::default() };
-        let strength = params.denoise as f32 / 100.0;
+        let params = Params { denoise: Some(52.44140625), ..Params::default() };
+        let strength = params.denoise.unwrap() as f32 / 100.0;
         let luma_strength = (strength - 0.5) * 2.0;
         assert_eq!(0.00005 * luma_strength * luma_strength, f32::EPSILON);
         for (w, h) in [(64, 48), (1, 1), (1, 7), (7, 1), (3, 2)] {
@@ -524,7 +517,7 @@ mod tests {
                 });
                 let raw = crate::arw::decode(&synthetic.to_bytes()).unwrap();
                 for denoise in [0.0, 0.00001, 25.00001, 50.0, 50.00001, 52.44140625, 85.0, 100.0] {
-                    let params = Params { denoise, ..Params::default() };
+                    let params = Params { denoise: Some(denoise), ..Params::default() };
                     params.validate().unwrap();
                     let context = format!("scene {scene_index}, {w}x{h}, denoise {denoise}");
                     // Check before finishing too: later max/clamp operations

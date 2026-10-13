@@ -216,6 +216,35 @@ impl Spaces {
         apply(&self.lms_to_work, [l[0] * l[0] * l[0], l[1] * l[1] * l[1], l[2] * l[2] * l[2]])
     }
 
+    /// Carry photographic contrast into colour separation without rotating
+    /// hue. A per-channel curve builds colour where its local log slope is
+    /// above one, but washes it out in the shoulder. Carry half that contrast
+    /// in log space (square-root gain), a conservative colour rendering,
+    /// in Oklab, and fade it for already vivid C/L (0.1..0.3). This responds
+    /// to the curve and scene level; it is not a fixed saturation multiplier.
+    #[inline]
+    pub fn render_colour(&self, rgb: [f32; 3], log_contrast: f32) -> [f32; 3] {
+        if log_contrast <= 1.0 {
+            return rgb;
+        }
+        let [l, a, b] = self.to_oklab(rgb);
+        let saturation = a.hypot(b) / l.max(1e-6);
+        if saturation >= 0.3 {
+            return rgb;
+        }
+        let t = ((saturation - 0.1) / 0.2).clamp(0.0, 1.0);
+        let gain = 1.0 + (log_contrast.sqrt() - 1.0) * (1.0 - t * t * (3.0 - 2.0 * t));
+        let rendered = self.from_oklab([l, a * gain, b * gain]);
+        let y = luma(rendered);
+        // Oklab lightness is not luminance. Restore the curve's mapped Y;
+        // a common positive gain keeps hue and the chosen relative chroma.
+        if y > 0.0 {
+            rendered.map(|v| v * luma(rgb) / y)
+        } else {
+            rgb
+        }
+    }
+
     /// Converts a display-linear working-space colour to linear sRGB inside
     /// the gamut. Out-of-gamut colours keep their lightness and hue and lose
     /// just enough chroma to fit.

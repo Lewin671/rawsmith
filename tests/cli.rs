@@ -850,3 +850,64 @@ fn small_preview_clipping_statistics_can_differ_from_the_full_export() {
     assert!(full["stats"]["clipped_highlights_pct"].as_f64().unwrap() > 0.0, "{full}");
     assert_eq!(preview["stats"]["clipped_highlights_pct"], 0.0, "{preview}");
 }
+
+#[test]
+fn denoise_schema_reports_and_legacy_recipe_migration_are_explicit() {
+    let f = Fixture::new("default-look-migration");
+    let schema = ok(&["schema"]);
+    let field = schema["parameters"].as_array().unwrap().iter().find(|p| p["path"] == "denoise").unwrap();
+    assert!(field["default"].is_null());
+    assert!(field["description"].as_str().unwrap().contains("native sensor noise"));
+    let default = ok(&["render", s(&f.raw), "--size", "64"]);
+    assert!(default["recipe_compatibility"].is_null());
+    assert!(default["noise_reduction"]["strength"].is_number());
+    assert!(default["recipe"].get("denoise").is_none());
+    for version in [Some("0.1.0"), Some("0.1.1"), None, Some(env!("CARGO_PKG_VERSION"))] {
+        let mut recipe = serde_json::json!({"exposure":0.1});
+        if let Some(version) = version {
+            recipe["rawsmith"] = serde_json::json!(version);
+        }
+        std::fs::write(f.recipe(), recipe.to_string()).unwrap();
+        let before = std::fs::read(f.recipe()).unwrap();
+        let rendered = ok(&["render", s(&f.raw), "--size", "64"]);
+        let compatibility = &rendered["recipe_compatibility"];
+        assert_eq!(compatibility["written_version"], serde_json::json!(version));
+        assert_eq!(compatibility["rendering_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(compatibility["policy"], "current_defaults");
+        assert_eq!(compatibility["note"].is_null(), version == Some(env!("CARGO_PKG_VERSION")));
+        assert_eq!(rendered["recipe"]["exposure"], 0.1);
+        let compared = ok(&[
+            "compare",
+            s(&f.raw),
+            "--panel",
+            "saved",
+            "--panel",
+            "default",
+            "-o",
+            s(&f.path("row.png")),
+            "--size",
+            "64",
+        ]);
+        assert_eq!(compared["panels"][0]["recipe_compatibility"], *compatibility);
+        assert!(compared["panels"][1]["recipe_compatibility"].is_null());
+        assert_eq!(compared["panels"][0]["noise_reduction"], rendered["noise_reduction"]);
+        assert_eq!(std::fs::read(f.recipe()).unwrap(), before, "trial and compare must not migrate on disk");
+    }
+    for value in ["0", "10", "52.44140625", "100"] {
+        let report = ok(&["edit", s(&f.raw), "--set", &format!("denoise={value}")]);
+        assert_eq!(report["noise_reduction"]["strength"], value.parse::<f64>().unwrap());
+        assert_eq!(report["noise_reduction"]["source"], "recipe");
+        assert_eq!(ok(&["render", s(&f.raw), "--size", "64"])["noise_reduction"], report["noise_reduction"]);
+        assert_eq!(ok(&["auto", s(&f.raw)])["noise_reduction"], report["noise_reduction"]);
+    }
+    let before = std::fs::read(f.recipe()).unwrap();
+    let trial = ok(&["render", s(&f.raw), "--set", "denoise=null", "--size", "64"]);
+    assert_ne!(trial["noise_reduction"]["source"], "recipe");
+    assert_eq!(std::fs::read(f.recipe()).unwrap(), before);
+    ok(&["edit", s(&f.raw), "--set", "denoise=null"]);
+    let before = std::fs::read(f.recipe()).unwrap();
+    let (success, _) = run(&["edit", s(&f.raw), "--set", "denoise+=5", "-o", s(&f.path("rejected.png"))]);
+    assert!(!success);
+    assert_eq!(std::fs::read(f.recipe()).unwrap(), before);
+    assert!(!f.path("rejected.png").exists());
+}

@@ -1,7 +1,7 @@
 //! The edit recipe: every adjustment that turns a RAW file into a picture.
 //!
 //! A recipe is plain JSON stored next to the RAW (`photo.ARW.rawsmith.json`).
-//! All fields are optional and default to a neutral rendering, so an empty
+//! All fields are optional and default to a finished rendering, so an empty
 //! object is a valid recipe. Slider-style fields follow the conventions of
 //! mainstream raw developers (-100..100, 0 = no change).
 
@@ -104,7 +104,7 @@ pub struct Params {
     pub gradients: Vec<Gradient>,
     pub vignette: f64,
     pub sharpen: f64,
-    pub denoise: f64,
+    pub denoise: Option<f64>,
     pub defringe: f64,
     pub lens_corrections: bool,
     pub rotate: f64,
@@ -132,7 +132,7 @@ impl Default for Params {
             gradients: Vec::new(),
             vignette: 0.0,
             sharpen: 40.0,
-            denoise: 10.0,
+            denoise: None,
             defringe: 0.0,
             lens_corrections: true,
             rotate: 0.0,
@@ -212,7 +212,7 @@ pub fn fields() -> Vec<Field> {
         field("vignette", -100.0, 100.0, "Brightens (positive) or darkens (negative) the corners, on top of the lens correction."),
         field("sharpen", 0.0, 100.0, "Native-resolution output sharpening amount; previews resize after sharpening."),
         field("defringe", 0.0, 100.0, "Additional suppression of thin purple/blue chroma outliers at strong luminance edges, on top of automatic neutral-edge demosaic protection; 0 disables only the additional filter. Preserves broad purple subjects, but may affect genuinely purple detail only a few sensor pixels wide. Check at full resolution."),
-        field("denoise", 0.0, 100.0, "Noise reduction strength (chroma grain first, broader chroma above 25, mild luminance above 50)."),
+        field("denoise", 0.0, 100.0, "Noise reduction strength (chroma grain first, broader chroma above 25, mild luminance above 50). null or omitted measures native sensor noise with an ISO prior; an explicit number is exact, including 0. Read noise_reduction.strength in render reports before adjusting."),
         field(
             "rotate",
             -45.0,

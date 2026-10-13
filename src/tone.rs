@@ -7,9 +7,10 @@ use rayon::prelude::*;
 use crate::color::luma;
 use crate::image::{Image, Plane};
 
-/// Slope of the filmic curve at `contrast = 0`, fitted so the default
-/// rendering has the tonal range of a typical camera JPEG.
-const BASE_CONTRAST: f32 = 1.6;
+/// Sigmoid exponent at zero slider contrast. With the native white point,
+/// this gives ~1.5 log-log slope at middle grey, with a toe reaching true
+/// black rather than a display offset that would crush shadow detail.
+const BASE_CONTRAST: f32 = 1.8;
 
 /// Scene-linear middle grey.
 pub const GREY: f32 = 0.18;
@@ -210,6 +211,37 @@ impl Filmic {
         let shoulder = scale * kc / (kc + pivot);
         let shoulder_slope = scale * c * pivot * kc / (knee * (kc + pivot).powi(2));
         Filmic { contrast: c, pivot, scale, white, shoulder, shoulder_slope }
+    }
+
+    /// Local log-log contrast. Near neutral, this is the relative colour
+    /// separation a channel-wise curve would produce, without its hue shifts.
+    pub fn log_slope(&self, x: f32) -> f32 {
+        if x <= 0.0 || x >= self.white {
+            return 0.0;
+        }
+        let knee = self.white * 0.5;
+        if x <= knee {
+            return self.contrast * self.pivot / (x.powf(self.contrast) + self.pivot);
+        }
+        let t = (x - knee) / knee;
+        let d = (1.0 - self.shoulder).max(0.0);
+        let m = (self.shoulder_slope * knee).min(3.0 * d);
+        let derivative = (2.0 * (1.0 - t) * (d + (2.0 * d - m) * t) - (1.0 - t).powi(2) * (2.0 * d - m)) / knee;
+        (x * derivative / self.eval(x)).max(0.0)
+    }
+
+    /// Apply the curve to luminance with one RGB gain. Channel-wise curves
+    /// wash out shoulder colours and rotate their hue. A common gain keeps
+    /// chromaticity (and Oklab C/L) until the output gamut requires compression.
+    /// Preserve negative matrix channels too; clipping them here changes hue.
+    #[inline]
+    pub fn map_rgb(&self, rgb: [f32; 3]) -> [f32; 3] {
+        let y = luma(rgb);
+        if y <= 0.0 {
+            return [0.0; 3];
+        }
+        let gain = self.eval(y) / y;
+        rgb.map(|v| v * gain)
     }
 
     #[inline]

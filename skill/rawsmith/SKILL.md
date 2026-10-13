@@ -116,8 +116,14 @@ recipe it prints includes the trial values, but the recipe file is not
 touched; repeat the `--set` with `edit` to keep it), and
 `rawsmith edit ... --reset` to start over.
 
-Auto sets global tone, colour and denoise. It measures sensor loss, native
-noise, relative colourfulness and spatial tone evidence; weak evidence leaves
+The default is a finished rendering with photographic contrast and colour
+hue preserved through tone mapping. Muted colour separation follows local
+tone contrast, fading for vivid colours; there is no fixed saturation boost.
+Auto replaces global tone and colour, measuring candidates against that
+current base rather than stacking on saved tone/colour. It measures sensor loss, native
+noise, relative colourfulness and spatial tone evidence. Unset/null denoise
+uses the same native measurement as default rendering; an explicit amount
+is kept. Weak evidence leaves
 smaller adjustments, and clarity stays at zero. Its foreground bound can
 leave bright sky above the highlight target because lost sensor information
 cannot be recovered by darkening the subject. Check channel clipping as well
@@ -126,6 +132,11 @@ Auto only applies global adjustments. It never changes white balance,
 crops, or adds gradients, so a landscape with a bright sky usually still
 needs a gradient. Its `decisions` report a cast when greys dominate a
 confident high-key scene. Blue shade and warm lighting are left as shot.
+
+Version 0.2.0 renders older sparse recipes with the new defaults; their
+writer version does not pin pixels. Check `recipe_compatibility.note` in
+render reports (or each developed compare panel). Trials and comparison do
+not rewrite recipes. Use the original executable to reproduce an old look.
 
 The recipe lives next to the RAW by default. To keep it elsewhere, or to
 keep several versions of one photo, pass the same `--recipe FILE` to every
@@ -296,8 +307,11 @@ export report before deciding that highlight or shadow detail is safe.
   cast. Sunsets want their warmth; do not "correct" it.
 - Lifting shadows reveals noise. After a strong lift check a dark region
   at 100% and raise `denoise` if needed. The defaults (`sharpen` 40,
-  `denoise` 10; auto combines measured native noise with an ISO prior) are a
-  starting point.
+  `denoise` null) combine measured native noise with an ISO prior in both
+  default renders and auto. Read `noise_reduction.strength` for the amount
+  used and `source` for measured/prior/explicit provenance. Set an explicit
+  number to adjust from it; `denoise+=5` cannot increment a null recipe.
+  `denoise=0` disables it, and `denoise=null` restores measurement.
   `denoise` smooths chroma grain first, adds a broader chroma correction
   gradually above 25, and mild luminance smoothing above 50. High values
   retain fine luminance texture but cannot recover focus or motion blur;

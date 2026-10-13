@@ -194,7 +194,11 @@ pub fn row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result
         } else {
             let rendered = pipeline::render(raw, &panel.params, Size::default())?;
             let image = rendered.image;
-            (image.resized(panel_width(&image), height), json!({"color_space": "sRGB"}), &panel.params)
+            (
+                image.resized(panel_width(&image), height),
+                json!({"color_space": "sRGB", "noise_reduction": rendered.noise_reduction}),
+                &panel.params,
+            )
         };
         report["kind"] = json!(panel.kind);
         report["recipe_file"] = json!(panel.recipe_file);
@@ -286,7 +290,11 @@ mod tests {
                 (image.clone(), report.clone(), camera_params)
             } else {
                 let rendered = pipeline::render(raw, &panel.params, Size::default())?;
-                (rendered.image, json!({"color_space": "sRGB"}), &panel.params)
+                (
+                    rendered.image,
+                    json!({"color_space": "sRGB", "noise_reduction": rendered.noise_reduction}),
+                    &panel.params,
+                )
             };
             report["kind"] = json!(panel.kind);
             report["recipe_file"] = json!(panel.recipe_file);

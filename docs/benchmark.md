@@ -9,6 +9,13 @@ none of them substitutes for the others.
 | `examples/quality.rs` | Are the algorithms correct and better than naive baselines, against known answers? | No (synthetic) |
 | `bench/photos.py` | Do real photos come out better than the camera's own rendering and the system RAW converter, and does AI editing help? | Your own RAW files |
 
+The real-photo scores and timings below predate the 0.2.0 default-look
+change; they must not be presented as measurements of the new default.
+Version 0.2.0 changes base contrast, colour transport through tone mapping
+and unset denoise to a shared native-noise estimate. Its new synthetic
+properties are described in [pipeline.md](pipeline.md); a fresh blind
+camera comparison is pending.
+
 Decoder and synthetic measurements below are from version 0.1.0. Real-photo
 results distinguish the sealed evaluation, validation before and after fixes,
 and historical development runs. Timings were measured on an Intel i7-10700
