@@ -9,7 +9,9 @@ none of them substitutes for the others.
 | `examples/quality.rs` | Are the algorithms correct and better than naive baselines, against known answers? | No (synthetic) |
 | `bench/photos.py` | Do real photos come out better than the camera's own rendering and the system RAW converter, and does AI editing help? | Your own RAW files |
 
-Numbers below are from version 0.1.0 on an Intel i7-10700
+Decoder and synthetic measurements below are from version 0.1.0. Real-photo
+results distinguish the sealed evaluation, validation before and after fixes,
+and historical development runs. Timings were measured on an Intel i7-10700
 (8 cores / 16 threads), macOS, release build.
 
 ## 1. Decoder cross-check
@@ -71,6 +73,12 @@ Every RAW file is rendered several ways at 1400 px:
 | `neutral` | rawsmith, default recipe |
 | `auto` | rawsmith after `rawsmith auto` |
 | `ai` | rawsmith with a recipe made by an AI assistant following [the skill](../skill/rawsmith/SKILL.md), starting from `auto` |
+
+Current rawsmith previews run the full-resolution pipeline, including noise
+reduction, tone and sharpening, then resize the finished sRGB pixels last.
+They take about as long as an export; the earlier approximate preview path
+skipped noise reduction and no longer exists. The judge sees resized images,
+so these comparisons alone cannot establish full-resolution detail quality.
 
 The `camera` variant works without macOS. `render` calls
 `rawsmith compare RAW --panel camera -o camera.jpg --size 1400` and reads its
@@ -141,7 +149,93 @@ What the comparisons mean:
 - `ai vs auto`: what an assistant's editing loop adds on top — the reason
   the tool exists.
 
-### Results
+### Sealed results: 10 photos, evaluated once after fixes
+
+The sealed set contains 10 further Sony A7 IV photos from the same selection
+as the validation set: 3 high ISO, 3 backlit, 3 saturated sky and 1 snow.
+It was not looked at until all fixes were merged, then edited and judged
+once. All camera JPEGs in both sets were Adobe RGB and were converted to
+sRGB by the harness.
+
+For both the sealed and validation evaluations, the blind judge was Codex
+`gpt-6.1-sol` at **low** reasoning effort, using both image orders, spoiled
+controls and identical pairs. The `ai` recipes were made by Codex
+`gpt-6.1-sol` at **high** effort following the editing skill. Editor and
+judge are the same model at different effort levels, which may favour `ai`.
+Cells are wins – losses – ties for the first-named variant, one outcome per
+photo.
+
+| Comparison | Sealed after fixes (10 photos) |
+|---|---|
+| `neutral` vs `camera` | 3 – 5 – 2 |
+| `auto` vs `camera` | 5 – 1 – 4 |
+| `auto` vs `system` | 3 – 3 – 4 |
+| `auto` vs `neutral` | 6 – 1 – 3 |
+| `ai` vs `auto` | 7 – 0 – 3 |
+| `ai` vs `camera` | 8 – 0 – 2 |
+| `ai` vs `system` | 8 – 1 – 1 |
+
+The assistant's editing loop improved on `auto`, but the default recipe
+still loses to the camera JPEG (3 – 5 – 2). High ISO is a particular weakness:
+default noise reduction remains a fixed low value. `auto` only draws with
+the macOS converter (3 – 3 – 4). Editors repeatedly noted that the camera's
+rendering has stronger colour and contrast. These are small samples;
+confidence intervals are wide, and a sealed set from the same camera and
+selection is not evidence of general performance across cameras or scenes.
+
+### Validation: what was found and fixed (24 photos)
+
+The 24 photos had never been used for tuning before their first evaluation.
+They were chosen by measurement in four classes of six: high ISO
+(3200–6400), backlit, saturated sky, and snow and rime. Photos containing people were excluded
+by on-device detection. They were first judged with the engine as released
+in 0.1.1 plus the corrected camera rendering (`validation_before_fixes`).
+That evaluation exposed weaknesses in highlight rendering, preview/export
+consistency, noise reduction, demosaic false colour and `auto`.
+
+Those areas were then fixed with these photos in view. Consequently,
+`validation_after_fixes` is a development result and optimistic, not a
+held-out estimate. The table records what the evaluation found and how
+results changed after the fixes.
+
+| Comparison | Before fixes (24 photos) | After fixes (24 photos, development) |
+|---|---|---|
+| `neutral` vs `camera` | 8 – 7 – 9 | 12 – 6 – 6 |
+| `auto` vs `camera` | 9 – 11 – 4 | 20 – 2 – 2 |
+| `auto` vs `system` | 10 – 12 – 2 | 17 – 4 – 3 |
+| `auto` vs `neutral` | 12 – 7 – 5 | 14 – 1 – 9 |
+| `ai` vs `auto` | 23 – 1 – 0 | 15 – 2 – 7 |
+| `ai` vs `camera` | 17 – 5 – 2 | 23 – 0 – 1 |
+| `ai` vs `system` | 15 – 6 – 3 | 22 – 0 – 2 |
+
+Judge checks (accuracy and order consistency are the reported values,
+shown as percentages without further rounding):
+
+| Check | Sealed after fixes | Validation before fixes | Validation after fixes |
+|---|---|---|---|
+| Spoiled controls rejected | 100% over 32 votes | 90.6% over 64 votes | 98.4% over 64 votes |
+| Identical-pair verdicts called a tie | 6 of 6 | 12 of 12 | 12 of 12 |
+| Same verdict after swapping A and B | 80.2% | 83% | 86.5% |
+| Position votes (A / B / tie) | 63 / 93 / 22 | 188 / 202 / 22 | 174 / 188 / 50 |
+| Complete pairs judged (including checks) | 89 | 206 | 206 |
+| Incomplete pairs | 0 | 0 | 0 |
+
+Mean seconds on the Intel i7-10700 measurement machine (8 cores, macOS),
+including rendering, encoding and writing. The preview long edge is 1400 px;
+full-resolution exports use the default recipe. These are recorded workloads,
+not timings for an assistant's entire editing session.
+
+| Workload | Sealed after fixes | Validation before fixes | Validation after fixes |
+|---|---|---|---|
+| Default preview (`neutral`) | 4.619 | 0.406 | 4.579 |
+| `auto` with preview | 7.342 | 1.044 | 7.101 |
+| macOS converter (`system`) | 1.361 | 1.356 | 1.336 |
+| Full-resolution JPEG export | 5.158 | 4.471 | 5.083 |
+
+The 0.406 s pre-fix preview timing describes the removed path that skipped
+noise reduction. It is not the speed of a current preview.
+
+### Historical development results: 15 photos (0.1.0)
 
 15 photos (the private set described under Limits), 258 judgements per
 judge, every pair in both orders. Two judges from different vendors saw
@@ -188,10 +282,12 @@ second, and because both orders are judged that lean turns into ties
 rather than wins, which is why its counts are lower. Claude ran through
 `claude -p`, GPT-6 Luna through `codex exec` with the two images attached.
 
-Speed on the same machine, mean of the 15 files (33 MP each): a 1400 px
-preview takes 0.39 s; a full-resolution JPEG export takes 4.3 s,
-including encoding and writing. `rawsmith auto` with a preview takes 1.05 s
-and macOS `sips` 1.30 s for a picture of the same size.
+Historical speed on the same machine, mean of the 15 files (33 MP each):
+a 1400 px preview took 0.39 s; a full-resolution JPEG export took 4.3 s,
+including encoding and writing. `rawsmith auto` with a preview took 1.05 s
+and macOS `sips` 1.30 s for a picture of the same size. The preview and
+`auto` figures used the removed approximate path that skipped noise reduction;
+they do not describe current performance.
 
 The `ai` recipes came from five independent assistant sessions (three
 photos each) that were given only the skill file and the CLI, started
@@ -199,7 +295,10 @@ from `auto`, and used two to five rounds per photo.
 
 ### Limits
 
-- The private set is 15 photos from one camera and one photographer:
+- All real-photo results here are from one camera. The sealed sample is
+  small, the validation after fixes is optimistic, and the earlier private
+  set is historical development evidence. The earlier set has 15 photos
+  from one photographer:
   dusk and sunsets, hazy lake views, snow and rime in fog and sun. The
   intervals are wide, and the default look and `auto` were developed while
   looking at these same photos, so this is a development-set result, not a
@@ -207,8 +306,10 @@ from `auto`, and used two to five rounds per photo.
 - An LLM judge measures plausibility of taste, not truth. It is good at
   rejecting obvious faults (see the control accuracy) and reasonably
   consistent, but two models are two opinions, not a panel of
-  photographers. The `ai` recipes were made by Claude, so the Claude
-  judge shares a maker with them; the second judge does not.
+  photographers. In the sealed and validation evaluations, editor and
+  judge use the same Codex model at different effort levels. In the
+  historical 15-photo run, the `ai` recipes were made by Claude, so the
+  Claude judge shares a maker with them; the second judge does not.
 - `camera` is a resized JPEG, so it has been compressed twice.
 
 ### Run it on your own photos
@@ -217,7 +318,7 @@ The default judge is now `gpt-6.1-sol` at `low` reasoning effort. In a
 held-out reliability run, `gpt-6.1-sol` rejected 94% of spoiled controls and
 kept 84% of verdicts after swapping image order, compared with 81% and 66%
 for `gpt-6-luna`. The owner selected the more reliable judge for future
-runs; the published development-set tables above remain historical results.
+runs; the earlier 15-photo development table remains historical evidence.
 
 ```sh
 cargo build --release

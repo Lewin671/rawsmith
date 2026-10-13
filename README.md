@@ -125,8 +125,8 @@ The published recipe records the resulting edit:
 - **Previews match resized exports.** Previews develop at full resolution,
   including noise reduction, tone and sharpening, then area-resize the
   finished sRGB pixels. Check 100% detail for artefacts hidden by resizing.
-  The [v0.1.0 benchmark](docs/benchmark.md) used the earlier approximate
-  preview path; its preview timings do not describe this path.
+  The earlier 0.406 s preview path skipped noise reduction and no
+  longer exists; see [current measured timings](docs/benchmark.md).
 - **An edit is a recipe.** `render --set` tries
   settings; `edit` saves them. The same rawsmith binary, RAW and recipe produce
   the same file, bit for bit ([exact terms](docs/cli.md)).
@@ -148,35 +148,35 @@ The published recipe records the resulting edit:
 
 ## Results
 
-Against the macOS RAW converter, `auto` recorded 15 wins with Claude
-and 12 wins, 3 ties and no losses with GPT-6 Luna on the published development set.
+On a sealed set of 10 Sony A7 IV photos, first viewed after all fixes were
+merged and edited and judged once, assistant edits beat the camera JPEG on
+8 photos with 2 ties; counts below are wins – losses – ties per photo.
+The blind Codex `gpt-6.1-sol` judge used low effort, both image orders,
+spoiled controls and identical pairs; the editor used the same model at
+high effort, which may favour assistant edits, and all camera JPEGs were
+converted from Adobe RGB to sRGB.
 
-Correction: All 15 private-set camera JPEGs were Adobe RGB but were shown
-unconverted as sRGB in the published `camera` comparisons. This made the
-camera rendering look duller and less saturated than it is. The
-`neutral`/`auto`/`ai` vs `camera` rows therefore overstate rawsmith's advantage
-and are withdrawn pending a rerun. Historical counts are retained.
-Comparisons against `system`, `auto` vs `neutral` and `ai` vs `auto` are
-unaffected, as are the three sRGB CC0 samples.
-Counts in the published blind comparisons are wins – losses – ties per photo.
+| Comparison | Sealed after fixes (10 photos) |
+|---|---|
+| Assistant-edited vs camera JPEG | 8 – 0 – 2 |
+| Assistant-edited vs `auto` | 7 – 0 – 3 |
+| `auto` vs camera JPEG | 5 – 1 – 4 |
+| `auto` vs macOS RAW converter | 3 – 3 – 4 |
+| Default recipe vs camera JPEG | 3 – 5 – 2 |
 
-| Comparison | Claude | GPT-6 Luna |
-|---|---|---|
-| `auto` vs camera JPEG **(withdrawn)** | 15 – 0 – 0 | 12 – 0 – 3 |
-| `auto` vs macOS RAW converter | 15 – 0 – 0 | 12 – 0 – 3 |
-| Default recipe vs camera JPEG **(withdrawn)** | 10 – 0 – 5 | 5 – 0 – 10 |
-| Assistant-edited vs `auto` | 12 – 1 – 2 | 6 – 0 – 9 |
+The default recipe still loses to the camera, particularly at high ISO
+where default noise reduction is a fixed low value; `auto` only draws with
+the macOS converter, and editors repeatedly noted the camera's stronger
+colour and contrast. Samples are small and confidence intervals are wide;
+the separate 24-photo validation set was used to guide fixes, making its
+after-fix results optimistic development evidence, while the earlier
+15-photo results are historical and their camera comparisons remain
+**withdrawn** because Adobe RGB JPEGs were shown unconverted as sRGB.
 
-This is a development set: 15 photos from one camera and one photographer,
-used while tuning the engine and `auto`. The two LLM judges saw each pair
-without labels, in both orders. These are model preferences, not a panel
-of photographers or a ranking of RAW developers. The edited recipes were
-made by Claude, which shares a vendor with one judge.
-
-Both judges called all identical pairs a tie. They rejected spoiled
-controls in 40 of 40 and 36 of 40 cases; verdicts survived swapping image
-order in 92% and 75% of pairs, respectively. The second judge's order
-sensitivity contributes to its higher tie count.
+On the Intel i7-10700 measurement machine (8 cores, macOS), the sealed-set
+mean was 4.619 s for a 1400 px default preview, 7.342 s for `auto` with a
+preview and 5.158 s for a full-resolution JPEG export: previews now render
+the full pipeline and resize last.
 
 Decoder samples matched LibRaw on all 18 test files. Synthetic tests also
 check demosaicing, highlight reconstruction, colour, noise reduction and

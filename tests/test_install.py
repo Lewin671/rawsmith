@@ -214,6 +214,24 @@ else:
     def requests(self):
         return [json.loads(line) for line in self.log.read_text().splitlines()]
 
+    def assert_home_unmodified(self):
+        # macOS 12.6 system tools can create an empty Library directory tree
+        # under a fresh HOME. Allow only those directories, never files,
+        # symlinks or rawsmith paths; bin, skills and shell profiles still fail.
+        library = self.home / "Library"
+        unexpected = [
+            path.relative_to(self.home)
+            for path in self.home.rglob("*")
+            if not (
+                sys.platform == "darwin"
+                and (path == library or library in path.parents)
+                and path.is_dir()
+                and not path.is_symlink()
+                and "rawsmith" not in path.name.lower()
+            )
+        ]
+        self.assertEqual(unexpected, [])
+
     def test_default_install_resolves_latest_and_installs_both_skills(self):
         self.install()
         self.assert_binary()
@@ -331,14 +349,15 @@ else:
             with self.subTest(args=args):
                 self.install(*args, success=False)
                 self.assertFalse(self.log.exists())
-                self.assertEqual(list(self.home.iterdir()), [])
+                self.assert_home_unmodified()
 
     def test_unsupported_platform_does_not_modify_home(self):
         for system, arch in (("FreeBSD", "x86_64"), ("Linux", "riscv64")):
             with self.subTest(system=system, arch=arch):
                 self.env.update(FAKE_OS=system, FAKE_ARCH=arch)
                 self.install("--version", "0.1.0", success=False)
-                self.assertEqual(list(self.home.iterdir()), [])
+                self.assertFalse(self.log.exists())
+                self.assert_home_unmodified()
 
     def test_bad_checksum_preserves_existing_binary_and_skills(self):
         original = self.seed_binary()
