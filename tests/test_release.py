@@ -1,10 +1,14 @@
 """Check release contents and rejection paths without building or using photos."""
 
+import json
+import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tarfile
 import tempfile
+import textwrap
 import unittest
 
 
@@ -93,6 +97,57 @@ class ReleasePackageTests(unittest.TestCase):
         self.assertNotEqual(self.package().returncode, 0)
         self.assertEqual(list(self.output.iterdir()), [sentinel])
         self.assertEqual(sentinel.read_text(), "keep\n")
+
+
+class ReleaseDraftTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = pathlib.Path(self.temporary.name)
+        (self.root / "dist").mkdir()
+        (self.root / "dist/install.sh").write_text("release installer")
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        # Execute the guard used by the workflow rather than reproducing its logic.
+        blocks = re.findall(r"python3 - <<'PY'\n(.*?)\n *PY", workflow, re.S)
+        guards = [block for block in blocks if "release['isDraft']" in block]
+        self.assertEqual(len(guards), 1)
+        self.guard = textwrap.dedent(guards[0])
+        self.commit = "a" * 40
+        self.release = {
+            "isDraft": True, "tagName": "v1.2.3",
+            "body": f"<!-- rawsmith-release-commit:{self.commit} -->\nGenerated notes",
+            # GitHub's default branch field does not determine an existing tag's commit.
+            "targetCommitish": "main", "assets": [{"name": "install.sh"}],
+        }
+
+    def run_guard(self):
+        (self.root / "release.json").write_text(json.dumps(self.release))
+        environment = os.environ.copy()
+        environment.update(RUNNER_TEMP=str(self.root), RELEASE_TAG="v1.2.3", RELEASE_COMMIT=self.commit)
+        return subprocess.run(
+            ["python3", "-c", self.guard], cwd=self.root, env=environment,
+            text=True, capture_output=True,
+        )
+
+    def test_matching_tag_and_commit_marker_allow_a_partial_draft_to_resume(self):
+        result = self.run_guard()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_published_and_unrelated_drafts_are_rejected(self):
+        for change in (
+            {"isDraft": False}, {"tagName": "v1.2.4"}, {"body": "unowned draft"},
+            {"body": "<!-- rawsmith-release-commit:" + "b" * 40 + " -->"},
+            {"body": "prefix " + self.release["body"]},
+        ):
+            with self.subTest(change=change):
+                original = self.release.copy()
+                self.release.update(change)
+                self.assertNotEqual(self.run_guard().returncode, 0)
+                self.release = original
+
+    def test_a_draft_with_unexpected_assets_is_left_for_manual_review(self):
+        self.release["assets"].append({"name": "unrelated.txt"})
+        self.assertNotEqual(self.run_guard().returncode, 0)
 
 
 if __name__ == "__main__":

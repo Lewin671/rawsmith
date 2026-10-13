@@ -49,10 +49,17 @@ Re-run the failed workflow, or dispatch Release with the existing stable
 tag. For a workflow-only fix, push the corrected workflow to main and
 dispatch it from main with the original tag; this changes the build
 configuration while preserving the tagged product source and version.
-A draft is resumable only when it targets the same commit and has
-no unexpected attachments. Expected draft assets are replaced as a set
+A draft is resumable only when its tag and embedded release-commit marker
+match the build and it has no unexpected attachments. Expected draft assets are replaced as a set
 before publication. A published release is never overwritten; publish a
 new version for fixes.
+
+The workflow verifies the existing tag and records its commit in the
+release body. It omits the API's optional target_commitish field, which
+is unused for existing tags but can trigger an additional workflow-write
+permission check for older commits. The built source remains pinned to
+the tag's resolved commit; no extra token or repository permission is
+needed. See [GitHub's release API](https://docs.github.com/en/rest/releases/releases#create-a-release).
 
 If the failure needs a source fix, discard the unpublished draft and
 delete the failed tag only after verifying that it was never published

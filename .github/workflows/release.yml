@@ -179,21 +179,25 @@ jobs:
           (cd dist && sha256sum --check SHA256SUMS)
       - name: Create or resume draft, upload, then publish
         run: |
-          if gh release view "$RELEASE_TAG" --json isDraft,targetCommitish,assets > "$RUNNER_TEMP/release.json"; then
-            python3 - <<'PY'
+          if ! gh release view "$RELEASE_TAG" --json isDraft,tagName,body,assets > "$RUNNER_TEMP/release.json"; then
+            printf '<!-- rawsmith-release-commit:%s -->\n' "$RELEASE_COMMIT" > "$RUNNER_TEMP/release-notes.md"
+            # The verified tag already exists. An explicit old --target would
+            # require workflow-write permission on GitHub's release endpoint.
+            gh release create "$RELEASE_TAG" --verify-tag --title "rawsmith $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --generate-notes --draft
+            gh release view "$RELEASE_TAG" --json isDraft,tagName,body,assets > "$RUNNER_TEMP/release.json"
+          fi
+          python3 - <<'PY'
           import json, os, pathlib
           with open(os.path.join(os.environ['RUNNER_TEMP'], 'release.json')) as source:
               release = json.load(source)
           if not release['isDraft']:
               raise SystemExit('Already published: release assets are immutable; create a new version instead')
-          if release['targetCommitish'] != os.environ['RELEASE_COMMIT']:
-              raise SystemExit('Existing draft targets a different commit; refusing to replace its assets')
+          marker = '<!-- rawsmith-release-commit:' + os.environ['RELEASE_COMMIT'] + ' -->'
+          if release['tagName'] != os.environ['RELEASE_TAG'] or marker not in release['body'].splitlines():
+              raise SystemExit('Draft does not identify this tag and commit; refusing to replace its assets')
           expected = {p.name for p in pathlib.Path('dist').iterdir()}
           if any(asset['name'] not in expected for asset in release['assets']):
               raise SystemExit('Existing draft contains unexpected assets; review it before retrying')
           PY
-          else
-            gh release create "$RELEASE_TAG" --verify-tag --target "$RELEASE_COMMIT" --title "rawsmith $RELEASE_TAG" --generate-notes --draft
-          fi
           gh release upload "$RELEASE_TAG" dist/* --clobber
           gh release edit "$RELEASE_TAG" --draft=false --latest
