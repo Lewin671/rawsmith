@@ -285,6 +285,101 @@ impl Plane {
 /// Edge-preserving smoothing of `input` guided by `guide` (He et al., guided
 /// filter). `radius` is the window radius, `eps` the edge threshold in
 /// squared guide units.
+/// One level of the undecimated B3-spline wavelet transform: a 1-4-6-4-1
+/// smoothing with `step - 1` holes between taps, mirrored at the borders.
+fn atrous_smooth(input: &Plane, step: usize) -> Plane {
+    const KERNEL: [f32; 5] = [1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0];
+    let (w, h) = (input.width, input.height);
+    let mirror = |i: isize, n: usize| {
+        if n == 1 {
+            return 0;
+        }
+        let period = (2 * n - 2) as isize;
+        let i = i.rem_euclid(period);
+        (if i >= n as isize { period - i } else { i }) as usize
+    };
+    let mut rows = Plane::new(w, h);
+    rows.data.par_chunks_mut(w).zip(input.data.par_chunks(w)).for_each(|(out, row)| {
+        for (x, v) in out.iter_mut().enumerate() {
+            *v = (0..5).map(|k| KERNEL[k] * row[mirror(x as isize + (k as isize - 2) * step as isize, w)]).sum();
+        }
+    });
+    let mut out = Plane::new(w, h);
+    out.data.par_chunks_mut(w).enumerate().for_each(|(y, out)| {
+        let taps: [&[f32]; 5] = std::array::from_fn(|k| {
+            let row = mirror(y as isize + (k as isize - 2) * step as isize, h);
+            &rows.data[row * w..(row + 1) * w]
+        });
+        for (x, v) in out.iter_mut().enumerate() {
+            *v = (0..5).map(|k| KERNEL[k] * taps[k][x]).sum();
+        }
+    });
+    out
+}
+
+/// Wavelet shrinkage of square-root encoded luminance, where sensor noise
+/// is roughly uniform. `sigma` is the noise in the finest of four scales;
+/// coarser scales hold the fixed shares that demosaiced sensor noise leaves
+/// there. Each scale removes coefficients within `threshold` noise levels
+/// and keeps those well above, so grain goes at every size while edges and
+/// firm texture stay. The noise level comes from the sensor measurement, not
+/// from this picture's detail: fine texture is never mistaken for more noise.
+pub fn wavelet_denoise(input: Plane, sigma: f32, threshold: f32) -> Plane {
+    if sigma <= 0.0 || threshold <= 0.0 {
+        return input;
+    }
+    // Measured on quiet areas of ISO 100-6400 frames after demosaicing: band
+    // noise relative to the finest band. The finest band also carries the
+    // isolated extremes that survive as specks, so it is thresholded harder.
+    const NOISE: [f32; 4] = [1.0, 0.46, 0.22, 0.12];
+    const WEIGHT: [f32; 4] = [1.5, 1.1, 0.8, 0.6];
+    // Noise left in each smoothed plane, for judging its gradients.
+    const RESIDUAL: [f32; 4] = [0.53, 0.26, 0.145, 0.08];
+    let (w, h) = (input.width, input.height);
+    let mut kept = Plane::new(w, h);
+    let mut current = input;
+    for scale in 0..4 {
+        let step = 1usize << scale;
+        let smooth = atrous_smooth(&current, step);
+        let noise = (sigma * NOISE[scale]).powi(2);
+        let ceiling = (threshold * WEIGHT[scale]).powi(2) * noise;
+        // A difference of two smoothed samples carries sqrt(2) of their noise.
+        let slope_noise = std::f32::consts::SQRT_2 * RESIDUAL[scale] * sigma;
+        current.data.par_iter_mut().zip(&smooth.data).for_each(|(c, s)| *c -= *s);
+        // Local energy of this band. Where it clearly exceeds the noise there
+        // is texture, and the threshold falls to noise^2 / signal (BayesShrink)
+        // so low-contrast detail is kept; in flat areas it stays at its
+        // ceiling, which also removes the isolated extremes seen as specks.
+        let energy =
+            Plane { width: w, height: h, data: current.data.par_iter().map(|d| d * d).collect() }.box_blur(3 * step);
+        kept.data.par_chunks_mut(w).enumerate().for_each(|(y, out)| {
+            let row = |y: usize| &smooth.data[y * w..(y + 1) * w];
+            let (here, above, below) = (row(y), row(y.saturating_sub(step)), row((y + step).min(h - 1)));
+            for (x, out) in out.iter_mut().enumerate() {
+                let d = current.data[y * w + x];
+                // The margin keeps chance fluctuations of pure noise at the ceiling.
+                let signal = (energy.data[y * w + x] - 2.0 * noise).max(0.0);
+                let limit = if signal > 0.0 { (noise * noise / signal).min(ceiling) } else { ceiling };
+                // Real structure persists in the smoother plane; noise does
+                // not. Where that plane has a clear slope, an edge is passing
+                // through and its detail is left alone.
+                let slope =
+                    (here[(x + step).min(w - 1)] - here[x.saturating_sub(step)]).abs().max((below[x] - above[x]).abs());
+                let t = ((slope / slope_noise - 2.5) / 2.5).clamp(0.0, 1.0);
+                let limit = limit * (1.0 - t * t * (3.0 - 2.0 * t));
+                // Non-negative garrote: nothing below the threshold, nearly all of a strong edge.
+                let d2 = d * d;
+                if d2 > limit {
+                    *out += d * (1.0 - limit / d2.max(1e-20));
+                }
+            }
+        });
+        current = smooth;
+    }
+    kept.data.par_iter_mut().zip(&current.data).for_each(|(out, base)| *out += *base);
+    kept
+}
+
 pub fn guided_filter(guide: &Plane, input: &Plane, radius: usize, eps: f32) -> Plane {
     Guided::new(guide, radius).into_filter(input.clone(), eps)
 }
@@ -346,6 +441,92 @@ impl<'a> Guided<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Deterministic unit-variance noise, spatially correlated like demosaiced grain.
+    fn grain(width: usize, height: usize, seed: u64) -> Plane {
+        let mut state = seed;
+        let mut next = || {
+            let sum: f32 = (0..12)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    (state >> 40) as f32 / (1u64 << 24) as f32
+                })
+                .sum();
+            sum - 6.0
+        };
+        let white = Plane { width, height, data: (0..width * height).map(|_| next()).collect() }.blur(0.6);
+        let rms = (white.data.iter().map(|v| v * v).sum::<f32>() / white.data.len() as f32).sqrt();
+        Plane { data: white.data.iter().map(|v| v / rms).collect(), ..white }
+    }
+
+    fn rms(values: impl Iterator<Item = f32>) -> f32 {
+        let (sum, count) = values.fold((0.0f64, 0usize), |(sum, count), v| (sum + (v * v) as f64, count + 1));
+        (sum / count as f64).sqrt() as f32
+    }
+
+    #[test]
+    fn wavelet_denoise_removes_grain_and_keeps_edges_and_firm_texture() {
+        let (w, h, sigma) = (256, 192, 0.01f32);
+        let noise = grain(w, h, 0x9E37_79B9);
+        // Left: flat. Middle: a step edge. Right: texture peaking six noise levels high.
+        let clean = Plane {
+            width: w,
+            height: h,
+            data: (0..w * h)
+                .map(|i| {
+                    let (x, y) = (i % w, i / w);
+                    let step = if x >= 96 { 0.12 } else { 0.0 };
+                    let texture =
+                        if x >= 160 { 6.0 * sigma * (x as f32 * 0.9).sin() * (y as f32 * 0.8).cos() } else { 0.0 };
+                    0.3 + step + texture
+                })
+                .collect(),
+        };
+        let noisy =
+            Plane { data: clean.data.iter().zip(&noise.data).map(|(c, n)| c + sigma * n).collect(), ..clean.clone() };
+        // The finest band holds most, not all, of the grain.
+        let smooth = wavelet_denoise(noisy.clone(), sigma * 0.89, 2.2);
+        let region = |plane: &Plane, x0: usize, x1: usize| -> Vec<f32> {
+            (16..h - 16).flat_map(|y| (x0..x1).map(move |x| y * w + x)).map(|i| plane.data[i] - clean.data[i]).collect()
+        };
+        let left = rms(region(&smooth, 16, 80).into_iter()) / rms(region(&noisy, 16, 80).into_iter());
+        assert!(left < 0.5, "flat grain remaining: {left}");
+        // The step keeps its height and steepness right at the edge.
+        let column =
+            |plane: &Plane, x: usize| (16..h - 16).map(|y| plane.data[y * w + x]).sum::<f32>() / (h - 32) as f32;
+        let slope = (column(&smooth, 96) - column(&smooth, 95)) / 0.12;
+        assert!((0.9..1.1).contains(&slope), "edge step kept: {slope}");
+        // Texture above the noise survives: projection of the result on the true texture.
+        let (mut cross, mut power) = (0.0f64, 0.0f64);
+        for y in 16..h - 16 {
+            for x in 176..w - 16 {
+                let truth = (clean.data[y * w + x] - 0.42) as f64;
+                cross += (smooth.data[y * w + x] - 0.42) as f64 * truth;
+                power += truth * truth;
+            }
+        }
+        assert!(cross / power > 0.9, "firm texture kept: {}", cross / power);
+    }
+
+    #[test]
+    fn wavelet_denoise_is_exact_when_off_and_safe_on_tiny_or_flat_planes() {
+        let noisy = grain(40, 30, 7);
+        for (sigma, threshold) in [(0.0, 2.0), (0.01, 0.0)] {
+            assert_eq!(wavelet_denoise(noisy.clone(), sigma, threshold).data, noisy.data);
+        }
+        for (w, h) in [(1, 1), (1, 9), (9, 1), (2, 3), (5, 5)] {
+            let flat = Plane { width: w, height: h, data: vec![0.661_649_1; w * h] };
+            let out = wavelet_denoise(flat, 0.01, 2.2);
+            assert!(out.data.iter().all(|v| (v - 0.661_649_1).abs() < 1e-6), "{w}x{h}: {:?}", out.data);
+        }
+        let reference = wavelet_denoise(noisy.clone(), 0.5, 2.2);
+        for threads in [1, 3] {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            assert_eq!(pool.install(|| wavelet_denoise(noisy.clone(), 0.5, 2.2)).data, reference.data);
+        }
+    }
 
     #[test]
     fn guided_filter_flat_guide_has_positive_denominator() {

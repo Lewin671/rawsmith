@@ -242,9 +242,11 @@ balance and noise early, then iterate on everything else.
 **Noise and detail.** With `denoise` unset the amount is measured from
 the file (`noise_reduction.strength` in the report); set a number to
 change it. `dehaze` and `clarity` amplify noise in smooth areas at high
-ISO — if the sky turns blotchy, lower them first. Visible grain in a
-smooth night sky usually needs `denoise` around 75–85; check a patch at
-100% after changing it.
+ISO — if the sky turns blotchy, lower them first. The measured amount
+already clears grain from smooth areas while keeping edges and firm
+texture. Raise it by 10–20 only if a 100% patch of lifted shadow or
+night sky still shows grain; every step up also smooths fine texture
+(foliage, fabric, distant detail), so look at that too.
 
 ## Reading the report
 

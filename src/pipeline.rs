@@ -152,6 +152,15 @@ pub(crate) fn framed(image: Image, orientation: u16, params: &Params) -> Image {
 /// Smooths chroma (and, at high strength, luminance) noise. Works on
 /// square-root encoded values, where sensor noise is roughly uniform.
 fn denoise(image: &mut Image, strength: f32) {
+    // Low-ISO frames keep their faint grain and finest texture; the
+    // luminance threshold reaches its full height by ISO 800 (strength 40).
+    let t = ((strength - 0.1) / 0.3).clamp(0.0, 1.0);
+    denoise_with(image, strength, 2.2 * t * t * (3.0 - 2.0 * t));
+}
+
+/// `luma_threshold` is in units of the luminance noise level; zero smooths
+/// chroma only and preserves linear luminance exactly.
+fn denoise_with(image: &mut Image, strength: f32, luma_threshold: f32) {
     if strength <= 0.0 {
         return;
     }
@@ -203,17 +212,23 @@ fn denoise(image: &mut Image, strength: f32) {
         coarse(&mut cb);
     }
     drop(guides);
-    // Luminance smoothing only in the upper half of the slider.
-    let luma_strength = ((strength - 0.5) * 2.0).max(0.0);
-    let original_luma = (luma_strength > 0.0).then(|| Plane::from_fn(image, |p| color::luma(p).max(0.0).sqrt()));
+    // The slider is the noise estimate: 100 stands for a square-root sensor
+    // noise of 0.02, of which 0.74 reaches the finest luminance band after
+    // demosaicing.
+    let luma_sigma = 0.74 * 0.02 * strength;
+    // Above half strength the chroma-cleaned estimate also replaces part of
+    // the luminance itself.
+    let luma_blend = ((strength - 0.5) * 2.0).max(0.0);
+    let smooth_luma = luma_threshold > 0.0;
+    let original_luma = smooth_luma.then(|| Plane::from_fn(image, |p| color::luma(p).max(0.0).sqrt()));
     image.data.par_iter_mut().enumerate().for_each(|(i, p)| {
         // With chroma-only smoothing, luminance restoration is per-pixel:
         // keep the same sqrt/square round trip without a separate plane/pass.
-        let original = if luma_strength == 0.0 { color::luma(*p).max(0.0).sqrt() } else { 0.0 };
+        let original = if smooth_luma { 0.0 } else { color::luma(*p).max(0.0).sqrt() };
         // Invert the encoded guide, keeping it unchanged by chroma smoothing.
         let g = y.data[i] - (cr.data[i] + cb.data[i]) * 0.25;
         *p = [g + cr.data[i], g, g + cb.data[i]].map(|v| v.max(0.0).powi(2));
-        if luma_strength == 0.0 {
+        if !smooth_luma {
             let gain = original.max(0.0).powi(2) / color::luma(*p).max(1e-10);
             *p = p.map(|v| v * gain);
         }
@@ -228,8 +243,9 @@ fn denoise(image: &mut Image, strength: f32) {
         // At high strength, use the chroma-cleaned luminance estimate as well:
         // the camera colour matrix correlates colour noise with noisy Y.
         // Restoring all of that Y would bring the removed noise back as grain.
-        input.data.par_iter_mut().zip(&guide.data).for_each(|(v, g)| *v += (*g - *v) * luma_strength);
-        let luma = Guided::new(&guide, 2).into_filter(input, 0.00005 * luma_strength * luma_strength);
+        input.data.par_iter_mut().zip(&guide.data).for_each(|(v, g)| *v += (*g - *v) * luma_blend);
+        drop(guide);
+        let luma = crate::image::wavelet_denoise(input, luma_sigma, luma_threshold);
         image.data.par_iter_mut().enumerate().for_each(|(i, p)| {
             let gain = luma.data[i].max(0.0).powi(2) / color::luma(*p).max(1e-10);
             *p = p.map(|v| v * gain);
@@ -586,8 +602,6 @@ mod tests {
         let value = 0.661_649_1_f32.powi(2);
         let params = Params { denoise: Some(52.44140625), ..Params::default() };
         let strength = params.denoise.unwrap() as f32 / 100.0;
-        let luma_strength = (strength - 0.5) * 2.0;
-        assert_eq!(0.00005 * luma_strength * luma_strength, f32::EPSILON);
         for (w, h) in [(64, 48), (1, 1), (1, 7), (7, 1), (3, 2)] {
             let mut image = Image { width: w, height: h, data: vec![[value; 3]; w * h] };
             denoise(&mut image, strength);
@@ -692,7 +706,7 @@ mod tests {
             p.map(|v| v * gain)
         });
         let original = image.clone();
-        denoise(&mut image, 0.5);
+        denoise_with(&mut image, 0.5, 0.0);
         for (a, b) in image.data.iter().zip(&original.data) {
             assert!((color::luma(*a) - color::luma(*b)).abs() < 1e-7);
         }
