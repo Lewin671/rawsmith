@@ -320,7 +320,8 @@ Omit it for full decisions, settings, histogram and hue/chroma statistics.
 Numbers support what you see; they do not replace looking.
 
 - `stats.tones.p50` is median lightness (0–100): a description, not a
-  target. A dusk scene is supposed to be dark.
+  target. A dusk scene is supposed to be dark; a backlit daylight scene
+  usually is not (see the craft notes).
 - `clipped_highlights_pct` (all channels at white) and
   `channel_clipped_pct` (any channel): above about 1% without a sun or
   lamps in frame, look at the bright areas. Zero does not prove a
@@ -342,9 +343,18 @@ full-resolution export's report as well.
 - Crop early. An empty sky or a distracting edge weakens everything else,
   and positions for gradients, masks and regions depend on the crop.
 - Light before colour: decide what is bright and what recedes first.
-- Lifting is not free: every stop of `shadows` and `exposure` takes depth
-  away. After opening a picture up, give it back a real dark (`blacks`,
-  `contrast`, an S-`curve`) so it does not turn grey and flat.
+- Daylight scenes with backlight or deep shade (trees against the sky, a
+  garden, a riverbank, a subject under leaves) want their shadows
+  readable: the camera leaves foliage murky, and viewers prefer seeing
+  into it. Open them decisively — `shadows` 35–50 and some `exposure` are
+  normal there — until the shaded foliage shows its leaves and colour
+  (`tones.p5` around 18–25, `p25` around 25–35). Then give back depth
+  with a gentle S-`curve` or `contrast`, not by pulling the shadows back
+  down; a curve's lowest point far below the diagonal (`[0.15,0.07]`)
+  crushes foliage into a black mass. The "black point lifted" and
+  "flatter" notes are the expected price of this and need only a light
+  answer. Night, dusk and deliberate silhouettes are different: they stay
+  dark.
 - Subjects in shade want lifting; surroundings that compete want
   darkening. Use a radial for the subject or a corner, and luma to protect dark occluders.
 - A scene with one dominant colour (autumn leaves, a blue hour, a sunset)
