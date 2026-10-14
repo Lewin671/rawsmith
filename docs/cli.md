@@ -309,6 +309,8 @@ rawsmith compare photo.ARW --panel camera -o camera.jpg --size 1400
 rawsmith compare photo.ARW --panel recipe:earlier.json --panel saved -o rounds.png
 # Camera beside a recipe kept elsewhere: the same --recipe as auto, edit and render
 rawsmith compare photo.ARW --recipe edits/photo.json -o comparison.jpg
+# The same part of camera and edit at full resolution, side by side
+rawsmith compare photo.ARW --region 0.4,0.3,0.55,0.45 -o detail-cmp.jpg
 # Camera, finished default and another recipe
 rawsmith compare photo.ARW --panel camera --panel default --panel recipe:alternate.json -o versions.jpg --size 1000
 ```

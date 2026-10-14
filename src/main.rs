@@ -147,6 +147,9 @@ struct Compare {
     /// Bound each panel's longest edge; panels shrink to one shared height (at least 1)
     #[arg(long, default_value_t = 1400)]
     size: usize,
+    /// Compare one part of the picture at full resolution: x0,y0,x1,y1 of each panel's finished frame. Every panel shows the same part; panels larger than --size are still reduced, so pick a small region (about 0.15 wide) to see native pixels.
+    #[arg(long, value_name = "X0,Y0,X1,Y1")]
+    region: Option<String>,
     /// JPEG quality (1..100): default 92 suits almost everything; lower for smaller files
     #[arg(long, default_value_t = 92)]
     quality: u8,
@@ -670,6 +673,7 @@ fn compare_versions(args: Compare) -> Result<Value> {
     if args.size == 0 {
         return Err(Error::Params("--size must be at least 1 pixel".into()));
     }
+    let region = args.region.as_deref().map(parse_region).transpose()?;
     protect_raw(&args.raw, &args.output, "output")?;
     let sidecar = recipe_path(&Source { raw: args.raw.clone(), recipe: None, set: vec![] })?;
     let saved = recipe_path(&Source { raw: args.raw.clone(), recipe: args.recipe.clone(), set: vec![] })?;
@@ -712,7 +716,10 @@ fn compare_versions(args: Compare) -> Result<Value> {
     }
     let file = read_file(&args.raw)?;
     let raw = arw::decode(&file)?;
-    let (image, mut report, srgb) = compare::row(&raw, &file, &panels, args.size)?;
+    let (image, mut report, srgb) = match region {
+        Some(region) => compare::row_region(&raw, &file, &panels, args.size, region)?,
+        None => compare::row(&raw, &file, &panels, args.size)?,
+    };
     for (panel, origin) in report["panels"].as_array_mut().expect("compare panels").iter_mut().zip(origins) {
         recipe_origin(panel, origin);
     }

@@ -698,3 +698,39 @@ fn recipe_option_names_the_saved_panel_like_the_other_commands() {
     assert_eq!(std::fs::read(&output).unwrap(), before);
     assert_eq!([std::fs::read(&sidecar).unwrap(), std::fs::read(&chosen).unwrap()], originals);
 }
+
+#[test]
+fn region_shows_the_same_part_of_every_panel() {
+    let f = Fixture::new("region");
+    let embedded = jpeg(96, 64, true);
+    let camera = decoded_jpeg(&embedded);
+    let raw = f.raw(1, Some(&embedded));
+    let output = f.path("region.png");
+    let report = run(
+        &[
+            "compare",
+            s(&raw),
+            "--panel",
+            "camera",
+            "--panel",
+            "default",
+            "--region",
+            "0.5,0.25,1,0.75",
+            "-o",
+            s(&output),
+        ],
+        true,
+    );
+    assert_eq!(report["region"], json!([0.5, 0.25, 1.0, 0.75]));
+    for panel in report["panels"].as_array().unwrap() {
+        assert_eq!((panel["width"].as_u64(), panel["height"].as_u64()), (Some(48), Some(32)));
+    }
+    // The camera panel is the native region, unscaled.
+    let (image, _) = png(&output);
+    for (got, want) in image.at(5, 7).into_iter().zip(camera.at(48 + 5, 16 + 7)) {
+        assert!((got - want).abs() < 2.0 / 65535.0, "{got} vs {want}");
+    }
+    let error = run(&["compare", s(&raw), "--region", "0.5,0.5,0.4,1", "-o", s(&f.path("bad.jpg"))], false);
+    assert_eq!(error["error"]["kind"], "params");
+    assert!(!f.path("bad.jpg").exists());
+}

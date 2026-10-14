@@ -153,13 +153,35 @@ fn framing(params: &Params) -> Value {
 
 /// Returns the row, its report, and whether every panel is established sRGB.
 pub fn row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result<(Image, Value, bool)> {
-    row_with(raw, file, panels, size, false)
+    row_with(raw, file, panels, size, false, None)
+}
+
+/// A row of the same part of every panel, `[x0, y0, x1, y1]` as fractions of
+/// each panel's finished frame, taken from native pixels before resizing.
+pub fn row_region(
+    raw: &RawImage,
+    file: &[u8],
+    panels: &[Panel],
+    size: usize,
+    region: [f64; 4],
+) -> Result<(Image, Value, bool)> {
+    row_with(raw, file, panels, size, false, Some(region))
+}
+
+/// The same pixel rounding as `render --region`.
+pub fn crop_region(image: &Image, [x0, y0, x1, y1]: [f64; 4]) -> Image {
+    let [x0, y0, x1, y1] = [x0, y0, x1, y1].map(|v| v as f32);
+    let (w, h) = (image.width as f32, image.height as f32);
+    let (x, y) = ((x0 * w) as usize, (y0 * h) as usize);
+    let width = (((x1 - x0) * w) as usize).max(1).min(image.width - x.min(image.width - 1));
+    let height = (((y1 - y0) * h) as usize).max(1).min(image.height - y.min(image.height - 1));
+    image.crop(x.min(image.width - 1), y.min(image.height - 1), width, height)
 }
 
 /// The camera rendering for tone measurements: the same framing and colour
 /// handling as a comparison panel, decoded no larger than `size` needs.
 pub(crate) fn analysis_row(raw: &RawImage, file: &[u8], panels: &[Panel], size: usize) -> Result<(Image, Value, bool)> {
-    row_with(raw, file, panels, size, true)
+    row_with(raw, file, panels, size, true, None)
 }
 
 fn row_with(
@@ -168,6 +190,7 @@ fn row_with(
     panels: &[Panel],
     size: usize,
     reduce_camera: bool,
+    region: Option<[f64; 4]>,
 ) -> Result<(Image, Value, bool)> {
     if panels.is_empty() || size == 0 {
         return Err(Error::Params("compare needs at least one panel and --size at least 1".into()));
@@ -190,7 +213,14 @@ fn row_with(
             .and_then(|end| file.get(offset..end))
             .ok_or_else(|| Error::Format("embedded JPEG is out of bounds".into()))?;
         let (image, report) = camera(jpeg, file, reduce_camera.then_some(size))?;
-        Some((pipeline::framed(image, raw.meta.orientation, camera_params), report))
+        let framed = pipeline::framed(image, raw.meta.orientation, camera_params);
+        Some((
+            match region {
+                Some(r) => crop_region(&framed, r),
+                None => framed,
+            },
+            report,
+        ))
     } else {
         None
     };
@@ -204,7 +234,15 @@ fn row_with(
                 let (image, _) = camera.as_ref().expect("camera requested");
                 (image.width, image.height)
             } else {
-                pipeline::framed_dimensions(raw.crop.width, raw.crop.height, raw.meta.orientation, &panel.params)
+                let (w, h) =
+                    pipeline::framed_dimensions(raw.crop.width, raw.crop.height, raw.meta.orientation, &panel.params);
+                match region {
+                    Some([x0, y0, x1, y1]) => (
+                        (((x1 - x0) as f32 * w as f32) as usize).max(1),
+                        (((y1 - y0) as f32 * h as f32) as usize).max(1),
+                    ),
+                    None => (w, h),
+                }
             };
             let scale = (size as f64 / w.max(h) as f64).min(1.0);
             ((h as f64 * scale).round() as usize).max(1)
@@ -227,7 +265,10 @@ fn row_with(
             (image.clone(), report.clone(), camera_params)
         } else {
             let rendered = pipeline::render(raw, &panel.params, Size::default())?;
-            let image = rendered.image;
+            let image = match region {
+                Some(r) => crop_region(&rendered.image, r),
+                None => rendered.image,
+            };
             (
                 image.resized(panel_width(&image), height),
                 json!({"color_space": "sRGB", "noise_reduction": rendered.noise_reduction}),
@@ -287,7 +328,7 @@ fn row_with(
             "separator_pixels": SEPARATOR, "raw_orientation": raw.meta.orientation,
             "camera_framing_panel": if camera_needed { reference } else { None },
             "framing_policy": "camera matches first non-camera panel; recipes keep their own framing",
-            "framing_matched": matched, "warnings": warnings,
+            "framing_matched": matched, "warnings": warnings, "region": region,
         }),
         srgb,
     ))

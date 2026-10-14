@@ -117,6 +117,9 @@ keep a version.
 
 6. **Check at 100%** —
    `rawsmith render photo.ARW --region 0.4,0.4,0.6,0.6 -o detail.jpg --brief`
+   (or `rawsmith compare photo.ARW --region 0.4,0.4,0.55,0.55 -o detail-cmp.jpg`
+   to see the camera's pixels beside yours; keep the region about 0.15
+   wide so panels stay at native size)
    (`left,top,right,bottom` as fractions of the finished, cropped
    picture; always full resolution, so it cannot be combined with
    `--size` — use a smaller region instead). Look at the subject, the darkest area you lifted, a patch of
@@ -150,7 +153,9 @@ keep a version.
    to Codex. Do not pass `--allow-cloud` without authorization. If authorization
    or the helper is unavailable, compare visually in this session —
    `rawsmith compare photo.ARW --panel camera --panel recipe:baseline.json --panel recipe:candidate.json -o pick.jpg`
-   at the default size (smaller panels hide the difference) — and keep
+   with panels about 1000 px or more (smaller panels hide the difference;
+   if your viewer shrinks a wide row, pass a smaller `--size` or compare
+   two at a time) — and keep
    the baseline on doubt. Check selected native detail before delivery and
    restore the baseline if it introduces a defect. Deliver only one image.
 
@@ -200,7 +205,9 @@ has exact ranges.
 in the order red → orange → yellow → green → aqua → blue → purple →
 magenta → red: positive moves toward the next band, negative toward the
 previous (`hsl.green.hue=15` deep teal, `hsl.blue.hue=-15` cyan,
-`hsl.yellow.hue=-15` gold). Which band a colour falls in is listed in
+`hsl.yellow.hue=-15` gold). ±100 is a 30-degree turn, so −15 is about
+4.5 degrees: small; values of 30–60 are needed for a clearly different
+colour. Which band a colour falls in is listed in
 the full (non-brief) report's `hues_pct` and compare's `look.colours`;
 luminance makes a colour heavier or lighter (darker blue for a deeper
 sky, lighter yellow so leaves glow); saturation quietens colours that
@@ -275,7 +282,10 @@ Strong lifting still exposes noise; darkening sensor-lost sky still makes grey.
 For a blurred foreground corner, start with a radial alone: a brightness
 threshold can reshape the soft edge.
 A radial lift over a smooth surface — a hazy hillside, sky, water, a plain
-wall — shows as a pale glow in the shape of the ellipse. Look for that shape
+wall — shows as a pale glow in the shape of the ellipse. On dusk or haze the
+surroundings often share the subject's brightness, so `luma` does not keep
+them out; a `colors` selection of the subject's own colour (a lit pagoda's
+orange) usually does. Look for that shape
 in the preview. Keep such a lift small (about 0.2 stops), or restrict it to
 the subject's own brightness with `luma` so the surroundings stay put.
 
