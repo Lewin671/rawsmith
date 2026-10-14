@@ -568,9 +568,14 @@ fn finish_owned(mut image: Image, params: &Params, spaces: &Spaces) -> Image {
         if black != 0.0 || white_point != 1.0 || curve.is_some() {
             p = p.map(|v| {
                 let mut e = srgb_encode(v);
-                e = ((e - black) / (white_point - black)).clamp(0.0, 1.0);
+                // Only the low end is clamped here. Light above display
+                // white keeps its excess for gamut mapping, as it does
+                // without these controls: clamping each channel at 1 here
+                // turns a bright warm glow into a hard-edged white disc
+                // where its last channel crosses 1.
+                e = ((e - black) / (white_point - black)).max(0.0);
                 if let Some(lut) = &curve {
-                    e = tone::lut_eval(lut, e);
+                    e = if e <= 1.0 { tone::lut_eval(lut, e) } else { tone::lut_eval(lut, 1.0) + (e - 1.0) };
                 }
                 color::srgb_decode(e)
             });
@@ -596,6 +601,28 @@ fn finish_owned(mut image: Image, params: &Params, spaces: &Spaces) -> Image {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn black_point_and_curve_do_not_draw_an_edge_inside_white_light() {
+        // A low sun: a reconstructed neutral core inside a warm glow, both
+        // brighter than display white, so the plain render is white across
+        // the edge. Black point and curve must not clamp channels one by one
+        // before gamut mapping: that drew a hard disc where blue crossed 1.
+        let spaces = Spaces::new();
+        let w = BASE_EXPOSURE.exp2();
+        let mut scene = Image::new(64, 1);
+        for (x, p) in scene.data.iter_mut().enumerate() {
+            *p = if x < 32 { [1.25 * w, 1.0 * w, 0.62 * w] } else { [3.0 * w; 3] };
+        }
+        let plain = finish(&scene, &Params::default(), &spaces);
+        assert!(plain.at(16, 0).iter().all(|&v| v > 0.99), "{:?}", plain.at(16, 0));
+        for recipe in [r#"{"blacks":-15}"#, r#"{"curve":[[0.1,0.07],[0.35,0.33]]}"#, r#"{"blacks":-30,"whites":10}"#] {
+            let out = finish(&scene, &Params::from_json(recipe).unwrap(), &spaces);
+            let (glow, core) = (out.at(16, 0), out.at(48, 0));
+            let step = (0..3).map(|c| (glow[c] - core[c]).abs()).fold(0.0, f32::max);
+            assert!(step < 0.01, "{recipe}: {glow:?} against {core:?}");
+        }
+    }
 
     #[test]
     fn denoise_preserves_perfectly_flat_image_at_epsilon_regulariser() {
