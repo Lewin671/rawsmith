@@ -677,6 +677,10 @@ fn compare_versions(args: Compare) -> Result<Value> {
     if same_file(&sidecar, &args.output) || same_file(&saved, &args.output) {
         return Err(Error::Params("output is also the saved recipe file; give them different names".into()));
     }
+    // A named recipe must exist and parse whether or not a panel shows it.
+    if args.recipe.is_some() {
+        load_recipe(&saved, false)?;
+    }
     let versions = if args.panel.is_empty() { vec!["camera".into(), "saved".into()] } else { args.panel };
     let mut panels = Vec::new();
     let mut origins = Vec::new();

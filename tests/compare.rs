@@ -689,6 +689,9 @@ fn recipe_option_names_the_saved_panel_like_the_other_commands() {
     let error = run(&["compare", s(&raw), "--recipe", s(&missing), "-o", s(&output)], false);
     assert_eq!(error["error"]["kind"], "io");
     assert!(!missing.exists());
+    // Also when no panel shows the saved recipe.
+    let error = run(&["compare", s(&raw), "--recipe", s(&missing), "--panel", "default", "-o", s(&output)], false);
+    assert_eq!(error["error"]["kind"], "io");
     // The chosen recipe is protected from being used as the output.
     let error = run(&["compare", s(&raw), "--recipe", s(&chosen), "-o", s(&chosen)], false);
     assert_eq!(error["error"]["kind"], "params");

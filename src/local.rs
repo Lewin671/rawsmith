@@ -181,13 +181,16 @@ fn colour_membership(lab: &[[f32; 3]], width: usize, height: usize, bands: &[boo
         data: lab
             .par_iter()
             .map(|&[_, a, b]| {
-                let chroma = (a * a + b * b).sqrt();
                 let (i, j, t) = crate::adjust::band_weights(b.atan2(a).to_degrees());
                 let hue = bands[i] as u8 as f32 * (1.0 - t) + bands[j] as u8 as f32 * t;
-                hue * smooth((chroma - COLOUR_FLOOR) / COLOUR_RAMP)
+                hue * chroma_eligibility((a * a + b * b).sqrt())
             })
             .collect(),
     }
+}
+
+fn chroma_eligibility(chroma: f32) -> f32 {
+    smooth((chroma - COLOUR_FLOOR) / COLOUR_RAMP)
 }
 
 fn guided(guide: &Plane, input: &Plane, radius: usize, eps: f32) -> Plane {
@@ -221,8 +224,10 @@ pub(crate) struct Masks<'a> {
     entries: &'a [LocalMask],
     geometry: Vec<Geometry>,
     lightness: Option<Plane>,
-    /// Refined colour selection per entry that names colours.
-    colours: Vec<Option<Plane>>,
+    /// Refined colour selections, one per distinct set of bands.
+    colour_planes: Vec<Plane>,
+    /// Index into `colour_planes` for each entry that names colours.
+    colours: Vec<Option<usize>>,
 }
 
 impl<'a> Masks<'a> {
@@ -233,30 +238,46 @@ impl<'a> Masks<'a> {
             refine_lightness(guide)
         });
         let mut colours = vec![None; params.masks.len()];
+        let mut colour_planes = Vec::new();
         if params.masks.iter().any(|m| !m.colors.is_empty()) {
             let lab: Vec<[f32; 3]> = image.data.par_iter().map(|&p| spaces.to_oklab(filmic.map_rgb(p))).collect();
+            // The guided filter follows lightness, so next to grey of the same
+            // lightness it would spread colour into the grey. Chroma, unlike
+            // hue, is steady on near-neutral noise: a lightly smoothed
+            // eligibility bounds the refined selection to colourful pixels.
+            let chroma = Plane {
+                width: image.width,
+                height: image.height,
+                data: lab.par_iter().map(|p| (p[1] * p[1] + p[2] * p[2]).sqrt()).collect(),
+            };
+            let mut eligible = mask_mean(&chroma, 1);
+            eligible.data.par_iter_mut().for_each(|c| *c = chroma_eligibility(*c));
             let guide = Plane {
                 width: image.width,
                 height: image.height,
                 data: lab.par_iter().map(|p| p[0].clamp(0.0, 1.0)).collect(),
             };
-            let mut done: Vec<([bool; 8], usize)> = Vec::new();
+            let mut done: Vec<[bool; 8]> = Vec::new();
             for (n, entry) in params.masks.iter().enumerate().filter(|(_, m)| !m.colors.is_empty()) {
                 let bands = crate::params::HSL_BANDS.map(|band| entry.colors.iter().any(|c| c == band));
                 // Entries that name the same colours share one selection.
-                if let Some(&(_, earlier)) = done.iter().find(|(b, _)| *b == bands) {
-                    colours[n] = colours[earlier].clone();
+                if let Some(index) = done.iter().position(|b| *b == bands) {
+                    colours[n] = Some(index);
                     continue;
                 }
                 let membership = colour_membership(&lab, image.width, image.height, &bands);
-                colours[n] = Some(guided(&guide, &membership, COLOUR_RADIUS, COLOUR_EPS));
-                done.push((bands, n));
+                let mut plane = guided(&guide, &membership, COLOUR_RADIUS, COLOUR_EPS);
+                plane.data.par_iter_mut().zip(&eligible.data).for_each(|(v, e)| *v *= e);
+                colours[n] = Some(colour_planes.len());
+                colour_planes.push(plane);
+                done.push(bands);
             }
         }
         Self {
             entries: &params.masks,
             geometry: params.masks.iter().map(|m| Geometry::new(m, image.width, image.height)).collect(),
             lightness,
+            colour_planes,
             colours,
         }
     }
@@ -272,7 +293,8 @@ impl<'a> Masks<'a> {
             let upper = if high == 1.0 { 1.0 } else { smooth((high as f32 + feather - v) / feather) };
             luma = lower * upper;
         }
-        if let Some(colour) = &self.colours[n] {
+        if let Some(index) = self.colours[n] {
+            let colour = &self.colour_planes[index];
             luma *= colour.data[y * colour.width + x];
         }
         if entry.invert {
@@ -438,8 +460,38 @@ mod tests {
             r#"{"masks":[{"colors":["yellow"],"exposure":1},{"shape":"radial","center":[0.1,0.5],"radii":[0.05,0.4],"colors":["yellow"],"exposure":1}]}"#,
         );
         let masks = Masks::new(&image, &p, &Spaces::new());
-        assert_eq!(masks.colours[0].as_ref().unwrap().data, masks.colours[1].as_ref().unwrap().data);
+        assert_eq!((masks.colours[0], masks.colours[1], masks.colour_planes.len()), (Some(0), Some(0), 1));
         assert!(masks.weight(1, 24, 30) > 0.9 && masks.weight(1, 60, 30) == 0.0);
+    }
+
+    #[test]
+    fn colour_selection_does_not_leak_into_grey_of_the_same_lightness() {
+        let spaces = Spaces::new();
+        let filmic = Filmic::new(0.0, crate::pipeline::BASE_EXPOSURE.exp2());
+        let yellow = [0.40, 0.33, 0.04];
+        let target = spaces.to_oklab(filmic.map_rgb(yellow))[0];
+        // Find the scene grey whose display lightness matches the yellow.
+        let (mut lo, mut hi) = (0.0f32, 2.0f32);
+        for _ in 0..60 {
+            let mid = (lo + hi) / 2.0;
+            if spaces.to_oklab(filmic.map_rgb([mid; 3]))[0] < target {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let (w, h) = (120, 40);
+        let image = Image {
+            width: w,
+            height: h,
+            data: (0..w * h).map(|i| if i % w < 60 { yellow } else { [lo; 3] }).collect(),
+        };
+        let p = params(r#"{"masks":[{"colors":["yellow","orange"],"exposure":1}]}"#);
+        let masks = Masks::new(&image, &p, &Spaces::new());
+        assert!(masks.weight(0, 30, 20) > 0.95);
+        for x in 62..w {
+            assert!(masks.weight(0, x, 20) < 0.01, "grey at {x}: {}", masks.weight(0, x, 20));
+        }
     }
 
     #[test]
