@@ -397,7 +397,12 @@ full-resolution export's report as well.
   `defringe` 50–90, up to 100 for twigs around the sun; look at a 100%
   `--region` of the twigs, since previews hide it (check purple flowers,
   thin red details and small coloured lights at 100% first). It does not
-  fix wide out-of-focus halos.
+  fix wide out-of-focus halos. Pale cyan, green or pink tints left on
+  twigs against a blown sky after `defringe` (often the lens's residual
+  colour fringing) fade with a mask on just that brightness:
+  `masks+={"luma":[0.8,1],"luma_feather":0.1,"saturation":-80}`, limited
+  with a shape to the sky if bright coloured subjects share the frame.
+  A warm `grade.highlights` tints those edges too; keep it light there.
 - If two rounds in a row did not visibly improve the picture, the idea
   is exhausted: finish, or change the idea.
 
