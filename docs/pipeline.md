@@ -126,7 +126,10 @@ the channel sum. Colour is kept where something supports it: the covering
 object (red leaves), the reconstructed source (a coloured lamp), the hue
 of the unclipped setting beyond that reach (blue sky beside a white
 cloud), or chroma too strong to be borrowed light or demosaic error. It
-runs after lens correction, which moves red and blue across these edges.
+runs after lens correction, which moves red and blue across these edges;
+which pixels were at the knee is decided before correction and carried
+through its geometry, so vignetting gain does not turn bright unclipped
+pixels into sources.
 Frames without pixels at the knee are unchanged. A coloured detail a pixel
 or two across next to a clipped region can lose some colour; it cannot be
 told from a tinted edge.
@@ -219,12 +222,14 @@ the frame does not lower the thresholds into the noise: a threshold set
 under the true noise keeps only the noise extremes, scattered as dark
 specks and, in the coarse bands, low-frequency "watercolour" blotches on
 fog, overcast sky and still water. Instead the frame is denoised at the
-measured amount and part of what was removed is restored in square-root
-space: luminance by `1 - setting / measured`, chroma by
+measured amount and part of what was removed is restored: Rec.2020
+luminance on its square root by `1 - setting / measured`, chromaticity by
 `1 - 2 * setting / measured` (none from half the measured amount up), so a
 lighter setting reads as even, finer grain with more texture. At or above
 the measured amount, and for unset `denoise`, the setting is applied
-directly. This keeps one extra frame copy while denoising.
+directly. This keeps one extra frame copy while denoising. Below the
+luminance onset (`denoise` 10) the result stays chroma-only. Scene reuse
+keys on the measured amount too, since it follows ISO metadata.
 Orientation, `rotate` and `crop` follow. Output rendering keeps native resolution here;
 the reduced automatic analysis path remains an approximation.
 

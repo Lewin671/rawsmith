@@ -455,24 +455,34 @@ pub const BORROWED_REACH: usize = 7;
 /// lamp), by unclipped surroundings beyond the spill (blue sky beside a
 /// white cloud), or by being too strong for borrowed light or demosaicing
 /// error. Frames without reconstructed pixels are returned bit for bit.
-pub fn settle_borrowed_light(image: &mut Image, clip: [f32; 3], spill: usize, reach: usize) {
-    settle_stripes(image, clip, spill, reach, 64);
+///
+/// `reconstructed` flags the pixels highlight reconstruction worked on, in
+/// this image's geometry (see `reconstructed_pixels`); lens correction's
+/// vignetting gain can lift other pixels above the knee afterwards.
+pub fn settle_borrowed_light(image: &mut Image, reconstructed: &[bool], spill: usize, reach: usize) {
+    settle_stripes(image, reconstructed, spill, reach, 64);
 }
 
-fn settle_stripes(image: &mut Image, clip: [f32; 3], spill: usize, reach: usize, stripe_rows: usize) {
-    const THIRD: f32 = 1.0 / 3.0;
+/// Pixels with a channel at highlight reconstruction's knee, before any
+/// gain is applied.
+pub fn reconstructed_pixels(image: &Image, clip: [f32; 3]) -> Vec<bool> {
     let level = clip.map(|v| v * CLIP_KNEE);
+    image.data.par_iter().map(|p| (0..3).any(|c| p[c] >= level[c])).collect()
+}
+
+fn settle_stripes(image: &mut Image, reconstructed: &[bool], spill: usize, reach: usize, stripe_rows: usize) {
+    const THIRD: f32 = 1.0 / 3.0;
     let (w, h) = (image.width, image.height);
-    let reconstructed = |p: &[f32; 3]| (0..3).any(|c| p[c] >= level[c]);
-    if spill == 0 || w == 0 || !image.data.par_iter().any(reconstructed) {
+    assert_eq!(reconstructed.len(), w * h, "reconstruction flags must match the image");
+    if spill == 0 || w == 0 || !reconstructed.par_iter().any(|&r| r) {
         return;
     }
     let halo = reach + spill;
     // Channel sum, red and blue chromaticity, and whether reconstructed.
-    let encode = |p: [f32; 3]| -> [f32; 4] {
+    let encode = |(p, &flag): (&[f32; 3], &bool)| -> [f32; 4] {
         let sum = p[0].max(0.0) + p[1].max(0.0) + p[2].max(0.0);
         let inverse = if sum > 1e-12 { 1.0 / sum } else { 0.0 };
-        [sum, p[0].max(0.0) * inverse, p[2].max(0.0) * inverse, reconstructed(&p) as u8 as f32]
+        [sum, p[0].max(0.0) * inverse, p[2].max(0.0) * inverse, flag as u8 as f32]
     };
     // Chromaticity offset from neutral.
     let offset = |q: [f32; 4]| [q[1] - THIRD, 1.0 - q[1] - q[2] - THIRD, q[2] - THIRD];
@@ -501,7 +511,8 @@ fn settle_stripes(image: &mut Image, clip: [f32; 3], spill: usize, reach: usize,
         let base = first.saturating_sub(halo);
         source.clear();
         source.extend_from_slice(&carried);
-        source.extend(image.data[first * w..(end + halo).min(h) * w].iter().copied().map(encode));
+        let rows = first * w..(end + halo).min(h) * w;
+        source.extend(image.data[rows.clone()].iter().zip(&reconstructed[rows]).map(encode));
         carried.clear();
         carried.extend_from_slice(&source[(end.saturating_sub(halo) - base) * w..(end - base) * w]);
         if source.iter().all(|q| q[3] == 0.0) {
@@ -767,8 +778,9 @@ mod tests {
         image.map_xy(|x, y, _| twig(x).or(leaf(x, y)).unwrap_or(sky));
         let original = image.clone();
         let mut striped = image.clone();
-        settle_borrowed_light(&mut image, clip, BORROWED_SPILL, BORROWED_REACH);
-        settle_stripes(&mut striped, clip, BORROWED_SPILL, BORROWED_REACH, 7);
+        let flags = reconstructed_pixels(&image, clip);
+        settle_borrowed_light(&mut image, &flags, BORROWED_SPILL, BORROWED_REACH);
+        settle_stripes(&mut striped, &flags, BORROWED_SPILL, BORROWED_REACH, 7);
         assert!(image.data == striped.data, "stripes must match one pass");
 
         let tint = |p: [f32; 3]| {
@@ -793,7 +805,16 @@ mod tests {
         let mut dim = original.clone();
         dim.map(|p| p.map(|v| v * 0.25));
         let reference = dim.clone();
-        settle_borrowed_light(&mut dim, clip, BORROWED_SPILL, BORROWED_REACH);
+        let flags = reconstructed_pixels(&dim, clip);
+        settle_borrowed_light(&mut dim, &flags, BORROWED_SPILL, BORROWED_REACH);
         assert!(dim.data == reference.data);
+
+        // A gain applied after reconstruction (lens vignetting) does not
+        // make bright unclipped pixels into sources: only the flags do.
+        let mut lifted = dim.clone();
+        lifted.map(|p| p.map(|v| v * 4.0));
+        let reference = lifted.clone();
+        settle_borrowed_light(&mut lifted, &flags, BORROWED_SPILL, BORROWED_REACH);
+        assert!(lifted.data == reference.data);
     }
 }

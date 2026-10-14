@@ -166,15 +166,19 @@ fn denoise(image: &mut Image, strength: f32, measured: f32) {
     let kept = strength / measured;
     // Colour grain goes first: none is restored from half the measured strength.
     let (luma_back, chroma_back) = (1.0 - kept, (1.0 - 2.0 * kept).max(0.0));
+    // Luminance is the working space's own (what chroma-only smoothing
+    // keeps), restored on its square root where noise is even; colour is
+    // restored as chromaticity, which leaves luminance where it was put.
     let encode = |p: [f32; 3]| {
-        let q = p.map(|v| v.max(0.0).sqrt());
-        let y = (q[0] + 2.0 * q[1] + q[2]) * 0.25;
-        (y, q.map(|v| v - y))
+        let p = p.map(|v| v.max(0.0));
+        let luma = color::luma(p);
+        let ratio = if luma > 1e-12 { p.map(|v| v / luma) } else { [1.0; 3] };
+        (luma.sqrt(), ratio)
     };
     image.data.par_iter_mut().zip(&original.data).for_each(|(p, o)| {
-        let ((y, c), (oy, oc)) = (encode(*p), encode(*o));
+        let ((y, r), (oy, or)) = (encode(*p), encode(*o));
         let y = y + (oy - y) * luma_back;
-        *p = [0, 1, 2].map(|i| (y + c[i] + (oc[i] - c[i]) * chroma_back).max(0.0).powi(2));
+        *p = [0, 1, 2].map(|i| ((r[i] + (or[i] - r[i]) * chroma_back) * y * y).max(0.0));
     });
 }
 
@@ -445,6 +449,7 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
                 lens_corrections: params.lens_corrections,
                 defringe: params.defringe,
                 denoise: noise_reduction.strength,
+                measured: measured as f64,
             })
         })
         .flatten();
@@ -464,13 +469,25 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
         let stage = crate::profile::Stage::new("sensor/highlights");
         let (_, _, clipped) = crate::stats::sensor_clipping(raw);
         demosaic::reconstruct_highlights(&mut image, mosaic.clip);
-        let clip = mosaic.clip;
+        let mut reconstructed = demosaic::reconstructed_pixels(&image, mosaic.clip);
         drop(mosaic);
         drop(stage);
         let stage = crate::profile::Stage::new("lens/matrix/fringe");
         if params.lens_corrections {
             if let Some(tables) = &raw.lens {
                 if let Some(corrected) = lens::correct(&image, tables) {
+                    // Carry the reconstruction flags through the same
+                    // geometry; vignetting gain must not create new ones.
+                    if reconstructed.iter().any(|&r| r) {
+                        let mut marks = Image::new(image.width, image.height);
+                        marks.data.par_iter_mut().zip(&reconstructed).for_each(|(p, &r)| *p = [r as u8 as f32; 3]);
+                        reconstructed = match lens::correct(&marks, tables) {
+                            Some(moved) => moved.data.par_iter().map(|p| p.iter().any(|&v| v >= 0.5)).collect(),
+                            None => vec![false; corrected.width * corrected.height],
+                        };
+                    } else {
+                        reconstructed = vec![false; corrected.width * corrected.height];
+                    }
                     image = corrected;
                 }
             }
@@ -479,10 +496,11 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
         let scale = |v: usize| if half { v.div_ceil(2) } else { v };
         demosaic::settle_borrowed_light(
             &mut image,
-            clip,
+            &reconstructed,
             scale(demosaic::BORROWED_SPILL),
             scale(demosaic::BORROWED_REACH),
         );
+        drop(reconstructed);
         image.map(|p| color::apply(&cam_to_work, p));
         crate::fringe::suppress(&mut image, params.defringe as f32 / 100.0, if half { 2 } else { 3 });
         drop(stage);
@@ -799,6 +817,15 @@ mod tests {
         let mut direct = original.clone();
         denoise_at(&mut direct, measured);
         assert_eq!(full.data, direct.data);
+
+        // Measured at chroma-only strength, a lighter setting stays
+        // chroma-only: restoring colour grain adds no brightness noise.
+        let mut chroma_only = original.clone();
+        denoise(&mut chroma_only, 0.05, 0.1);
+        for (p, o) in chroma_only.data.iter().zip(&original.data) {
+            let (a, b) = (color::luma(*p), color::luma(*o));
+            assert!((a - b).abs() <= 1e-5 * b.max(1e-3), "{a} against {b}");
+        }
     }
 
     #[test]

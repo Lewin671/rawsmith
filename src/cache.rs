@@ -212,6 +212,9 @@ pub(crate) struct Inputs<'a> {
     pub lens_corrections: bool,
     pub defringe: f64,
     pub denoise: f64,
+    /// The frame's measured strength; a lighter `denoise` is applied as a
+    /// share of it, and it depends on ISO metadata as well as the samples.
+    pub measured: f64,
 }
 
 pub(crate) type Key = [u8; 16];
@@ -238,6 +241,7 @@ pub(crate) fn key(inputs: &Inputs) -> Option<Key> {
     hash.floats(inputs.camera_to_working.as_flattened());
     hash.word(inputs.defringe.to_bits());
     hash.word(inputs.denoise.to_bits());
+    hash.word(inputs.measured.to_bits());
     match raw.lens.as_ref().filter(|_| inputs.lens_corrections) {
         Some(lens) => {
             hash.word(1);

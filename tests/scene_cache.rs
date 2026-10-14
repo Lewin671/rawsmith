@@ -159,3 +159,32 @@ fn a_damaged_scene_is_developed_again_and_disabling_writes_nothing() {
     assert_eq!(f.run(Some(Path::new(&blocked)), &["render", raw, "-o", &second])["scene_reuse"], "off");
     assert_eq!(std::fs::read(&second).unwrap(), std::fs::read(&plain).unwrap());
 }
+
+#[test]
+fn a_lighter_denoise_follows_the_measured_strength_of_each_frame() {
+    // Same sensor samples, different ISO metadata: the measured strength
+    // differs, and a lighter explicit denoise is a share of it.
+    let f = Fixture::new("measured");
+    let cache = f.dir.join("cache");
+    let (w, h) = (1280, 800);
+    let frame = |iso| {
+        let mut file = Synthetic::from_camera_rgb(w, h, |x, y| {
+            let level = 0.02 + 0.5 * (x as f32 / w as f32) * (0.4 + 0.6 * ((y / 7 + x / 11) % 5) as f32 / 4.0);
+            [level / 2.54, level, level / 1.56]
+        });
+        file.iso = Some(iso);
+        let path = f.path(&format!("iso{iso}.ARW"));
+        std::fs::write(&path, file.to_bytes()).unwrap();
+        path
+    };
+    let (low, high) = (frame(100), frame(6400));
+    let out = f.path("out.png");
+    let render = |raw: &str, cache: Option<&Path>| {
+        let report = f.run(cache, &["render", raw, "--set", "denoise=5", "-o", out.as_str(), "--size", "300"]);
+        (report["scene_reuse"].as_str().unwrap().to_owned(), std::fs::read(&out).unwrap())
+    };
+    assert_eq!(render(&low, Some(&cache)).0, "stored");
+    let (reuse, cached) = render(&high, Some(&cache));
+    assert_eq!(reuse, "stored", "a different measured strength develops a new scene");
+    assert!(cached == render(&high, None).1);
+}

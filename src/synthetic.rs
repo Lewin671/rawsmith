@@ -17,6 +17,8 @@ pub struct Synthetic {
     pub exif_color_space: Option<u16>,
     /// NUL-terminated InteropIFD index (R98 = sRGB, R03 = Adobe RGB).
     pub interoperability_index: Option<[u8; 4]>,
+    /// ExifIFD ISOSpeedRatings (0x8827).
+    pub iso: Option<u16>,
     pub embedded_jpeg: Option<Vec<u8>>,
 }
 
@@ -35,6 +37,7 @@ impl Synthetic {
             wb_levels: [2600, 1024, 1024, 1600],
             exif_color_space: None,
             interoperability_index: None,
+            iso: None,
             embedded_jpeg: None,
         }
     }
@@ -155,14 +158,15 @@ impl Synthetic {
             e.extend(value.to_le_bytes());
             e
         };
-        let has_exif = self.exif_color_space.is_some() || self.interoperability_index.is_some();
+        let has_exif = self.exif_color_space.is_some() || self.interoperability_index.is_some() || self.iso.is_some();
         let ifd0_entries = 4u32 + u32::from(has_exif) + 2 * u32::from(self.embedded_jpeg.is_some());
         let ifd0_end = 8 + 2 + ifd0_entries * 12 + 4;
         let make_at = ifd0_end;
         let model_at = make_at + 5;
         let exif_at = (model_at + model.len() as u32 + 1) & !1;
-        let exif_entries =
-            u32::from(self.exif_color_space.is_some()) + u32::from(self.interoperability_index.is_some());
+        let exif_entries = u32::from(self.iso.is_some())
+            + u32::from(self.exif_color_space.is_some())
+            + u32::from(self.interoperability_index.is_some());
         let interop_at = exif_at + 2 + exif_entries * 12 + 4;
         let raw_ifd_at =
             if has_exif { interop_at + if self.interoperability_index.is_some() { 18 } else { 0 } } else { exif_at };
@@ -189,6 +193,9 @@ impl Synthetic {
         out.resize(exif_at as usize, 0);
         if has_exif {
             out.extend((exif_entries as u16).to_le_bytes());
+            if let Some(iso) = self.iso {
+                out.extend(entry(0x8827, 3, 1, iso as u32));
+            }
             if let Some(space) = self.exif_color_space {
                 out.extend(entry(0xa001, 3, 1, space as u32));
             }
