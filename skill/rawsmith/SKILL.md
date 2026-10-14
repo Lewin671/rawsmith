@@ -17,9 +17,10 @@ is finished.
 
 ## What "finished" means
 
-The user's camera already made a competent JPEG of this scene. Your job
-is to deliver a picture that is **clearly better than that JPEG at a
-glance** — not the same picture with tidier numbers.
+Deliver the best finished photograph you can make of this scene, without
+requiring the user to direct the edit. Aim to improve on the camera's
+JPEG in composition, light, colour and detail. The size of the change is
+not a measure of quality; a precise, restrained edit can beat a dramatic one.
 
 - **Decide; do not ask.** People can rarely describe the look they want.
   Unless the user gave a direction, choose the interpretation yourself and
@@ -31,23 +32,28 @@ glance** — not the same picture with tidier numbers.
   pavilion in a dark, quiet garden"*, *"cold blue dusk with warm street
   lights"*, *"gold leaves glowing against evening shade"*. Every setting
   then serves that sentence. If you cannot say it, you are only correcting.
-- **Commit to it.** A timid edit that lifts shadows a little and adds a
-  touch of colour looks like the camera's JPEG and is not worth making.
-  Use the whole kit: crop for composition, white balance as a creative
-  choice, per-colour hue and luminance to build a palette, colour grading
-  for mood, a tone curve for the contrast you want, gradients, local masks and
-  vignette to lead the eye.
+- **Let the scene set the treatment.** Identify the subject, the light
+  and what distracts from them. Make substantial changes where they
+  improve the picture, and leave effective framing, colour and light
+  alone. Crop, HSL, grading, curves, masks and vignette are available
+  tools, not a checklist. Do not default to teal greens, cool shadows
+  with warm highlights, a darker sky or a vignette on every photograph.
 - **Stay believable.** The result must still read as a photograph of that
   place and light: no garish colour, no halos, no crushed or blown mess,
   no gimmick. Do not convert to black and white or swap the scene's
   colours for a different palette unless asked. Keep skin natural.
 - **Judge against the camera.** Before delivering, put your edit beside
-  the camera's JPEG (`rawsmith compare`). If a stranger could not tell
-  within a second which one was edited, or would not prefer yours, you
-  are not done: strengthen the idea or rethink it.
+  the camera's JPEG (`rawsmith compare`) and your best earlier recipe.
+  Prefer the version with clearer subject emphasis, appropriate tonal
+  depth, believable colour and fewer defects. More brightness, contrast,
+  saturation or visible editing earns no credit by itself. The camera
+  is a reference, not ground truth; if it is already strong, do not force
+  a difference or claim an improvement you cannot see.
 - **When torn, make the versions yourself.** Save two or three
   interpretations as separate recipes, compare them side by side, pick
-  the best and deliver only that one.
+  the best and deliver only that one. Include a restrained treatment
+  when testing a strong look. If they are equally good, prefer the
+  version with fewer artefacts and less unnecessary processing.
 
 ## The loop
 
@@ -72,14 +78,16 @@ keep a version.
    Open both images. `auto` aims for a sound, finished-looking base —
    brightness, contrast, colour and noise reduction from what it
    measured — but it does not interpret, and it never crops, changes
-   white balance or adds local adjustments. Build on it; the camera's
-   JPEG is the bar to beat.
+   white balance or adds local adjustments. Check whether its brightness
+   and contrast suit this scene before building on it; it can over-open
+   a night scene or flatten soft light. Keep a starting recipe for comparison.
 
 3. **Decide the picture.** State the intent sentence. Then list what
    stands between the current render and that picture: framing first
-   (what should be cropped away), then light (where the eye should go,
-   what should recede), then colour (the two or three colours that carry
-   the picture, and what should be quiet).
+   (whether an edge distracts or supplies useful context), then light
+   (where the eye should go, what should recede), then colour (which
+   existing colours carry the picture, and what competes with them).
+   Decide what must be preserved as well as what needs changing.
 
 4. **Build it in passes** with
    `rawsmith edit photo.ARW --set key=value ... -o preview.jpg --size 1400 --brief`
@@ -92,14 +100,20 @@ keep a version.
    - *Colour*: `temperature` / `tint`, `vibrance`, `hsl.<band>.*`,
      `grade.shadows` / `grade.highlights`.
    - *Finish*: `clarity`, `dehaze`, `sharpen`, `denoise`, `defringe`.
-   Make changes large enough to see. If a preview looks the same as the
-   last one, the change was too small to matter.
+   Keep each pass tied to a visible problem or the chosen intent. If a
+   change shows no benefit, undo it or inspect the relevant detail;
+   do not increase it merely to make the edit noticeable.
 
 5. **Compare** — `rawsmith compare photo.ARW -o cmp.jpg --size 1400` after each real
    step, and against earlier versions kept as separate recipes:
    `rawsmith compare photo.ARW --panel camera --panel recipe:a.json --panel recipe:b.json -o versions.jpg`.
    Panels are unlabelled; the report's `panels` lists them left to right.
    `--size` bounds each panel's longest edge (default 1400), not the whole row.
+   Render competing recipes through the same `compare` command and at
+   the same size; do not judge a CLI preview against a separately resized
+   export. Each recipe retains its own framing; the camera matches the
+   first non-camera panel. Check `framing_matched` and compare the original
+   framing separately when assessing how much context a crop removes.
    Keep a change only if the picture is better. Apply the test in
    "What finished means" here.
    Read `losses_against_camera` in the report for your panel: it lists
@@ -163,8 +177,7 @@ keep several versions.
 Tone and colour controls run −100…100 with 0 meaning no change; `schema`
 has exact ranges.
 
-**Palette with HSL.** Hue shifts turn one colour toward its neighbour
-(green toward deep teal, blue toward cyan, yellow toward gold);
+**Palette with HSL.** Hue shifts turn one colour toward its neighbour;
 luminance makes a colour heavier or lighter (darker blue for a deeper
 sky, lighter yellow so leaves glow); saturation quietens colours that
 compete with the subject. This is how a picture gets a considered
@@ -172,9 +185,11 @@ palette rather than "more colour". Keep luminance within about ±55:
 beyond that fine edges turn jagged.
 
 **Mood with grading.** `grade.shadows` and `grade.highlights` tint the
-dark and bright parts separately — cool shadows with warm highlights is
-the classic pairing; saturation 15–40 is visible without looking
-filtered. Grading has almost no effect once `saturation` is near −100.
+dark and bright parts separately. Choose hues from the scene's light
+and intended mood; leave grading at zero when the existing colours work.
+Judge strength in the render, especially on skin, snow and neutral surfaces;
+no saturation range guarantees a natural result. Grading has almost no
+effect once `saturation` is near −100.
 
 **Curve** points are `[input, output]` on display brightness, joined
 smoothly, with `[0,0]` and `[1,1]` implied. An S-shape adds contrast:
@@ -275,21 +290,30 @@ full-resolution export's report as well.
 
 ## Craft notes
 
-- Crop early. An empty sky or a distracting edge weakens everything else,
-  and positions for gradients, masks and regions depend on the crop.
+- Decide framing early. Remove distracting edges, but keep negative space
+  or surroundings that support the subject. Positions for gradients,
+  masks and regions depend on the crop.
 - Light before colour: decide what is bright and what recedes first.
-- Lifting is not free: every stop of `shadows` and `exposure` takes depth
-  away. After opening a picture up, give it back a real dark (`blacks`,
-  `contrast`, an S-`curve`) so it does not turn grey and flat.
-- Subjects in shade want lifting; surroundings that compete want
-  darkening. Use a radial for the subject or a corner, and luma to protect dark occluders.
+- Lifting shadows can expose noise and flatten tonal separation. If an
+  edit loses depth, restore it locally or with `blacks`, `contrast` or a
+  curve; fog and other soft, high-key scenes need not acquire a deep black.
+- Lift a shaded subject when its detail matters; preserve an intentional
+  silhouette. Darken competing surroundings only where it helps the
+  composition. Use a radial for the subject or a corner, and luma to protect dark occluders.
 - A scene with one dominant colour (autumn leaves, a blue hour, a sunset)
   gets stronger when the other colours are quietened, not when everything
   is saturated.
 - Keep the scene's character: fog stays soft, dusk stays dark, snow is
   bright and keeps its texture, a sunset keeps its warmth.
-- Snow and fog: bright snow sits around 85–93 at `tones.p95`; use
-  `exposure` and `whites`, and hold a clear sky with a gradient.
+- Bright snow should look luminous and retain texture; `tones.p95` around
+  85–93 can be a useful check for a sunlit snow scene, not a target for
+  snow in shade or fog. Fog keeps gentle contrast and distance cues;
+  do not clear it with dehaze merely to reveal more detail.
+- Night scenes keep dark surroundings and the colour of their light sources.
+  Open only detail that supports the subject; lamps may legitimately clip.
+- For portraits, check skin before and after colour changes. Preserve its
+  texture and the scene's lighting; do not neutralise warm light or tint
+  skin to fit a palette. Mixed light is not fixed by one global white balance.
 - `highlights` far negative on a scene that is bright everywhere greys
   the whole picture; give exposure back or use a gradient.
 - With the sun or a blown sky in frame, keep `highlights` above about
@@ -298,12 +322,16 @@ full-resolution export's report as well.
 - Purple edges and coloured specks on twigs against a blown sky:
   `defringe` 50–90 (check purple flowers and small coloured lights at
   100% first). It does not fix wide out-of-focus halos.
-- If two rounds in a row did not visibly improve the picture, the idea
-  is exhausted: finish, or change the idea.
+- If two rounds in a row did not improve the picture, return to the best
+  saved recipe and finish, or test a different interpretation. Do not
+  deliver the last trial simply because it is the newest.
 
 ## Batch
 
-For a folder, edit each photo with the full loop. For a quick pass, run
+For a folder, edit each photo with the full loop. Keep a coherent treatment
+within the same scene or series while adapting exposure and white balance
+to each frame; do not copy one recipe blindly across different light.
+For a quick pass, run
 `rawsmith auto` on each file, review the previews, and give the full
 treatment to the ones worth it.
 
