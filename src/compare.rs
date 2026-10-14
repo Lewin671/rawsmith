@@ -168,14 +168,20 @@ pub fn row_region(
     row_with(raw, file, panels, size, false, Some(region))
 }
 
-/// The same pixel rounding as `render --region`.
-pub fn crop_region(image: &Image, [x0, y0, x1, y1]: [f64; 4]) -> Image {
+/// Origin and size of a region in a `width` x `height` frame, with the same
+/// pixel rounding as `render --region`.
+fn region_rect(width: usize, height: usize, [x0, y0, x1, y1]: [f64; 4]) -> (usize, usize, usize, usize) {
     let [x0, y0, x1, y1] = [x0, y0, x1, y1].map(|v| v as f32);
-    let (w, h) = (image.width as f32, image.height as f32);
-    let (x, y) = ((x0 * w) as usize, (y0 * h) as usize);
-    let width = (((x1 - x0) * w) as usize).max(1).min(image.width - x.min(image.width - 1));
-    let height = (((y1 - y0) * h) as usize).max(1).min(image.height - y.min(image.height - 1));
-    image.crop(x.min(image.width - 1), y.min(image.height - 1), width, height)
+    let (w, h) = (width as f32, height as f32);
+    let (x, y) = (((x0 * w) as usize).min(width - 1), ((y0 * h) as usize).min(height - 1));
+    let cw = (((x1 - x0) * w) as usize).max(1).min(width - x);
+    let ch = (((y1 - y0) * h) as usize).max(1).min(height - y);
+    (x, y, cw, ch)
+}
+
+pub fn crop_region(image: &Image, region: [f64; 4]) -> Image {
+    let (x, y, w, h) = region_rect(image.width, image.height, region);
+    image.crop(x, y, w, h)
 }
 
 /// The camera rendering for tone measurements: the same framing and colour
@@ -237,10 +243,10 @@ fn row_with(
                 let (w, h) =
                     pipeline::framed_dimensions(raw.crop.width, raw.crop.height, raw.meta.orientation, &panel.params);
                 match region {
-                    Some([x0, y0, x1, y1]) => (
-                        (((x1 - x0) as f32 * w as f32) as usize).max(1),
-                        (((y1 - y0) as f32 * h as f32) as usize).max(1),
-                    ),
+                    Some(r) => {
+                        let (_, _, w, h) = region_rect(w, h, r);
+                        (w, h)
+                    }
                     None => (w, h),
                 }
             };

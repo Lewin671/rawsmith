@@ -730,6 +730,9 @@ fn region_shows_the_same_part_of_every_panel() {
     for (got, want) in image.at(5, 7).into_iter().zip(camera.at(48 + 5, 16 + 7)) {
         assert!((got - want).abs() < 2.0 / 65535.0, "{got} vs {want}");
     }
+    // Rounding that differs between endpoints must not resample the panel.
+    let odd = run(&["compare", s(&raw), "--panel", "default", "--region", "0.25,0.4,0.75,0.9", "-o", s(&output)], true);
+    assert_eq!((odd["panels"][0]["width"].as_u64(), odd["panels"][0]["height"].as_u64()), (Some(48), Some(31)));
     let error = run(&["compare", s(&raw), "--region", "0.5,0.5,0.4,1", "-o", s(&f.path("bad.jpg"))], false);
     assert_eq!(error["error"]["kind"], "params");
     assert!(!f.path("bad.jpg").exists());
