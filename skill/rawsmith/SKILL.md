@@ -178,7 +178,7 @@ elsewhere or to keep several versions.
 
 | To do this | Use |
 |---|---|
-| Strengthen the composition | `crop.left/top/right/bottom` are edge positions 0–1 measured from the left/top: `crop.top=0.1` removes the top tenth, `crop.bottom=0.9` the bottom tenth, `crop.right=0.85` the right 15%; `rotate` |
+| Strengthen the composition | `crop.left/top/right/bottom` are edge positions 0–1 of the upright picture (after the camera's rotation), measured from the left/top: `crop.top=0.1` removes the top tenth, `crop.bottom=0.9` the bottom tenth, `crop.right=0.85` the right 15%; `rotate` |
 | Overall brightness | `exposure` (stops) |
 | Warmth, colour of the light | `temperature` (K, higher is warmer), `tint` (+ magenta, − green) |
 | Tame a bright sky; open dark areas | `highlights` negative; `shadows` positive |
@@ -336,6 +336,11 @@ full-resolution export's report as well.
 - A scene with one dominant colour (autumn leaves, a blue hour, a sunset)
   gets stronger when the other colours are quietened, not when everything
   is saturated.
+- In mixed light (street lamps under a blue-hour sky, a lit bridge at
+  night), white balance moves both: cooling for a bluer sky drains the
+  lamps, warming for golden lamps greys the sky. Keep white balance near
+  as shot and separate them with `grade.highlights` (warm) and
+  `grade.shadows` or a sky mask (cool), or a `colors` mask on the lights.
 - Warmer white balance and a warm grade together turn a mixed palette
   into one brown: a blue subject goes grey, green moss and red leaves
   vanish. Use one of them, and when `compare` says a colour "has nearly
