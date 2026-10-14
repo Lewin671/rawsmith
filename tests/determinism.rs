@@ -160,7 +160,9 @@ fn auto_recipe_and_decisions_ignore_rayon_scheduling() {
 // change up to the scene cache; they were recorded again when luminance
 // noise reduction changed the pixels on purpose (wavelet shrinkage), and
 // again in 0.6 for dark-impulse removal in luminance denoising and light
-// above white passing through the black point and curve.
+// above white passing through the black point and curve, and after 0.6.0
+// for line-aware denoising and neutralising light borrowed from clipped
+// regions.
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 fn hash_bytes(bytes: impl IntoIterator<Item = u8>) -> u64 {
     bytes.into_iter().fold(0xcbf29ce484222325, |hash, byte| (hash ^ byte as u64).wrapping_mul(0x100000001b3))
@@ -194,30 +196,30 @@ fn main_render_golden_hashes() {
         }
     }
     let expected: &[u64] = &[
-        0x50ea5ae28780c251,
-        0xb5ccd73f1f8cb33c,
-        0x4172e1c43c8de530,
-        0x4e8f93b6a9712355,
-        0x115b2859aefaba19,
-        0x115b2859aefaba19,
-        0x4f62b83bf90794c9,
-        0xb2e774e3d4efdc45,
-        0x52f31512ef467cd7,
-        0x2cc58e9815fbc37c,
-        0xe465226c561ba3b3,
-        0xe465226c561ba3b3,
-        0x2809a85890c9bc08,
-        0x68c545989f673621,
-        0x8a2c574df61fd7c1,
-        0xf76487a762b9dfba,
-        0x061ee13cd174ae3f,
-        0x061ee13cd174ae3f,
-        0xfd15f7d8dd11883f,
-        0x31302a5c8f1bbac3,
-        0xe64edef2c61e7dfd,
-        0x08b0582886e916f6,
-        0x956247e8b56ee7d5,
-        0x956247e8b56ee7d5,
+        0x9f622354b618fb50,
+        0xfe1bda659b504448,
+        0xf33a3db452f3ad1b,
+        0x2b425820178dd398,
+        0x57248d3d23459715,
+        0x57248d3d23459715,
+        0xa882e035ad2fb4e6,
+        0x6548efc4ed803020,
+        0x372b04c8051179fc,
+        0x9dfc1b97ba2f3f8c,
+        0x91b22cc14c984080,
+        0x91b22cc14c984080,
+        0xa3ef08515752c637,
+        0xa063c906a2918318,
+        0x2b7c755f72c33014,
+        0xea7fb126d579fc2e,
+        0x1602cb4c75c276cf,
+        0x1602cb4c75c276cf,
+        0x771c595b180888bb,
+        0xaf2706b104593b89,
+        0x6e15735ad6b97b29,
+        0x1ac58fc6a6f391a5,
+        0x22cceee9776b99bd,
+        0x22cceee9776b99bd,
     ];
     assert_eq!(got, expected);
 }
