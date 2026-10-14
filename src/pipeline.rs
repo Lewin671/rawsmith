@@ -432,6 +432,7 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
         let stage = crate::profile::Stage::new("sensor/highlights");
         let (_, _, clipped) = crate::stats::sensor_clipping(raw);
         demosaic::reconstruct_highlights(&mut image, mosaic.clip);
+        let clip = mosaic.clip;
         drop(mosaic);
         drop(stage);
         let stage = crate::profile::Stage::new("lens/matrix/fringe");
@@ -442,6 +443,14 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
                 }
             }
         }
+        // After lens correction, which moves red and blue across these edges.
+        let scale = |v: usize| if half { v.div_ceil(2) } else { v };
+        demosaic::settle_borrowed_light(
+            &mut image,
+            clip,
+            scale(demosaic::BORROWED_SPILL),
+            scale(demosaic::BORROWED_REACH),
+        );
         image.map(|p| color::apply(&cam_to_work, p));
         crate::fringe::suppress(&mut image, params.defringe as f32 / 100.0, if half { 2 } else { 3 });
         drop(stage);

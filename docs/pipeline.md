@@ -111,6 +111,26 @@ geometry. Correction precedes orientation, crop and output resizing in both
 full- and half-resolution paths. It corrects lateral channel displacement,
 not longitudinal CA, blooming or demosaic false colour.
 
+Next, still in white-balanced camera RGB, light that partially covered
+pixels borrow from a clipped region gets the colour reconstruction gave
+that region (`demosaic::settle_borrowed_light`). A thin twig against a
+blown sky shows why: its edge pixels collect light from a sky several
+times brighter than the sensor limit, at the sky's real colour and through
+interpolation across clipped photosites, while the sky itself is rendered
+neutral. At 100% they became pale cyan, blue, pink and magenta specks that
+the camera's JPEG does not have, and `defringe` could not remove them.
+Within five pixels of a pixel at the reconstruction knee, the darkest
+unclipped pixel within seven estimates the covering object; the square
+root of the share of a pixel's light above it moves to neutral, keeping
+the channel sum. Colour is kept where something supports it: the covering
+object (red leaves), the reconstructed source (a coloured lamp), the hue
+of the unclipped setting beyond that reach (blue sky beside a white
+cloud), or chroma too strong to be borrowed light or demosaic error. It
+runs after lens correction, which moves red and blue across these edges.
+Frames without pixels at the knee are unchanged. A coloured detail a pixel
+or two across next to a clipped region can lose some colour; it cannot be
+told from a tinted edge.
+
 ## 5. Colour — `color.rs`
 
 White-balanced camera RGB is converted to the working space, linear

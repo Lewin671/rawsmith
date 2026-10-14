@@ -426,6 +426,167 @@ pub fn reconstruct_highlights(image: &mut Image, clip: [f32; 3]) -> f32 {
     count as f32 / (w * h) as f32
 }
 
+/// Distance from a reconstructed pixel within which a pixel can hold light
+/// borrowed from it.
+pub const BORROWED_SPILL: usize = 5;
+/// Radius searched for the covering object and the unclipped setting.
+pub const BORROWED_REACH: usize = 7;
+
+/// Neutralises colour in light that partially covered pixels borrow from a
+/// neighbouring clipped region.
+///
+/// A twig's edge pixel against a blown sky receives much of its light from a
+/// sky that is several times brighter than the sensor's limit. That light
+/// keeps the sky's real colour at full strength, and its interpolation used
+/// clipped photosites that only bound their value from below. Highlight
+/// reconstruction renders the clipped region itself towards neutral as its
+/// channels run out, so without this the edge pixels show the colour the
+/// region no longer has: pale cyan, blue or magenta specks. The brightest,
+/// most completely clipped part of the source dominates the borrowed light,
+/// and its reconstructed colour is neutral.
+///
+/// Within `spill` pixels of a pixel with a channel at the reconstruction
+/// knee, the darkest unclipped pixel within `reach` estimates the covering
+/// object. The share of a pixel's light above that level is treated as
+/// borrowed and its colour moves to neutral; the channel sum is unchanged.
+/// The darkest pixel misses sub-pixel sky in thin structures, so the share
+/// is taken as its square root. Colour is kept where it is supported: by the
+/// covering object (a red leaf), by the reconstructed source (a coloured
+/// lamp), by unclipped surroundings beyond the spill (blue sky beside a
+/// white cloud), or by being too strong for borrowed light or demosaicing
+/// error. Frames without reconstructed pixels are returned bit for bit.
+pub fn settle_borrowed_light(image: &mut Image, clip: [f32; 3], spill: usize, reach: usize) {
+    settle_stripes(image, clip, spill, reach, 64);
+}
+
+fn settle_stripes(image: &mut Image, clip: [f32; 3], spill: usize, reach: usize, stripe_rows: usize) {
+    const THIRD: f32 = 1.0 / 3.0;
+    let level = clip.map(|v| v * CLIP_KNEE);
+    let (w, h) = (image.width, image.height);
+    let reconstructed = |p: &[f32; 3]| (0..3).any(|c| p[c] >= level[c]);
+    if spill == 0 || w == 0 || !image.data.par_iter().any(reconstructed) {
+        return;
+    }
+    let halo = reach + spill;
+    // Channel sum, red and blue chromaticity, and whether reconstructed.
+    let encode = |p: [f32; 3]| -> [f32; 4] {
+        let sum = p[0].max(0.0) + p[1].max(0.0) + p[2].max(0.0);
+        let inverse = if sum > 1e-12 { 1.0 / sum } else { 0.0 };
+        [sum, p[0].max(0.0) * inverse, p[2].max(0.0) * inverse, reconstructed(&p) as u8 as f32]
+    };
+    // Chromaticity offset from neutral.
+    let offset = |q: [f32; 4]| [q[1] - THIRD, 1.0 - q[1] - q[2] - THIRD, q[2] - THIRD];
+    let ramp = |strength: f32, from: f32| {
+        let t = ((strength - from) / from).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    let length = |v: [f32; 3]| v.iter().map(|v| v * v).sum::<f32>().sqrt();
+    // How much of `own` a reference colour explains, once the reference's
+    // chroma reaches `from`.
+    let supported = |own: [f32; 3], reference: [f32; 3], from: f32| {
+        let own_power: f32 = own.iter().map(|v| v * v).sum();
+        let along: f32 = own.iter().zip(reference).map(|(a, b)| a * b).sum();
+        let explained = if own_power > 1e-12 { (along / own_power).clamp(0.0, 1.0) } else { 1.0 };
+        explained * ramp(length(reference), from)
+    };
+    // Original encoded rows: results never read rows this pass has changed,
+    // whatever the stripe size or scheduling.
+    let mut source: Vec<[f32; 4]> = Vec::with_capacity(w * (stripe_rows + 2 * halo));
+    let mut carried: Vec<[f32; 4]> = Vec::new();
+    let mut counts: Vec<u32> = Vec::new();
+    let mut across: Vec<bool> = Vec::new();
+    let mut near: Vec<bool> = Vec::new();
+    for first in (0..h).step_by(stripe_rows) {
+        let end = (first + stripe_rows).min(h);
+        let base = first.saturating_sub(halo);
+        source.clear();
+        source.extend_from_slice(&carried);
+        source.extend(image.data[first * w..(end + halo).min(h) * w].iter().copied().map(encode));
+        carried.clear();
+        carried.extend_from_slice(&source[(end.saturating_sub(halo) - base) * w..(end - base) * w]);
+        if source.iter().all(|q| q[3] == 0.0) {
+            continue;
+        }
+        let rows = source.len() / w;
+        // Pixels within `spill` of a reconstructed pixel, through per-row
+        // prefix counts and a vertical pass.
+        counts.clear();
+        counts.resize(w + 1, 0);
+        across.clear();
+        across.resize(rows * w, false);
+        for row in 0..rows {
+            for x in 0..w {
+                counts[x + 1] = counts[x] + source[row * w + x][3] as u32;
+            }
+            for x in 0..w {
+                across[row * w + x] = counts[(x + spill).min(w - 1) + 1] != counts[x.saturating_sub(spill)];
+            }
+        }
+        near.clear();
+        near.resize(rows * w, false);
+        near.par_chunks_mut(w).enumerate().for_each(|(row, flags)| {
+            let (top, bottom) = (row.saturating_sub(spill), (row + spill).min(rows - 1));
+            for (x, flag) in flags.iter_mut().enumerate() {
+                *flag = (top..=bottom).any(|r| across[r * w + x]);
+            }
+        });
+        let (source, near) = (&source, &near);
+        image.data[first * w..end * w].par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+            let y = y + first - base;
+            let (top, bottom) = (y.saturating_sub(reach), (y + reach).min(rows - 1));
+            for (x, p) in row.iter_mut().enumerate() {
+                let centre = source[y * w + x];
+                if centre[3] != 0.0 || centre[0] <= 1e-12 || !near[y * w + x] {
+                    continue;
+                }
+                let (left, right) = (x.saturating_sub(reach), (x + reach).min(w - 1));
+                let mut darkest = centre;
+                let (mut lamp, mut lit) = ([0.0f32; 3], 0.0f32);
+                let (mut setting, mut light) = ([0.0f32; 3], 0.0f32);
+                for r in top..=bottom {
+                    for (i, &q) in source[r * w + left..=r * w + right].iter().enumerate() {
+                        let o = offset(q);
+                        if q[3] != 0.0 {
+                            lamp = std::array::from_fn(|c| lamp[c] + o[c]);
+                            lit += 1.0;
+                            continue;
+                        }
+                        if q[0] < darkest[0] {
+                            darkest = q;
+                        }
+                        if !near[r * w + left + i] {
+                            setting = std::array::from_fn(|c| setting[c] + o[c] * q[0]);
+                            light += q[0];
+                        }
+                    }
+                }
+                let own = offset(centre);
+                // Strong colour is real (a lamp's glow); borrowed sky and
+                // interpolation error stay at about half of it.
+                let mut kept = ramp(length(own), 0.2).max(supported(own, offset(darkest), 0.1));
+                if lit > 0.0 {
+                    kept = kept.max(supported(own, lamp.map(|v| v / lit), 0.1));
+                }
+                if light > 1e-12 {
+                    // The setting mixes in neutral twigs and highlights, so
+                    // match its hue rather than its strength.
+                    let setting = setting.map(|v| v / light);
+                    let along: f32 = own.iter().zip(setting).map(|(a, b)| a * b).sum();
+                    let cosine = (along / (length(own) * length(setting)).max(1e-12)).max(0.0);
+                    kept = kept.max(cosine * cosine * ramp(length(setting), 0.05));
+                }
+                let share = ((centre[0] - darkest[0]) / centre[0]).clamp(0.0, 1.0).sqrt() * (1.0 - kept);
+                if share <= 0.0 {
+                    continue;
+                }
+                let red = centre[1] + share * (THIRD - centre[1]);
+                let blue = centre[2] + share * (THIRD - centre[2]);
+                *p = [red, 1.0 - red - blue, blue].map(|v| v * centre[0]);
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,5 +744,56 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn borrowed_light_next_to_a_blown_sky_loses_its_tint_but_real_colour_stays() {
+        let clip = [2.5, 1.0, 1.6];
+        let (w, h) = (64, 40);
+        let sky = [3.0f32; 3];
+        let twig = |x: usize| match x {
+            22 | 26 => Some([1.2, 0.8, 1.3]),
+            23 | 25 => Some([0.5, 0.35, 0.55]),
+            24 => Some([0.2, 0.2, 0.2]),
+            _ => None,
+        };
+        // A red leaf with a brighter rim where it meets the sky.
+        let leaf = |x: usize, y: usize| match (x, y) {
+            (41..=46, 21..=26) => Some([0.6, 0.1, 0.08]),
+            (40..=47, 20..=27) => Some([1.0, 0.3, 0.25]),
+            _ => None,
+        };
+        let mut image = Image::new(w, h);
+        image.map_xy(|x, y, _| twig(x).or(leaf(x, y)).unwrap_or(sky));
+        let original = image.clone();
+        let mut striped = image.clone();
+        settle_borrowed_light(&mut image, clip, BORROWED_SPILL, BORROWED_REACH);
+        settle_stripes(&mut striped, clip, BORROWED_SPILL, BORROWED_REACH, 7);
+        assert!(image.data == striped.data, "stripes must match one pass");
+
+        let tint = |p: [f32; 3]| {
+            let sum = p.iter().sum::<f32>();
+            p.iter().map(|v| (v / sum - 1.0 / 3.0).abs()).fold(0.0, f32::max)
+        };
+        for y in 0..h {
+            for x in 0..w {
+                let (before, after) = (original.at(x, y), image.at(x, y));
+                let sum = |p: [f32; 3]| p.iter().sum::<f32>();
+                assert!((sum(before) - sum(after)).abs() < 1e-5 * sum(before));
+                if matches!(x, 22 | 23 | 25 | 26) && !(20..=27).contains(&y) {
+                    assert!(tint(after) < 0.3 * tint(before), "{x},{y}: {before:?} -> {after:?}");
+                }
+                if leaf(x, y).is_some() {
+                    assert!(tint(after) > 0.9 * tint(before), "{x},{y}: {before:?} -> {after:?}");
+                }
+            }
+        }
+
+        // Without reconstructed pixels nothing is borrowed.
+        let mut dim = original.clone();
+        dim.map(|p| p.map(|v| v * 0.25));
+        let reference = dim.clone();
+        settle_borrowed_light(&mut dim, clip, BORROWED_SPILL, BORROWED_REACH);
+        assert!(dim.data == reference.data);
     }
 }
