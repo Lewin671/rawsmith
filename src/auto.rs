@@ -329,9 +329,12 @@ fn propose(raw: &RawImage, base: &Params, camera: Option<Measure>, camera_note: 
     let defringe_reason = if base.defringe > 0.0 {
         "kept non-zero base recipe strength"
     } else if sensor.fringe_edge_pct > FRINGE_EDGE_PCT {
-        // Mid-range suppression, with no global purple desaturation.
-        params.defringe = 50.0;
-        "enabled moderate suppression for clipped fine-edge risk"
+        // Strength grows with the evidence: at 50, twigs against a blown
+        // sky kept visible pink edges at 100%; 70-90 clears them. The
+        // threshold stays where it was, so red or purple subjects without
+        // clipped fine edges are untouched.
+        params.defringe = round_to(70.0 + 20.0 * smoothstep(FRINGE_EDGE_PCT, 2.0, sensor.fringe_edge_pct), 5.0);
+        "enabled suppression for clipped fine-edge risk, stronger with more evidence"
     } else {
         "kept base recipe strength; insufficient clipped-edge coverage"
     };
@@ -781,8 +784,9 @@ mod tests {
             )
             .unwrap();
             let result = auto(&raw, &Params::default()).unwrap();
-            assert_eq!(result.params.defringe, 50.0);
-            assert!(result.notes.iter().any(|n| n.contains("defringe 50") && n.contains("sensor-loss edges")));
+            assert!((70.0..=90.0).contains(&result.params.defringe), "{}", result.params.defringe);
+            let note = format!("defringe {:.0}", result.params.defringe);
+            assert!(result.notes.iter().any(|n| n.contains(&note) && n.contains("sensor-loss edges")));
             result.params.validate().unwrap();
             for threads in [1, 3] {
                 let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
@@ -836,7 +840,7 @@ mod tests {
             assert_eq!(above, (18.0f64 / 3480.0 * 100.0) as f32, "six lines, phase {phase}");
             assert!(above > FRINGE_EDGE_PCT);
             let result = auto(&raw, &Params::default()).unwrap();
-            assert_eq!(result.params.defringe, 50.0, "six lines, phase {phase}");
+            assert!((70.0..=90.0).contains(&result.params.defringe), "six lines, phase {phase}");
             assert!(result.notes.iter().any(|n| n.contains("sensor-loss edges 0.52%")
                 && n.contains("all tiles aggregated")
                 && n.contains("threshold > 0.50%")));

@@ -354,7 +354,9 @@ measurements run through the current default curve and gamut mapping, so
 old tone/colour settings do not stack on the new base.
 When more than 0.5% of framed native tile samples border sensor loss
 (any photosite at 98%) and a strong edge (neighbouring square-root green
-difference at least 0.25), a zero base defringe becomes 50; the one-in-200
+difference at least 0.25), a zero base defringe becomes 70, rising to 90
+as coverage reaches 2% (at 50, twigs against blown sky kept pink edges at
+100%); the one-in-200
 coverage gate rejects isolated loss, while the edge threshold separates
 near-white green from neighbours below roughly 0.55 of sensor range,
 including a one-pixel dark line covering one of a tile's two greens.
