@@ -151,7 +151,34 @@ pub(crate) fn framed(image: Image, orientation: u16, params: &Params) -> Image {
 
 /// Smooths chroma (and, at high strength, luminance) noise. Works on
 /// square-root encoded values, where sensor noise is roughly uniform.
-fn denoise(image: &mut Image, strength: f32) {
+///
+/// `measured` is the strength that matches this frame's sensor noise. A
+/// lower `strength` still removes noise at that level, then restores part of
+/// what was removed: fine, even grain. Thresholding at an underestimate of
+/// the noise would instead keep only its largest samples, scattered as dark
+/// specks and, in the coarse bands, watercolour blotches on fog and water.
+fn denoise(image: &mut Image, strength: f32, measured: f32) {
+    if strength <= 0.0 || strength >= measured {
+        return denoise_at(image, strength);
+    }
+    let original = image.clone();
+    denoise_at(image, measured);
+    let kept = strength / measured;
+    // Colour grain goes first: none is restored from half the measured strength.
+    let (luma_back, chroma_back) = (1.0 - kept, (1.0 - 2.0 * kept).max(0.0));
+    let encode = |p: [f32; 3]| {
+        let q = p.map(|v| v.max(0.0).sqrt());
+        let y = (q[0] + 2.0 * q[1] + q[2]) * 0.25;
+        (y, q.map(|v| v - y))
+    };
+    image.data.par_iter_mut().zip(&original.data).for_each(|(p, o)| {
+        let ((y, c), (oy, oc)) = (encode(*p), encode(*o));
+        let y = y + (oy - y) * luma_back;
+        *p = [0, 1, 2].map(|i| (y + c[i] + (oc[i] - c[i]) * chroma_back).max(0.0).powi(2));
+    });
+}
+
+fn denoise_at(image: &mut Image, strength: f32) {
     // Low-ISO frames keep their faint grain and finest texture; the
     // luminance threshold reaches its full height by ISO 800 (strength 40).
     let t = ((strength - 0.1) / 0.3).clamp(0.0, 1.0);
@@ -386,6 +413,11 @@ pub fn render(raw: &RawImage, params: &Params, size: Size) -> Result<Render> {
 pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
     let stage = crate::profile::Stage::new("noise/prepare");
     let noise_reduction = crate::noise::resolve(raw, params.denoise);
+    // A lighter explicit setting is applied as a fraction of the measured one.
+    let measured = match params.denoise {
+        Some(_) => crate::noise::resolve(raw, None).strength,
+        None => noise_reduction.strength,
+    } as f32;
     let cam_to_work = color::camera_to_working(&camera_matrix(raw)?);
     let (white_balance, gains) = white_balance(raw, params)?;
 
@@ -447,7 +479,7 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
         drop(stage);
         let stage = crate::profile::Stage::new("denoise");
         if !half {
-            denoise(&mut image, noise_reduction.strength as f32 / 100.0);
+            denoise(&mut image, noise_reduction.strength as f32 / 100.0, measured / 100.0);
         }
         drop(stage);
         let stage = crate::profile::Stage::new("scene store");
@@ -695,11 +727,69 @@ mod tests {
         let strength = params.denoise.unwrap() as f32 / 100.0;
         for (w, h) in [(64, 48), (1, 1), (1, 7), (7, 1), (3, 2)] {
             let mut image = Image { width: w, height: h, data: vec![[value; 3]; w * h] };
-            denoise(&mut image, strength);
+            denoise(&mut image, strength, strength);
             for pixel in &image.data {
                 assert!(pixel.iter().all(|v| v.is_finite() && (*v - value).abs() < 1e-5), "{w}x{h}: {pixel:?}");
             }
         }
+    }
+
+    #[test]
+    fn lighter_than_measured_denoise_leaves_even_grain_not_specks() {
+        // Flat fog with sensor-like grain, measured at strength 0.6.
+        let (w, h, measured) = (192, 160, 0.6f32);
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut normal = || {
+            (0..12)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    (state >> 40) as f32 / (1u64 << 24) as f32
+                })
+                .sum::<f32>()
+                - 6.0
+        };
+        let noise = 0.02 * measured;
+        let mut original = Image::new(w, h);
+        for p in &mut original.data {
+            *p = [0.3, 0.32, 0.34].map(|v: f32| (v.sqrt() + noise * normal()).max(0.0).powi(2));
+        }
+        let luma = |image: &Image| -> Vec<f32> {
+            (24..h - 24)
+                .flat_map(|y| (24..w - 24).map(move |x| (y, x)))
+                .map(|(y, x)| image.at(x, y)[1].sqrt())
+                .collect()
+        };
+        // Spread and tail weight of the remaining grain (3 for Gaussian noise).
+        let grain = |image: &Image| {
+            let v = luma(image);
+            let mean = v.iter().sum::<f32>() / v.len() as f32;
+            let m2 = v.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / v.len() as f32;
+            let m4 = v.iter().map(|x| (x - mean).powi(4)).sum::<f32>() / v.len() as f32;
+            (m2.sqrt(), m4 / (m2 * m2))
+        };
+        let (before, _) = grain(&original);
+        let mut previous = before;
+        for strength in [0.2, 0.3, 0.45] {
+            let mut lighter = original.clone();
+            denoise(&mut lighter, strength, measured);
+            let mut underestimated = original.clone();
+            denoise(&mut underestimated, strength, strength);
+            let ((spread, tail), (_, sparse_tail)) = (grain(&lighter), grain(&underestimated));
+            eprintln!("strength {strength}: grain {spread:.5} (was {before:.5}), tail {tail:.2}; thresholded alone {sparse_tail:.2}");
+            assert!(spread < previous, "less grain at higher strength");
+            assert!(tail < 4.0, "even grain: {tail}");
+            // The scene must expose the failure: an underestimated threshold
+            // keeps only the noise extremes, a heavy tail of isolated specks.
+            assert!(strength < 0.4 || sparse_tail > 10.0, "sparse survivors: {sparse_tail}");
+            previous = spread;
+        }
+        let mut full = original.clone();
+        denoise(&mut full, measured, measured);
+        let mut direct = original.clone();
+        denoise_at(&mut direct, measured);
+        assert_eq!(full.data, direct.data);
     }
 
     #[test]
@@ -819,7 +909,7 @@ mod tests {
         }
         for strength in [0.85, 1.0] {
             let mut image = original.clone();
-            denoise(&mut image, strength);
+            denoise(&mut image, strength, strength);
             for x in [64, 128] {
                 let (p, q) = (image.at(x, 64), original.at(x, 64));
                 // Preserve hue/chroma on both sides as well as luminance.
