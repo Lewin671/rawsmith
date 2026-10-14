@@ -340,8 +340,13 @@ full-resolution export's report as well.
 
 ## Craft notes
 
-- Crop early. An empty sky or a distracting edge weakens everything else,
-  and positions for gradients, masks and regions depend on the crop.
+- Crop early and decisively. An empty sky or a distracting edge weakens
+  everything else, and positions for gradients, masks and regions depend
+  on the crop. White or featureless sky earns only the room the subject
+  needs — often a sixth of the frame or less; a quarter of blank white is
+  usually too much. Trim the edge that holds nothing and tighten towards
+  the subject rather than keeping the whole frame out of caution: in
+  side-by-side choices the tighter, cleaner framing usually wins.
   Blurred foreground objects cutting in from the sides (out-of-focus
   trunks, leaves, railings) pull the eye from a sharp subject; crop past
   them unless they frame it on purpose, keeping the subject's
