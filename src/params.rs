@@ -603,8 +603,20 @@ impl Params {
             let slot =
                 node.as_object_mut().and_then(|o| o.get_mut(keys[keys.len() - 1])).ok_or_else(|| unknown(path))?;
             if slot.is_object() {
+                // `grade.shadows={"hue":200,"saturation":15}` sets those fields
+                // and leaves the group's others as they were.
+                if let (0.0, Some(fields)) = (step, new.as_object()) {
+                    for (key, value) in fields {
+                        let field = slot.get_mut(key).ok_or_else(|| unknown(&format!("{path}.{key}")))?;
+                        if field.is_object() {
+                            return Err(Error::Params(format!("'{path}.{key}' is a group; set its fields one by one")));
+                        }
+                        *field = value.clone();
+                    }
+                    continue;
+                }
                 return Err(Error::Params(format!(
-                    "'{path}' is a group; set one of its fields, e.g. {path}.{}",
+                    "'{path}' is a group; set one of its fields, e.g. {path}.{}, or several as {path}={{...}}",
                     first_key(slot)
                 )));
             }
@@ -711,6 +723,23 @@ mod tests {
     fn empty_recipe_is_the_default() {
         assert_eq!(Params::from_json("{}").unwrap(), Params::default());
         assert_eq!(Params::default().to_sparse(), json!({}));
+    }
+
+    #[test]
+    fn a_group_takes_an_object_of_its_fields() {
+        let p = Params::default()
+            .with_assignments(&[
+                r#"grade.shadows={"hue":200,"saturation":15}"#.into(),
+                "grade.highlights.hue=40".into(),
+            ])
+            .unwrap();
+        assert_eq!((p.grade.shadows.hue, p.grade.shadows.saturation, p.grade.highlights.hue), (200.0, 15.0, 40.0));
+        let p = p.with_assignments(&[r#"grade.shadows={"saturation":5}"#.into()]).unwrap();
+        assert_eq!((p.grade.shadows.hue, p.grade.shadows.saturation), (200.0, 5.0));
+        for bad in [r#"grade.shadows={"tone":5}"#, r#"grade={"shadows":{"hue":1}}"#, r#"grade.shadows+={"hue":1}"#] {
+            assert!(Params::default().with_assignments(&[bad.into()]).is_err(), "{bad}");
+        }
+        assert!(Params::default().with_assignments(&[r#"grade.shadows={"hue":400}"#.into()]).is_err());
     }
 
     #[test]

@@ -156,7 +156,9 @@ keep a version.
    `rawsmith compare photo.ARW --panel camera --panel recipe:baseline.json --panel recipe:candidate.json -o pick.jpg`
    with panels about 1000 px or more (smaller panels hide the difference;
    if your viewer shrinks a wide row, pass a smaller `--size` or compare
-   two at a time) — and keep
+   two at a time). Side by side, a neighbouring panel makes the other look
+   duller or brighter than it is: open the chosen preview on its own
+   before deciding, and keep
    the baseline on doubt. Check selected native detail before delivery and
    restore the baseline if it introduces a defect. Deliver only one image.
 
@@ -222,7 +224,8 @@ a dull roof — barely moves; to brighten those, use a `colors` mask with
 **Mood with grading.** `grade.shadows` and `grade.highlights` tint the
 dark and bright parts separately — cool shadows with warm highlights is
 the classic pairing; saturation 15–40 is visible without looking
-filtered. Grading has almost no effect once `saturation` is near −100.
+filtered. Set them as `--set grade.shadows.hue=210 --set grade.shadows.saturation=20`
+or in one go as `--set 'grade.shadows={"hue":210,"saturation":20}'`. Grading has almost no effect once `saturation` is near −100.
 
 **Curve** points are `[input, output]` on display brightness, joined
 smoothly, with `[0,0]` and `[1,1]` implied. An S-shape adds contrast:
