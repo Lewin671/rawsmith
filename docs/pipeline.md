@@ -383,8 +383,10 @@ The measurements and policy are:
   quarter of patch estimates rejects much texture. The estimate sets an
   amount relative to 0.02, the denoiser's maximum square-root regularisation
   scale. The proposal combines 65% measured amount with 35% ISO prior
-  (`10 + 10 log2(ISO/100)`, capped at 85), bounded to 10–90 and rounded to
-  five. The amount is also capped at the ISO prior +20 because uniformly
+  (`10 + 10 log2(ISO/100)`, capped at 85). Above 50 a margin of up to ten
+  points (full from 70) is added: at that noise the samples just above the
+  shrinkage threshold survive as specks on smooth water and fog. The result
+  is bounded to 10–90 and rounded to five. The amount is also capped at the ISO prior +20 because uniformly
   fine texture can resemble noise. Fewer than 16 usable patches falls back to the prior. This is a
   noise proxy, not calibrated sensor characterisation: textured frames,
   very dark patches, white-balance/channel gains and lens shading can bias

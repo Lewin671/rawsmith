@@ -85,7 +85,7 @@ fn insufficient_patches_fall_back_to_iso_prior_and_null_resets_measurement() {
     let mut raw = arw::decode(&Synthetic::from_camera_rgb(16, 16, |_, _| [0.1; 3]).to_bytes()).unwrap();
     raw.meta.iso = Some(6400);
     let fallback = noise::resolve(&raw, None);
-    assert_eq!((fallback.strength, fallback.source, fallback.native_sqrt_noise), (70.0, "iso_prior", None));
+    assert_eq!((fallback.strength, fallback.source, fallback.native_sqrt_noise), (80.0, "iso_prior", None)); // prior 70 plus the speck margin
     let p = Params::from_json(r#"{"denoise":10}"#).unwrap();
     assert_eq!(p.to_sparse()["denoise"], 10.0);
     let reset = p.with_assignments(&["denoise=null".into()]).unwrap();

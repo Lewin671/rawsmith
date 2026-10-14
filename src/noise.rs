@@ -59,7 +59,13 @@ pub fn resolve(raw: &RawImage, explicit: Option<f64>) -> NoiseReduction {
     // The quietest patches can miss shadow noise, while uniformly fine
     // texture can imitate grain: retain auto's ISO prior and upper bound.
     let measured = sigma.map(|s| (s / 0.02 * 100.0).clamp(0.0, 100.0));
-    let amount = measured.map_or(prior, |m| (0.35 * prior + 0.65 * m).clamp(10.0, (prior + 20.0).min(90.0)));
+    // At high noise the threshold sits close to the tail of the noise, and
+    // the samples just above it survive as dark and bright specks on smooth
+    // water and fog; ten more points clear them while fine texture (feathers,
+    // leaves) still holds. Below about 50 the specks do not appear.
+    let speck_margin = |v: f32| v + 10.0 * ((v - 50.0) / 20.0).clamp(0.0, 1.0);
+    let amount =
+        speck_margin(measured.map_or(prior, |m| 0.35 * prior + 0.65 * m)).clamp(10.0, (prior + 20.0).min(90.0));
     NoiseReduction {
         strength: ((amount / 5.0).round() * 5.0) as f64,
         source: if sigma.is_some() { "measured" } else { "iso_prior" },

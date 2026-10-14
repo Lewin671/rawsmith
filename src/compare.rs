@@ -321,17 +321,17 @@ fn row_with(
     if !srgb {
         warnings.push("Camera colour is not established sRGB. Camera pixels are unconverted; the mixed comparison has no colour profile, so camera colours may display incorrectly.");
     }
-    Ok((
-        row,
-        json!({
-            "panels": reports, "width": width, "height": height,
-            "separator_pixels": SEPARATOR, "raw_orientation": raw.meta.orientation,
-            "camera_framing_panel": if camera_needed { reference } else { None },
-            "framing_policy": "camera matches first non-camera panel; recipes keep their own framing",
-            "framing_matched": matched, "warnings": warnings, "region": region,
-        }),
-        srgb,
-    ))
+    let mut report = json!({
+        "panels": reports, "width": width, "height": height,
+        "separator_pixels": SEPARATOR, "raw_orientation": raw.meta.orientation,
+        "camera_framing_panel": if camera_needed { reference } else { None },
+        "framing_policy": "camera matches first non-camera panel; recipes keep their own framing",
+        "framing_matched": matched, "warnings": warnings,
+    });
+    if let Some(region) = region {
+        report["region"] = json!(region);
+    }
+    Ok((row, report, srgb))
 }
 
 #[cfg(test)]
