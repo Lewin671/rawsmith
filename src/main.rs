@@ -147,7 +147,7 @@ struct Compare {
     /// Bound each panel's longest edge; panels shrink to one shared height (at least 1)
     #[arg(long, default_value_t = 1400)]
     size: usize,
-    /// Compact report: per panel only kind, recipe file, size and losses_against_camera; warnings and output fields stay.
+    /// Compact report: per panel only kind, recipe file, size, losses_against_camera and any recipe compatibility note; warnings and output fields stay.
     #[arg(long)]
     brief: bool,
     /// Compare one part of the picture at full resolution: x0,y0,x1,y1 of each panel's finished frame. Every panel shows the same part; panels larger than --size are still reduced, so pick a small region (about 0.15 wide) to see native pixels.
@@ -737,6 +737,10 @@ fn compare_versions(args: Compare) -> Result<Value> {
             let mut fields = vec!["kind", "recipe_file", "width", "height"];
             if panel.get("losses_against_camera").is_some() {
                 fields.push("losses_against_camera");
+            }
+            // A recipe rendered with changed defaults must still say so.
+            if panel["recipe_compatibility"]["note"].is_string() {
+                fields.push("recipe_compatibility");
             }
             *panel = select_fields(panel, &fields);
         }
