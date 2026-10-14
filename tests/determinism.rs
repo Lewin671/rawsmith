@@ -161,8 +161,8 @@ fn auto_recipe_and_decisions_ignore_rayon_scheduling() {
 // noise reduction changed the pixels on purpose (wavelet shrinkage), and
 // again in 0.6 for dark-impulse removal in luminance denoising and light
 // above white passing through the black point and curve, and after 0.6.0
-// for line-aware denoising and neutralising light borrowed from clipped
-// regions.
+// for line-aware denoising, neutralising light borrowed from clipped
+// regions and restoring true luminance in lighter-than-measured denoising.
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 fn hash_bytes(bytes: impl IntoIterator<Item = u8>) -> u64 {
     bytes.into_iter().fold(0xcbf29ce484222325, |hash, byte| (hash ^ byte as u64).wrapping_mul(0x100000001b3))
@@ -208,12 +208,12 @@ fn main_render_golden_hashes() {
         0x9dfc1b97ba2f3f8c,
         0x91b22cc14c984080,
         0x91b22cc14c984080,
-        0xa3ef08515752c637,
-        0xa063c906a2918318,
-        0x2b7c755f72c33014,
-        0xea7fb126d579fc2e,
-        0x1602cb4c75c276cf,
-        0x1602cb4c75c276cf,
+        0x9cbd7100cbd3b1bb,
+        0xf61f6c8280f21837,
+        0xc6959dbd329ea976,
+        0x15097f151109f819,
+        0x67e5500b58563491,
+        0x67e5500b58563491,
         0x771c595b180888bb,
         0xaf2706b104593b89,
         0x6e15735ad6b97b29,
