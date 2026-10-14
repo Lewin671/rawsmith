@@ -753,7 +753,7 @@ fn brief_keeps_losses_and_drops_looks() {
     let old = f.recipe("old.json", json!({"rawsmith": "0.1.0", "exposure": 0.2}));
     let report = run(&["compare", s(&raw), "--recipe", s(&old), "--brief", "-o", s(&output)], true);
     assert!(report["panels"][1]["recipe_compatibility"]["note"].is_string(), "{report}");
-    let current = f.recipe("new.json", json!({"exposure": 0.2}));
+    let current = f.recipe("new.json", json!({"rawsmith": env!("CARGO_PKG_VERSION"), "exposure": 0.2}));
     let report = run(&["compare", s(&raw), "--recipe", s(&current), "--brief", "-o", s(&output)], true);
     assert!(report["panels"][1].get("recipe_compatibility").is_none());
 }
