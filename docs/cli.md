@@ -90,7 +90,7 @@ are reported as JSON errors.
 `edit`/`auto`. `recipe` contains the effective settings, including any
 `--set` trial. `render` never saves a recipe, even with trial settings.
 
-Add `--brief` to `render`, `edit` or `auto` for the editing loop. It keeps
+Add `--brief` to `render`, `edit` or `auto` for the editing loop (on `compare` it keeps each panel's kind, recipe file, size and `losses_against_camera`). It keeps
 `output`, encoded `output_bytes`, `quality`, `quality_limited_by`,
 `output_replaced`, `output_color_space`,
 `recipe_file`, `recipe_saved`, `white_balance`, `region`, sensor clipping and
