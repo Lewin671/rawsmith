@@ -19,7 +19,7 @@ by fresh acceptance and control checks; uncertainty or failure retains the
 baseline. The selector requires Python 3.8+, Codex and explicit cloud
 consent; `rawsmith` itself continues to render offline.
 
-0.6.0 came out of rounds of AI editing on held-out photos, fixing what the
+0.6.0 came out of rounds of AI editing on real photos, fixing what the
 editors tripped on: `compare --region` puts the camera's pixels beside
 yours at full resolution, `compare` notes colours that turned to another
 hue, black point and curve no longer draw a hard disc around the sun,

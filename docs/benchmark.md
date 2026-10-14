@@ -17,8 +17,8 @@ Intel i7-10700 (8 cores / 16 threads), macOS, release build.
 
 ## 0.6.0 editing acceptance
 
-Codex `gpt-6.1-sol` (high effort) edited the ten sealed photos with the
-0.6.0 binary and skill from a plain "please edit these photos" request,
+Codex `gpt-6.1-sol` (high effort) edited the ten photos of the earlier
+sealed set with the 0.6.0 binary and skill from a plain "please edit these photos" request,
 without the selector. Its renders were judged blind in both orders by
 Codex `gpt-6.1-sol` at low effort with the standard prompt, against the
 camera JPEG and against the accepted 0.2.0 edits of the same photos
@@ -35,9 +35,13 @@ The first two edit runs under earlier skill drafts lost 3-5-2 and 4-4-2
 to the 0.2.0 edits — murky backlit foliage, then loose framing — which led
 to the skill's guidance on readable shadows and decisive crops. One of the
 two remaining losses came from lowering high-ISO noise reduction far
-below the measured strength, now bounded in the skill. Ten photos, one
-edit run each, with editor and judge sharing a model family: evidence of
-no regression on this set, not a guarantee. (In the renderer row, the
+below the measured strength; the skill now bounds that, but the final
+skill was not re-run on the set. The other loss (more bright sky kept
+above a backlit landscape) is unresolved. Because these results shaped
+the skill, this is development evidence on a reused set, not held-out
+acceptance: ten photos, one edit run each, with editor and judge sharing
+a model family. It shows the edits ahead of the camera on every photo and
+ahead of the 0.2.0 edits on balance, not that no photo regressed. (In the renderer row, the
 two missed controls were flattened versions the judge preferred on one
 dark-foreground photo.)
 
