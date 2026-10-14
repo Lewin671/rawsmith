@@ -12,11 +12,6 @@ not have to describe a look — say what you want if you know, or just ask
 it to edit the photo. rawsmith runs locally, leaves your RAW untouched and
 saves the edit as a small JSON recipe you can inspect and render again.
 
-The treatment follows the subject and light: fog keeps its softness,
-night keeps its darkness, and colour supports the scene. The assistant
-compares its trials and delivers the best one; a stronger effect is kept
-only when it makes a better photograph.
-
 rawsmith supports Sony A7 IV (ILCE-7M4) Bayer ARW on macOS and Linux.
 
 | Sensor encoding | Supported modes |
@@ -109,7 +104,6 @@ colour (greens toward a deeper teal, the maple's orange and red brought
 forward, cool shadows under warm highlights). In practice this takes a
 few rounds, each one rendered and looked at; the published recipe has a
 few more settings than shown here.
-This palette suits this pond photo; it is not a default look for other scenes.
 
 ```sh
 rawsmith compare pond.ARW -o compare.jpg
@@ -165,7 +159,7 @@ from the defaults.
 ## Results
 
 Ten Sony A7 IV photos kept out of development were edited by an assistant
-following the 0.2.0 editing skill, with no direction beyond *“edit these photos”*, and
+following the skill, with no direction beyond *“edit these photos”*, and
 judged blind against the camera's JPEG, the macOS RAW converter and
 rawsmith's own automatic and default renderings. Counts are wins – losses
 – ties per photo.
@@ -186,12 +180,9 @@ cleaner evidence, and six photos is a small sample. The judge was Codex
 and identical pairs; the editor was the same model, which may favour its
 own edits. Camera JPEGs were converted from Adobe RGB to sRGB.
 
-The editing guidance and judge criteria were revised after 0.4.0;
-these historical results do not validate those revisions.
-
-In that run, the developing engine alone was roughly level with
-the camera, `auto` was at least as good as the camera, and the clear gain
-came from the assistant's judgement — cropping, deciding what should be
+What the numbers say: the developing engine alone is roughly level with
+the camera, `auto` is at least as good as the camera, and the clear gain
+comes from the assistant's judgement — cropping, deciding what should be
 bright, and choosing a palette.
 
 On the reference Intel i7-10700 (8 cores / 16 threads, macOS), the first

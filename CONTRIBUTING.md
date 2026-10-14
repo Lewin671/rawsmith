@@ -47,6 +47,17 @@ Anything that changes pixels should come with evidence:
 
 Prefer one focused improvement with a measured effect over a broad rewrite.
 
+Changes to the editing skill, rendering defaults or `auto` must not replace
+the accepted baseline when a photo comparison shows a confirmed regression.
+Compare old and new edits with the same engine where applicable, editing
+model, task and rendering size/path; keep the baseline judge criteria fixed.
+Check each photo, not just aggregate wins: gains on one scene do not excuse
+a loss on another. Recheck inconsistent verdicts and unresolved defects
+before acceptance. Until the candidate demonstrates improvement without
+confirmed losses on the checked scenes, retain the baseline as the default.
+Code review and passing synthetic tests alone do not establish better photos;
+report the sample coverage and remaining uncertainty.
+
 Project acceptance uses Codex for reviews, real-photo judging and the
 complete editing workflow. `bench/photos.py judge` defaults to the repository
 Codex adapter with `gpt-6.1-sol` at `low` reasoning effort; verify the adapter

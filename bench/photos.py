@@ -72,9 +72,6 @@ Look at both images. Decide which is the better finished photograph of this scen
 - colour: natural and pleasing, no unwanted cast, neither dull nor garish;
 - depth and clarity appropriate to the scene; mood preserved (fog should stay fog, a silhouette can stay a silhouette, snow should look like snow);
 - defects: halos, banding, blotchy noise, crushed or blown areas, artificial look.
-- composition and subject emphasis: does the framing and distribution of light help the picture, without losing useful context.
-
-Do not reward a rendering merely for being brighter, more saturated, more contrasty or more obviously edited. A restrained treatment can be the better finished photograph. Judge light and colour in context: night should not become day, soft fog need not have a deep black, and warm illumination need not be neutralised. Where people are visible, consider believable skin colour and texture. Do not penalise deliberate negative space or silhouettes simply for lacking detail.
 
 Judge only what you see. Do not guess which process made which image, and do not favour either position. If they are equally good, or differ only in ways that do not matter, answer "tie".
 

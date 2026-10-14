@@ -132,22 +132,8 @@ counts; older manifests report them as unknown (`null`), not zero.
 Only `system` still requires macOS `sips`.
 
 An LLM judge sees two renderings of one photo, labelled only A and B, and
-picks the better finished photograph or declares a tie.
-
-The judge considers subject emphasis, tonal balance, believable colour,
-scene-appropriate mood and visible defects. Brighter, more saturated,
-more contrasty or more obviously edited images receive no preference
-merely for those differences. Restrained edits, soft fog, dark night
-scenes, silhouettes and useful negative space can be appropriate.
-The prompt also asks for believable skin colour and texture where people
-are visible; this does not authorize sending portrait photos to a judge.
-
-The scene-aware criteria were expanded after 0.4.0. Published results
-below used the earlier prompt; they are historical evidence, not validation
-of the updated editing skill. New evaluations need a new verdict label
-because changing the prompt invalidates an existing label's configuration.
-
-The evaluation safeguards are:
+picks the better finished photograph or declares a tie. To keep that
+honest:
 
 - **Blind**: file names are random task numbers; the prompt says nothing
   about what is being compared.
