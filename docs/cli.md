@@ -133,7 +133,7 @@ amount, read `noise_reduction.strength` and set a number first:
 
 Neutral thin-edge false-colour protection is automatic in demosaicing and
 requires no recipe setting. `defringe` (0–100, default 0) adds stronger
-purple/blue fringe suppression after colour conversion. Setting it to 0
+purple, blue and pink fringe suppression after colour conversion. Setting it to 0
 turns off only the additional filter; it does not turn off the demosaic fix.
 Inspect full-resolution colour detail before saving additional suppression.
 
@@ -242,9 +242,10 @@ Set entry fields by replacing the list or removing/appending an entry; indexed
 | `center`, `radii` | Radial centre 0–1; semi-axes 0.01–2, fractions of width and height before ellipse rotation |
 | `rotation` | Radial clockwise degrees −180–180 (default 0), rotated in pixel space |
 | `feather` | Radial 0.01–1 (default 0.5); fade inside the outer ellipse over this fraction of its radius |
-| `invert` | Invert the shape to affect its outside; with luma alone invert the luminance selection |
+| `invert` | Invert the shape to affect its outside; without shape geometry invert the luma/colors selection |
 | `luma` | [low,high] display lightness 0–1, low < high; omit shape geometry to select luminance alone |
 | `luma_feather` | 0.02–0.5 (default 0.05), smooth transitions outside low/high; bounds 0/1 include black/white fully |
+| `colors` | HSL band names (`red` … `magenta`, no repeats); selects colourful pixels whose hue lies in those bands; omit shape geometry to select colour alone |
 | `exposure` | −3–3 EV |
 | `saturation` | −100–100, Oklab chroma multiplier as for the global control |
 | `contrast` | −100–100 offset to global contrast, clamped to its range; blends the corresponding filmic and colour rendering |
@@ -259,6 +260,15 @@ immutable selection, so one local edit cannot move another's threshold.
 A native-resolution luminance-guided refinement suppresses flat-patch grain
 while retaining thin high-contrast occluders. Soft thresholds and clamped
 weights avoid selection overshoot; inspect actual edges at 100%.
+
+Colour selection reads hue and chroma from the same Oklab guide. Band
+membership uses the HSL band weights, so adjacent named bands cover the hues
+between them completely; it fades in between chroma 0.015 and 0.045, leaving
+greys and near-neutral pixels out, since their hue is mostly noise. A joint
+guided filter (radius six native pixels, guided by lightness) smooths hue
+noise while keeping the selection's edges on lightness edges. Shape, luma and
+colour weights multiply. Everything of the selected colour is selected, not
+one object.
 
 Masked exposure offsets add in stops; masked shadows/highlights share one
 base layer after that exposure. They precede vignette and the global local-tone
@@ -285,8 +295,8 @@ This never saves a recipe and invalid indices preserve existing files. Indices
 refer to the effective list after all trial assignments; an appended entry has
 index equal to the previous list length.
 The diagnostic supports sRGB JPEG and 16-bit PNG; PNG is preferable for checking
-weights. There are no local temperature/tint controls, hue selections, brushes
-or semantic subject masks. White balance remains a global pre-demosaic operation.
+weights. There are no local temperature/tint controls, brushes or semantic
+subject masks. White balance remains a global pre-demosaic operation.
 
 ## Comparing versions
 
@@ -297,6 +307,8 @@ rawsmith compare photo.ARW -o comparison.jpg
 rawsmith compare photo.ARW --panel camera -o camera.jpg --size 1400
 # Earlier recipe versus the current saved edit, in this order
 rawsmith compare photo.ARW --panel recipe:earlier.json --panel saved -o rounds.png
+# Camera beside a recipe kept elsewhere: the same --recipe as auto, edit and render
+rawsmith compare photo.ARW --recipe edits/photo.json -o comparison.jpg
 # Camera, finished default and another recipe
 rawsmith compare photo.ARW --panel camera --panel default --panel recipe:alternate.json -o versions.jpg --size 1000
 ```
@@ -305,10 +317,12 @@ rawsmith compare photo.ARW --panel camera --panel default --panel recipe:alterna
 between panels. Repeat `--panel` in left-to-right order, selecting `camera`,
 `saved`, `default` or `recipe:FILE`. With no `--panel`, it selects `camera`
 then `saved`; a single explicit panel is also allowed, with no separator. `saved`
-reads `<raw>.rawsmith.json`, using defaults when it is missing. `default`
+reads `--recipe FILE` when given (it must exist), otherwise `<raw>.rawsmith.json`,
+using defaults when that sidecar is missing. `default`
 always uses the finished default recipe. A missing explicit `recipe:FILE`
 is an error. The command never saves recipes, and refuses to overwrite the
-RAW, its default sidecar, or any selected recipe (including file aliases).
+RAW, its default sidecar, the `--recipe` file, or any selected recipe
+(including file aliases).
 
 Developed panels include `noise_reduction` and `recipe_compatibility` with
 the same meanings as render reports. Camera panels have no noise measurement

@@ -125,9 +125,10 @@ fn suppress_stripes(image: &mut Image, strength: f32, radius: usize, stripe_rows
             let y = y + first;
             for (x, p) in row.iter_mut().enumerate() {
                 let centre = at(x, y);
-                // Blue through magenta, with some red support; ordinary blue sky
-                // and green/yellow edges are outside this range.
-                if centre[0] < -0.05 || centre[1] < 0.02 || centre[2] <= 1e-8 {
+                // Blue through magenta to pink: the fringe on twigs against a
+                // blown sky is often more red than blue. Ordinary blue sky and
+                // orange/yellow/green edges are outside this range.
+                if centre[0] < -0.05 || centre[1] < -0.02 || centre[0] + centre[1] < 0.03 || centre[2] <= 1e-8 {
                     continue;
                 }
                 // Three supported directions cover a surface quadrant, including
@@ -175,7 +176,8 @@ fn suppress_stripes(image: &mut Image, strength: f32, radius: usize, stripe_rows
                     let blue_excess = centre[1] - a[1].max(b[1]);
                     // Violet may have blue excess without red excess. Permit
                     // that only when red is not deficient relative to its support.
-                    let excess = blue_excess.min(red_excess + 0.04);
+                    // Pink is the mirror case: red excess, with blue not deficient.
+                    let excess = blue_excess.min(red_excess + 0.04).max(red_excess.min(blue_excess + 0.04));
                     if excess <= 0.02 {
                         continue;
                     }
@@ -282,6 +284,44 @@ mod tests {
         suppress(&mut image, 1.0, 3);
         let p = image.at(18, 12);
         assert!((p[2] - p[1]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_thin_pink_fringe_is_suppressed_but_orange_edges_and_red_surfaces_stay() {
+        let edge = |fringe: [f32; 3]| {
+            let mut image = Image::new(40, 24);
+            for y in 0..24 {
+                for x in 0..40 {
+                    image.data[y * 40 + x] = if x < 18 {
+                        [0.03; 3]
+                    } else if x < 20 {
+                        fringe
+                    } else {
+                        [1.0; 3]
+                    };
+                }
+            }
+            // The edge-transfer pass alone: the speck pass calms any colour
+            // a fourfold contrast surrounds, by design.
+            suppress_stripes(&mut image, 1.0, 3, 64);
+            image.at(18, 12)
+        };
+        // Pink: red well above green, blue level with it (outside the old purple gate).
+        let p = edge([0.6, 0.2, 0.2]);
+        assert!((p[0] - p[1]).abs() < 1e-6 && (p[2] - p[1]).abs() < 1e-6, "{p:?}");
+        // Orange is real colour at an edge (a lit branch, a lamp), not fringing.
+        assert_eq!(edge([0.6, 0.35, 0.05]), [0.6, 0.35, 0.05]);
+        // A broad red surface against white has support on its inside.
+        let mut image = Image::new(80, 60);
+        for y in 0..60 {
+            for x in 0..80 {
+                let red = (20..60).contains(&x) && (15..45).contains(&y);
+                image.data[y * 80 + x] = if red { [0.7, 0.15, 0.2] } else { [0.9; 3] };
+            }
+        }
+        let original = image.clone();
+        suppress(&mut image, 1.0, 3);
+        assert!(image.data.iter().zip(&original.data).all(|(a, b)| a == b));
     }
 
     #[test]

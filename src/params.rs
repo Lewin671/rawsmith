@@ -137,6 +137,8 @@ pub struct LocalMask {
     pub luma: Option<[f64; 2]>,
     #[serde(skip_serializing_if = "is_default_luma_feather")]
     pub luma_feather: f64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub colors: Vec<String>,
     #[serde(skip_serializing_if = "is_zero")]
     pub exposure: f64,
     #[serde(skip_serializing_if = "is_zero")]
@@ -162,6 +164,7 @@ impl Default for LocalMask {
             invert: false,
             luma: None,
             luma_feather: default_luma_feather(),
+            colors: Vec::new(),
             exposure: 0.0,
             saturation: 0.0,
             contrast: 0.0,
@@ -186,10 +189,10 @@ impl LocalMask {
                 }
                 match (self.from, self.to) {
                     (Some(a), Some(b)) if point(a) && point(b) && (a[0] - b[0]).hypot(a[1] - b[1]) >= 0.02 => {}
-                    (None, None) if self.luma.is_some() => {}
+                    (None, None) if self.luma.is_some() || !self.colors.is_empty() => {}
                     _ => {
                         return Err(fail(
-                            "linear requires from/to points in 0..1 at least 0.02 apart; omit both for luma alone",
+                            "linear requires from/to points in 0..1 at least 0.02 apart; omit both for luma or colors alone",
                         ))
                     }
                 }
@@ -217,6 +220,17 @@ impl LocalMask {
         }
         if !(0.02..=0.5).contains(&self.luma_feather) {
             return Err(fail("luma_feather must be 0.02..0.5 display lightness"));
+        }
+        for (i, colour) in self.colors.iter().enumerate() {
+            if !HSL_BANDS.contains(&colour.as_str()) {
+                return Err(fail(&format!(
+                    "unknown color '{colour}'; colors are HSL band names: {}",
+                    HSL_BANDS.join(", ")
+                )));
+            }
+            if self.colors[..i].contains(colour) {
+                return Err(fail(&format!("color '{colour}' is listed twice")));
+            }
         }
         if !(-3.0..=3.0).contains(&self.exposure) {
             return Err(fail("exposure must be -3..3 EV"));
@@ -656,7 +670,7 @@ pub fn schema() -> Value {
         "other": [
             {"path": "curve", "default": [], "description": "Optional tone curve applied after tone mapping: [[input, output], ...] points in 0..1 on display brightness, strictly increasing inputs, joined smoothly. [0,0] and [1,1] are implied when not given. Points pull their whole neighbourhood, so pin the tones you want unchanged, e.g. lift only shadows with [[0.15,0.2],[0.4,0.4]]. Empty means none."},
             {"path": "gradients", "default": [], "description": "Up to 4 graduated filters, e.g. [{\"from\":[0.5,0],\"to\":[0.5,0.55],\"exposure\":-0.7,\"saturation\":15}] darkens and enriches a sky: full effect at and beyond `from`, fading to none at `to`; points are [x, y] fractions of the final picture from the top left. exposure is in stops (-3..3), saturation -100..100. --set gradients=[...] replaces the list; gradients+={...} appends one object; gradients-=INDEX removes a zero-based current-list index. Assignments run in order."},
-            {"path": "masks", "default": [], "max_entries": MAX_MASKS, "description": "Local shape times luminance selection. masks=[...] replaces; masks+={...} appends; masks-=INDEX removes a zero-based index. See local_masks for fields and ranges; render --show-mask INDEX checks placement."},
+            {"path": "masks", "default": [], "max_entries": MAX_MASKS, "description": "Local shape times luminance and colour selection. masks=[...] replaces; masks+={...} appends; masks-=INDEX removes a zero-based index. See local_masks for fields and ranges; render --show-mask INDEX checks placement."},
             {"path": "lens_corrections", "default": true, "description": "Apply the camera's embedded distortion, vignetting and chromatic aberration corrections."},
         ],
         "hsl_bands": HSL_BANDS,
@@ -676,9 +690,10 @@ fn mask_schema() -> Value {
             {"path":"radii", "min":0.01,"max":2,"description":"Ellipse semi-axes [horizontal,vertical] as fractions of finished width/height before rotation."},
             {"path":"rotation", "min":-180,"max":180,"default":0,"description":"Clockwise ellipse rotation in degrees, in pixel space."},
             {"path":"feather", "min":0.01,"max":1,"default":0.5,"description":"Radial fade occupies this fraction of the radius inside the ellipse; outer boundary is zero."},
-            {"path":"invert", "default":false,"description":"Invert the shape (outside ellipse); with luma alone invert the luma selection."},
+            {"path":"invert", "default":false,"description":"Invert the shape (outside ellipse); without a shape invert the luma/colors selection."},
             {"path":"luma", "min":0,"max":1,"description":"[low,high] display Oklab lightness before local edits, black/white points and curve; multiply with shape."},
             {"path":"luma_feather", "min":0.02,"max":0.5,"default":0.05,"description":"Soft lightness transitions outside low/high; endpoints 0 and 1 remain fully selected."},
+            {"path":"colors", "values": HSL_BANDS, "default":[],"description":"Select colourful pixels whose hue falls in these HSL bands, e.g. [\"yellow\",\"orange\"] for autumn leaves against a blue sky; neighbouring bands blend, near-neutral pixels are excluded, and edges follow lightness. Multiplies with shape and luma."},
             {"path":"exposure", "min":-3,"max":3,"default":0,"description":"Scene-linear brightness offset in EV, weighted by mask."},
             {"path":"saturation", "min":-100,"max":100,"default":0,"description":"Oklab chroma offset, same multiplier as global saturation."},
             {"path":"contrast", "min":-100,"max":100,"default":0,"description":"Offset to global filmic contrast, clamped to -100..100; mask blends tone and colour rendering."},
@@ -696,6 +711,21 @@ mod tests {
     fn empty_recipe_is_the_default() {
         assert_eq!(Params::from_json("{}").unwrap(), Params::default());
         assert_eq!(Params::default().to_sparse(), json!({}));
+    }
+
+    #[test]
+    fn mask_colours_are_band_names_and_stand_alone() {
+        let ok = Params::from_json(r#"{"masks":[{"colors":["yellow","orange"],"exposure":0.5}]}"#).unwrap();
+        assert_eq!(ok.to_sparse()["masks"][0]["colors"], json!(["yellow", "orange"]));
+        for (text, message) in [
+            (r#"{"masks":[{"colors":["gold"]}]}"#, "unknown color 'gold'"),
+            (r#"{"masks":[{"colors":["red","red"]}]}"#, "listed twice"),
+            (r#"{"masks":[{"exposure":1}]}"#, "omit both for luma or colors alone"),
+        ] {
+            let error = Params::from_json(text).unwrap_err().to_string();
+            assert!(error.contains(message), "{error}");
+        }
+        assert!(Params::default().to_sparse().get("masks").is_none());
     }
 
     #[test]

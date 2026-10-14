@@ -162,23 +162,102 @@ impl Geometry {
     }
 }
 
+/// Below this Oklab chroma a pixel has no dependable hue; selection reaches
+/// full strength one ramp width above it.
+const COLOUR_FLOOR: f32 = 0.015;
+const COLOUR_RAMP: f32 = 0.03;
+/// Joint guided filter: hue is noisy at native resolution, but the edges of
+/// a coloured object are also edges in lightness, so the guide keeps them.
+const COLOUR_RADIUS: usize = 6;
+const COLOUR_EPS: f32 = 0.0004;
+
+/// Raw membership of each pixel in a set of HSL bands, from the same band
+/// weights as `hsl.*`, so bands that neighbour each other select their hues
+/// in between completely.
+fn colour_membership(lab: &[[f32; 3]], width: usize, height: usize, bands: &[bool; 8]) -> Plane {
+    Plane {
+        width,
+        height,
+        data: lab
+            .par_iter()
+            .map(|&[_, a, b]| {
+                let chroma = (a * a + b * b).sqrt();
+                let (i, j, t) = crate::adjust::band_weights(b.atan2(a).to_degrees());
+                let hue = bands[i] as u8 as f32 * (1.0 - t) + bands[j] as u8 as f32 * t;
+                hue * smooth((chroma - COLOUR_FLOOR) / COLOUR_RAMP)
+            })
+            .collect(),
+    }
+}
+
+fn guided(guide: &Plane, input: &Plane, radius: usize, eps: f32) -> Plane {
+    let product = |a: &Plane, b: &Plane| Plane {
+        width: a.width,
+        height: a.height,
+        data: a.data.par_iter().zip(&b.data).map(|(a, b)| a * b).collect(),
+    };
+    let mean_i = mask_mean(guide, radius);
+    let mean_p = mask_mean(input, radius);
+    let corr_ip = mask_mean(&product(guide, input), radius);
+    let corr_ii = mask_mean(&product(guide, guide), radius);
+    let mut a = corr_ii;
+    let mut b = mean_p;
+    a.data.par_iter_mut().zip(b.data.par_iter_mut()).enumerate().for_each(|(k, (a, b))| {
+        let mi = mean_i.data[k];
+        let var = (*a - mi * mi).max(0.0);
+        let cov = corr_ip.data[k] - mi * *b;
+        *a = cov / (var + eps);
+        *b -= *a * mi;
+    });
+    let a = mask_mean(&a, radius);
+    let mut b = mask_mean(&b, radius);
+    b.data.par_iter_mut().enumerate().for_each(|(k, out)| {
+        *out = (a.data[k] * guide.data[k] + *out).clamp(0.0, 1.0);
+    });
+    b
+}
+
 pub(crate) struct Masks<'a> {
     entries: &'a [LocalMask],
     geometry: Vec<Geometry>,
     lightness: Option<Plane>,
+    /// Refined colour selection per entry that names colours.
+    colours: Vec<Option<Plane>>,
 }
 
 impl<'a> Masks<'a> {
     pub(crate) fn new(image: &Image, params: &'a Params, spaces: &Spaces) -> Self {
+        let filmic = Filmic::new(params.contrast as f32, crate::pipeline::BASE_EXPOSURE.exp2());
         let lightness = params.masks.iter().any(|m| m.luma.is_some()).then(|| {
-            let filmic = Filmic::new(params.contrast as f32, crate::pipeline::BASE_EXPOSURE.exp2());
             let guide = Plane::from_fn(image, |p| spaces.to_oklab(filmic.map_rgb(p))[0].clamp(0.0, 1.0));
             refine_lightness(guide)
         });
+        let mut colours = vec![None; params.masks.len()];
+        if params.masks.iter().any(|m| !m.colors.is_empty()) {
+            let lab: Vec<[f32; 3]> = image.data.par_iter().map(|&p| spaces.to_oklab(filmic.map_rgb(p))).collect();
+            let guide = Plane {
+                width: image.width,
+                height: image.height,
+                data: lab.par_iter().map(|p| p[0].clamp(0.0, 1.0)).collect(),
+            };
+            let mut done: Vec<([bool; 8], usize)> = Vec::new();
+            for (n, entry) in params.masks.iter().enumerate().filter(|(_, m)| !m.colors.is_empty()) {
+                let bands = crate::params::HSL_BANDS.map(|band| entry.colors.iter().any(|c| c == band));
+                // Entries that name the same colours share one selection.
+                if let Some(&(_, earlier)) = done.iter().find(|(b, _)| *b == bands) {
+                    colours[n] = colours[earlier].clone();
+                    continue;
+                }
+                let membership = colour_membership(&lab, image.width, image.height, &bands);
+                colours[n] = Some(guided(&guide, &membership, COLOUR_RADIUS, COLOUR_EPS));
+                done.push((bands, n));
+            }
+        }
         Self {
             entries: &params.masks,
             geometry: params.masks.iter().map(|m| Geometry::new(m, image.width, image.height)).collect(),
             lightness,
+            colours,
         }
     }
 
@@ -192,6 +271,9 @@ impl<'a> Masks<'a> {
             let lower = if low == 0.0 { 1.0 } else { smooth((v - low as f32 + feather) / feather) };
             let upper = if high == 1.0 { 1.0 } else { smooth((high as f32 + feather - v) / feather) };
             luma = lower * upper;
+        }
+        if let Some(colour) = &self.colours[n] {
+            luma *= colour.data[y * colour.width + x];
         }
         if entry.invert {
             if self.geometry[n].all {
@@ -329,6 +411,53 @@ mod tests {
         p.masks[0].luma = Some([0.95, 1.0]);
         let product = Masks::new(&image, &p, &Spaces::new());
         assert_eq!(product.weight(0, 140, 50), 0.0);
+    }
+
+    #[test]
+    fn colour_selection_follows_hue_and_lightness_edges() {
+        // Yellow leaves, blue sky and a grey stone side by side.
+        let (w, h) = (240, 60);
+        let colour = |x: usize| match x {
+            0..80 => [0.40, 0.33, 0.04],
+            80..160 => [0.05, 0.10, 0.40],
+            _ => [0.2; 3],
+        };
+        let image = Image { width: w, height: h, data: (0..w * h).map(|i| colour(i % w)).collect() };
+        let p = params(r#"{"masks":[{"colors":["yellow","orange"],"exposure":1}]}"#);
+        let masks = Masks::new(&image, &p, &Spaces::new());
+        assert!(masks.weight(0, 40, 30) > 0.95, "{}", masks.weight(0, 40, 30));
+        assert!(masks.weight(0, 120, 30) < 0.02);
+        assert!(masks.weight(0, 200, 30) < 0.02);
+        // The edge follows lightness: it is complete within the filter radius.
+        assert!(masks.weight(0, 78, 30) > 0.9 && masks.weight(0, 82, 30) < 0.1);
+        let p = params(r#"{"masks":[{"colors":["blue"],"invert":true,"exposure":1}]}"#);
+        let masks = Masks::new(&image, &p, &Spaces::new());
+        assert!(masks.weight(0, 120, 30) < 0.02 && masks.weight(0, 40, 30) > 0.98 && masks.weight(0, 200, 30) > 0.98);
+        // Entries with the same colours share the selection; shape multiplies.
+        let p = params(
+            r#"{"masks":[{"colors":["yellow"],"exposure":1},{"shape":"radial","center":[0.1,0.5],"radii":[0.05,0.4],"colors":["yellow"],"exposure":1}]}"#,
+        );
+        let masks = Masks::new(&image, &p, &Spaces::new());
+        assert_eq!(masks.colours[0].as_ref().unwrap().data, masks.colours[1].as_ref().unwrap().data);
+        assert!(masks.weight(1, 24, 30) > 0.9 && masks.weight(1, 60, 30) == 0.0);
+    }
+
+    #[test]
+    fn colour_selection_is_quiet_on_noisy_near_neutral_areas() {
+        // Chroma noise on grey has random hue; it must not become a speckled selection.
+        let (w, h) = (160, 160);
+        let mut seed = 7u32;
+        let mut noise = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+        };
+        let data = (0..w * h).map(|_| [0.2 + 0.01 * noise(), 0.2 + 0.01 * noise(), 0.2 + 0.01 * noise()]).collect();
+        let image = Image { width: w, height: h, data };
+        let p = params(r#"{"masks":[{"colors":["yellow"],"exposure":1}]}"#);
+        let masks = Masks::new(&image, &p, &Spaces::new());
+        let max =
+            (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).map(|(x, y)| masks.weight(0, x, y)).fold(0.0, f32::max);
+        assert!(max < 0.05, "{max}");
     }
 
     #[test]

@@ -120,8 +120,8 @@ colour.
 
 ## 6. Defringe, noise reduction and geometry — `fringe.rs`, `pipeline.rs`
 
-Additional `defringe` (0–100, default 0) reduces thin purple/blue chroma
-outliers after colour conversion, before noise reduction, crop and resize.
+Additional `defringe` (0–100, default 0) reduces thin purple, blue and pink
+chroma outliers after colour conversion, before noise reduction, crop and resize.
 It requires strong luminance contrast and lower chroma support on both sides
 within a square radius of three native-resolution pixels. The reduced
 automatic analysis scene uses two half-resolution pixels. Supported purple
@@ -196,7 +196,8 @@ the reduced automatic analysis path remains an approximation.
 - `gradients` apply graduated exposure and saturation adjustments in the
   upright, cropped frame, preserving their original arithmetic.
 - `masks` (up to eight, in addition to four legacy gradients) multiply a
-  finished-frame linear/radial shape by an optional luminance selection.
+  finished-frame linear/radial shape by optional luminance and colour
+  selections.
   All entries use one immutable guide after exposure and legacy gradients:
   Oklab lightness of globally filmic-mapped RGB, before new masks and other
   finishing controls. A full-native-resolution self-guided filter (radius
@@ -208,7 +209,11 @@ the reduced automatic analysis path remains an approximation.
   speckle without downsampling away thin branches. Weights are bounded 0–1.
   Shape rotation is in pixel coordinates before dividing by the ellipse's
   semi-axes (fractions of frame width/height). Feather lies inside the outer
-  ellipse; inversion affects the shape, or the selection for luma alone.
+  ellipse; inversion affects the shape, or the selection without a shape.
+  Colour selection weights each pixel by its HSL band membership times a
+  chroma ramp (0.015–0.045 Oklab), then refines that plane with a joint
+  guided filter (radius 6, regularisation 0.0004) on the same lightness
+  guide; entries naming the same bands share one plane.
   Masked exposure offsets add in stops. Masked shadows/highlights use the
   existing log-luminance base and response, sharing a base across entries
   after masked exposure. Scene gains are bounded to ±32 stops and a largest

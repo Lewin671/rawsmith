@@ -218,8 +218,8 @@ Other cameras need a colour matrix and a test file; see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Local edits support four legacy graduated filters and eight linear/radial
-masks with optional luminance selection. There are no brushes, semantic subject
-masks, local white balance, spot removal or dust removal.
+masks with optional luminance and colour (hue band) selection. There are no
+brushes, semantic subject masks, local white balance, spot removal or dust removal.
 
 Known rendering weaknesses: with the sun in frame, pulling `highlights`
 far down shows the blown core as a disc with a visible edge where the

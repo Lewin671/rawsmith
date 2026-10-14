@@ -42,7 +42,7 @@ enum Command {
     Auto(Auto),
     /// Compare upright camera and recipe versions in one unlabelled image row
     #[command(
-        after_help = "With no --panel options, shows camera then saved. A single --panel is allowed; camera alone uses neutral framing. The camera uses the first non-camera panel's crop and rotation; other panels keep their own framing. Recipes are only read. Camera colour uses embedded JPEG declarations first, then RAW EXIF. Declared Adobe RGB (1998) is converted to sRGB; established sRGB rows are tagged. Unknown, conflicting or unverified camera colour produces a warning and an untagged row. Camera panels report color_declaration (source, color_space) and color_conversion."
+        after_help = "With no --panel options, shows camera then saved (the --recipe file, else the sidecar). A single --panel is allowed; camera alone uses neutral framing. The camera uses the first non-camera panel's crop and rotation; other panels keep their own framing. Recipes are only read. Camera colour uses embedded JPEG declarations first, then RAW EXIF. Declared Adobe RGB (1998) is converted to sRGB; established sRGB rows are tagged. Unknown, conflicting or unverified camera colour produces a warning and an untagged row. Camera panels report color_declaration (source, color_space) and color_conversion."
     )]
     Compare(Compare),
     /// Copy the embedded JPEG unchanged, including metadata; report RAW orientation and needed rotation
@@ -138,7 +138,10 @@ struct Compare {
     /// Output JPEG or 16-bit PNG (output_color_space: sRGB or mixed-unmanaged); output_replaced reports whether a file was replaced.
     #[arg(short, long)]
     output: PathBuf,
-    /// Panel, repeat in left-to-right order: camera, saved, default, or recipe:FILE
+    /// Recipe shown as the saved panel: the same --recipe given to auto, edit and render [default: <raw>.rawsmith.json next to the RAW]. Without --panel, compare shows camera and this recipe. A named file must exist.
+    #[arg(long)]
+    recipe: Option<PathBuf>,
+    /// Panel, repeat in left-to-right order: camera, saved, default, or recipe:FILE (saved is the --recipe file, else the sidecar)
     #[arg(long, value_name = "VERSION")]
     panel: Vec<OsString>,
     /// Bound each panel's longest edge; panels shrink to one shared height (at least 1)
@@ -183,6 +186,7 @@ impl Command {
                 validate_report_path(&args.raw)?;
                 validate_report_path(&args.output)?;
                 recipe_path(&Source { raw: args.raw.clone(), recipe: None, set: vec![] })?;
+                recipe_path(&Source { raw: args.raw.clone(), recipe: args.recipe.clone(), set: vec![] })?;
                 // Keep panel arguments as OS strings so non-UTF-8 recipe names
                 // reach the same JSON params error as other path arguments.
                 for panel in &args.panel {
@@ -667,9 +671,10 @@ fn compare_versions(args: Compare) -> Result<Value> {
         return Err(Error::Params("--size must be at least 1 pixel".into()));
     }
     protect_raw(&args.raw, &args.output, "output")?;
-    let saved = recipe_path(&Source { raw: args.raw.clone(), recipe: None, set: vec![] })?;
+    let sidecar = recipe_path(&Source { raw: args.raw.clone(), recipe: None, set: vec![] })?;
+    let saved = recipe_path(&Source { raw: args.raw.clone(), recipe: args.recipe.clone(), set: vec![] })?;
     // Protect the sidecar even when it isn't selected (or doesn't exist yet).
-    if same_file(&saved, &args.output) {
+    if same_file(&sidecar, &args.output) || same_file(&saved, &args.output) {
         return Err(Error::Params("output is also the saved recipe file; give them different names".into()));
     }
     let versions = if args.panel.is_empty() { vec!["camera".into(), "saved".into()] } else { args.panel };
@@ -681,7 +686,8 @@ fn compare_versions(args: Compare) -> Result<Value> {
             "camera" => ("camera", Params::default(), None, None),
             "default" => ("default", Params::default(), None, None),
             "saved" => {
-                let (params, loaded) = load_recipe(&saved, true)?;
+                // An explicitly named recipe that is missing is a mistake, not the defaults.
+                let (params, loaded) = load_recipe(&saved, args.recipe.is_none())?;
                 ("saved", params, loaded.as_ref().map(|_| saved.clone()), loaded)
             }
             _ => {

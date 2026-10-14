@@ -661,3 +661,37 @@ fn compare_honours_and_reports_jpeg_quality() {
     let report = run(&["compare", s(&raw), "--panel", "default", "-o", s(&png)], true);
     assert_eq!(report.get("quality"), Some(&Value::Null));
 }
+
+#[test]
+fn recipe_option_names_the_saved_panel_like_the_other_commands() {
+    let f = Fixture::new("recipe-option");
+    let raw = f.raw(1, Some(&jpeg(96, 64, true)));
+    let sidecar = f.recipe("frame.ARW.rawsmith.json", json!({"exposure": 1.0}));
+    let chosen = f.recipe("chosen.json", json!({"crop": {"top": 0.25, "bottom": 0.75}}));
+    let originals = [std::fs::read(&sidecar).unwrap(), std::fs::read(&chosen).unwrap()];
+    let output = f.path("comparison.jpg");
+    let report = run(&["compare", s(&raw), "--recipe", s(&chosen), "-o", s(&output)], true);
+    let panels = report["panels"].as_array().unwrap();
+    assert_eq!(panels.iter().map(|p| p["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["camera", "saved"]);
+    assert_eq!(panels[1]["recipe_file"], s(&chosen));
+    assert_eq!(panels[1]["framing"], panels[0]["framing"]);
+    assert_eq!(report["framing_matched"], true);
+    // `saved` in an explicit panel list means the same file.
+    let report = run(
+        &["compare", s(&raw), "--recipe", s(&chosen), "--panel", "saved", "--panel", "default", "-o", s(&output)],
+        true,
+    );
+    assert_eq!(report["panels"][0]["recipe_file"], s(&chosen));
+
+    // A named recipe that does not exist is an error, not the defaults.
+    let missing = f.path("missing.json");
+    let before = std::fs::read(&output).unwrap();
+    let error = run(&["compare", s(&raw), "--recipe", s(&missing), "-o", s(&output)], false);
+    assert_eq!(error["error"]["kind"], "io");
+    assert!(!missing.exists());
+    // The chosen recipe is protected from being used as the output.
+    let error = run(&["compare", s(&raw), "--recipe", s(&chosen), "-o", s(&chosen)], false);
+    assert_eq!(error["error"]["kind"], "params");
+    assert_eq!(std::fs::read(&output).unwrap(), before);
+    assert_eq!([std::fs::read(&sidecar).unwrap(), std::fs::read(&chosen).unwrap()], originals);
+}

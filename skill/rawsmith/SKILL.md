@@ -68,7 +68,8 @@ keep a version.
    `rawsmith auto photo.ARW -o start.jpg --size 1400 --brief` saves a measured
    starting recipe and explains each choice in `decisions`;
    `rawsmith compare photo.ARW -o cmp.jpg --size 1400` shows the camera's JPEG (left)
-   beside the saved recipe (right), upright and in the same framing.
+   beside the saved recipe (right), upright and in the same framing
+   (add the same `--recipe FILE` when the recipe lives elsewhere).
    Open both images. `auto` aims for a sound, finished-looking base —
    brightness, contrast, colour and noise reduction from what it
    measured — but it does not interpret, and it never crops, changes
@@ -166,8 +167,8 @@ is restricted to the region.** Check `recipe_saved` and the saved-region
 `note` in brief reports. `edit --reset` starts over; `rawsmith schema` lists every
 parameter with its range and meaning. By default the recipe is saved
 next to the RAW as `photo.ARW.rawsmith.json`; pass the same
-`--recipe FILE` to `auto`, `edit` and `render` to keep it elsewhere or to
-keep several versions.
+`--recipe FILE` to `auto`, `edit`, `render` and `compare` to keep it
+elsewhere or to keep several versions.
 
 ## The controls
 
@@ -183,9 +184,9 @@ keep several versions.
 | More or less colour overall | `vibrance` (protects vivid colours), `saturation` |
 | Build a palette | `hsl.<band>.hue / saturation / luminance` — bands: red orange yellow green aqua blue purple magenta |
 | Mood | `grade.shadows` / `grade.highlights` (`hue` 0–360, `saturation`), `grade.balance` |
-| Local subject, corner or sky through branches | `masks` (radial, linear and luminance selection); `gradients` for a simple fade |
+| Local subject, corner or sky through branches | `masks` (radial, linear, luminance and colour selection); `gradients` for a simple fade |
 | Hold the eye in the frame | `vignette` (negative darkens the corners) |
-| Purple edges and coloured specks on branches against bright sky | `defringe` |
+| Purple or pink edges and coloured specks on branches against bright sky | `defringe` |
 | Noise; crispness | `denoise`, `sharpen` |
 
 Tone and colour controls run −100…100 with 0 meaning no change; `schema`
@@ -197,7 +198,10 @@ luminance makes a colour heavier or lighter (darker blue for a deeper
 sky, lighter yellow so leaves glow); saturation quietens colours that
 compete with the subject. This is how a picture gets a considered
 palette rather than "more colour". Keep luminance within about ±55:
-beyond that fine edges turn jagged.
+beyond that fine edges turn jagged. HSL acts in proportion to how
+colourful a pixel is, so muted colour — leaves in shade, olive foliage,
+a dull roof — barely moves; to brighten those, use a `colors` mask with
+`exposure` (see local masks).
 
 **Mood with grading.** `grade.shadows` and `grade.highlights` tint the
 dark and bright parts separately — cool shadows with warm highlights is
@@ -227,10 +231,16 @@ gradient also affects trees or buildings that cross it.
 foreground corner without a straight gradient reaching a nearby tree. Use a
 luma range for bright sky behind dark branches or roofs; multiply it by a
 radial/linear shape when only part of that brightness range needs editing.
+Use `colors` to select by hue — the HSL band names — when the subject has
+a colour its surroundings lack: gold leaves against blue sky, a blue car
+on brown leaves, a red roof among trees. It is the nearest thing to a
+subject mask: lift or saturate the leaves without lighting the sky
+between them.
 
 ```sh
 rawsmith render photo.ARW --set 'masks=[{"shape":"radial","center":[0.6,0.5],"radii":[0.18,0.22],"feather":0.6,"exposure":0.7}]' --show-mask 0 -o mask.png --size 1400
 rawsmith edit photo.ARW --set 'masks+={"luma":[0.75,1],"luma_feather":0.08,"exposure":-0.4}' -o preview.jpg --size 1400
+rawsmith edit photo.ARW --set 'masks+={"colors":["yellow","orange"],"exposure":0.5,"saturation":10}' -o preview.jpg --size 1400
 ```
 
 Check placement first with `render --show-mask N`: white is selected, black
@@ -239,16 +249,20 @@ apply the same assignment with `edit` after checking. Check the photo and mask
 with a full-resolution `--region` across the boundary, not just a preview.
 Radial centre and radii are fractions of finished width/height; `rotation` is
 clockwise, `feather` fades inside the ellipse, and `invert:true` selects outside.
-Default shape is linear with `from`/`to`; omit geometry for luma alone.
+Default shape is linear with `from`/`to`; omit geometry for luma or colors alone.
 Luma uses display lightness 0–1 before the new local edits and finishing controls;
 its guided refinement suppresses speckle and preserves thin high-contrast edges.
 It is a brightness selection, not recognition of a sky or subject.
+`colors` selects pixels whose hue lies in the named bands (neighbouring bands
+blend smoothly); greys and near-neutral pixels are left out, and its edges
+follow lightness. Shape, luma and colors multiply. Anything else of the same
+colour is selected too — crop it out, or limit the selection with a radial.
 
 `masks=[...]` replaces up to eight entries; `masks+={...}` appends one;
 `masks-=INDEX` removes one in current-list order. Available adjustments are
 exposure (−3–3 stops), saturation, contrast, shadows and highlights (−100–100).
-Contrast is an offset to global filmic contrast. Local temperature/tint and
-hue ranges are not available. Change framing first, then reposition masks.
+Contrast is an offset to global filmic contrast. Local temperature/tint is
+not available. Change framing first, then reposition masks.
 Strong lifting still exposes noise; darkening sensor-lost sky still makes grey.
 For a blurred foreground corner, start with a radial alone: a brightness
 threshold can reshape the soft edge.
@@ -314,6 +328,11 @@ full-resolution export's report as well.
 - A scene with one dominant colour (autumn leaves, a blue hour, a sunset)
   gets stronger when the other colours are quietened, not when everything
   is saturated.
+- Warmer white balance and a warm grade together turn a mixed palette
+  into one brown: a blue subject goes grey, green moss and red leaves
+  vanish. Use one of them, and when `compare` says a colour "has nearly
+  gone", bring it back (`hsl.<band>.saturation`, a `colors` mask) unless
+  removing it was the point.
 - Keep the scene's character: fog stays soft, dusk stays dark, snow is
   bright and keeps its texture, a sunset keeps its warmth.
 - Snow and fog: bright snow sits around 85–93 at `tones.p95`; use
@@ -323,9 +342,11 @@ full-resolution export's report as well.
 - With the sun or a blown sky in frame, keep `highlights` above about
   −40: further down the lost area turns into a grey slab or a disc with
   a hard edge, and fine branches against it pick up coloured specks.
-- Purple edges and coloured specks on twigs against a blown sky:
-  `defringe` 50–90 (check purple flowers and small coloured lights at
-  100% first). It does not fix wide out-of-focus halos.
+- Purple or pink edges and coloured specks on twigs against a blown sky:
+  `defringe` 50–90, up to 100 for twigs around the sun; look at a 100%
+  `--region` of the twigs, since previews hide it (check purple flowers,
+  thin red details and small coloured lights at 100% first). It does not
+  fix wide out-of-focus halos.
 - If two rounds in a row did not visibly improve the picture, the idea
   is exhausted: finish, or change the idea.
 
@@ -342,8 +363,8 @@ frame and APS-C), and lossless-compressed in full-frame L and APS-C M.
 Lossless M/S sizes are reported as unsupported.
 
 Local adjustments support four legacy gradients plus eight linear/radial masks
-with optional luminance selection. No brushes, semantic subject masks, local
-white balance, hue selection, spot/dust removal or black-and-white mixer.
+with optional luminance and colour selection. No brushes, semantic subject
+masks, local white balance, spot/dust removal or black-and-white mixer.
 If you see sensor dust, a stray object or a hot pixel, tell the user;
 cropping is the only workaround. Output is sRGB JPEG or 16-bit PNG
 without camera metadata.
