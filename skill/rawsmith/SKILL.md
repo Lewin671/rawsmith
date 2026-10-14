@@ -342,6 +342,10 @@ full-resolution export's report as well.
 
 - Crop early. An empty sky or a distracting edge weakens everything else,
   and positions for gradients, masks and regions depend on the crop.
+  Blurred foreground objects cutting in from the sides (out-of-focus
+  trunks, leaves, railings) pull the eye from a sharp subject; crop past
+  them unless they frame it on purpose, keeping the subject's
+  surroundings.
 - Light before colour: decide what is bright and what recedes first.
 - Daylight scenes with backlight or deep shade (trees against the sky, a
   garden, a riverbank, a subject under leaves) want their shadows
