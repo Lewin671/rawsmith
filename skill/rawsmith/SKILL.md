@@ -410,7 +410,12 @@ full-resolution export's report as well.
   centres to white; pull `highlights` down in the same mask and check them
   with `compare --region`. Lifting textured subjects (leaves, feathers) at
   ISO 3200 and above also lifts how smooth noise reduction left them:
-  look at 100% and lower `denoise` by 10–20 if they turn to flat patches.
+  if they turn to flat patches at 100%, lower `denoise` by at most 10–15
+  below the measured strength the report gives. Further down, grain and
+  coloured speckle come back across the whole frame, which reads worse
+  than smooth leaves; lifted shadows and `sharpen` make that grain
+  stronger still, so a lifted high-ISO picture wants the measured
+  strength or more.
 - `colors` masks select by hue, so `yellow` also takes yellow-green
   foliage and `blue` takes blue water. Muted colour is only partly
   selected — it fades in with chroma — so shaded or olive leaves respond
