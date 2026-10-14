@@ -481,7 +481,11 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
                     if reconstructed.iter().any(|&r| r) {
                         let mut marks = Image::new(image.width, image.height);
                         marks.data.par_iter_mut().zip(&reconstructed).for_each(|(p, &r)| *p = [r as u8 as f32; 3]);
-                        reconstructed = match lens::correct(&marks, tables) {
+                        // Geometry and colour shifts only: a zero vignetting
+                        // table is unit gain, so marks are not amplified.
+                        let geometry =
+                            crate::arw::LensTables { vignetting: vec![0; tables.vignetting.len()], ..tables.clone() };
+                        reconstructed = match lens::correct(&marks, &geometry) {
                             Some(moved) => moved.data.par_iter().map(|p| p.iter().any(|&v| v >= 0.5)).collect(),
                             None => vec![false; corrected.width * corrected.height],
                         };
