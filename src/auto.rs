@@ -380,12 +380,23 @@ fn propose(raw: &RawImage, base: &Params, camera: Option<Measure>, camera_note: 
     ));
     let shadow_lift = (35.0 - neutral.p10).clamp(0.0, 30.0);
     let subject_lift = backlit * (55.0 - neutral.p50).clamp(0.0, 50.0);
-    params.shadows = round_to(shadow_lift.max(subject_lift) * (1.0 - high_key), 5.0);
+    // Night and blue hour are meant to be dark: their deep shadows are the
+    // scene, not an exposure problem, and lifting them turns the picture
+    // grey and noisy. Scene brightness from the exposure settings (EV100)
+    // tells a night street from a shaded daytime subject.
+    let ev100 = match (raw.meta.aperture, raw.meta.shutter_seconds, raw.meta.iso) {
+        (Some(n), Some(t), Some(iso)) if n > 0.0 && t > 0.0 && iso > 0 => {
+            Some(((n * n / t).log2() - (iso as f64 / 100.0).log2()) as f32)
+        }
+        _ => None,
+    };
+    let night = ev100.map_or(0.0, |ev| 1.0 - smoothstep(3.0, 7.0, ev));
+    params.shadows = round_to(shadow_lift.max(subject_lift) * (1.0 - high_key) * (1.0 - 0.65 * night), 5.0);
     params.highlights =
         round_to(-((neutral.p90 - 90.0) * 1.5).clamp(0.0, 20.0) * (1.0 - high_key) * (1.0 - sensor.lost_bright), 5.0);
     notes.push(format!(
-        "shadows {:+.0}, highlights {:+.0}: p10 {:.0}, median {:.0}, p90 {:.0}, backlight confidence {backlit:.2}; open shaded subjects, use local compression for recoverable highlights and leave sensor-lost sky alone",
-        params.shadows, params.highlights, neutral.p10, neutral.p50, neutral.p90
+        "shadows {:+.0}, highlights {:+.0}: p10 {:.0}, median {:.0}, p90 {:.0}, backlight confidence {backlit:.2}, night confidence {night:.2} (EV100 {}); open shaded subjects but keep night dark, use local compression for recoverable highlights and leave sensor-lost sky alone",
+        params.shadows, params.highlights, neutral.p10, neutral.p50, neutral.p90, ev100.map_or_else(|| "unknown".into(), |ev| format!("{ev:.1}"))
     ));
 
     // A small bright region is not evidence that the whole exposure is wrong.

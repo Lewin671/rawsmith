@@ -83,9 +83,11 @@ keep a version.
    the picture, and what should be quiet).
 
 4. **Build it in passes** with
-   `rawsmith edit photo.ARW --set key=value ... -o preview.jpg --size 1400 --brief`
-   (`key=value` sets, `key+=n` / `key-=n` nudges; the recipe is saved and
-   a preview rendered). Open every preview.
+   `rawsmith edit photo.ARW --set exposure=0.3 --set shadows=25 -o preview.jpg --size 1400 --brief`
+   — one `--set` per assignment, repeated (`key=value` sets, `key+=n` /
+   `key-=n` nudges); the recipe is saved and a preview rendered. Quote
+   anything with brackets or braces (`--set 'curve=[[0.25,0.2],[0.75,0.8]]'`)
+   so the shell does not expand it. Open every preview.
    - *Composition*: `crop`, `rotate`.
    - *Light*: `exposure`, `contrast`, `highlights`, `shadows`, `whites`,
      `blacks`, `curve`; `gradients` or `masks` to shape local light;
@@ -146,7 +148,9 @@ keep a version.
    disagreement keep the baseline. Read its JSON report; fallback is not a
    successful improvement. It requires Python 3.8+ and Codex and sends previews
    to Codex. Do not pass `--allow-cloud` without authorization. If authorization
-   or the helper is unavailable, compare visually in this session and keep
+   or the helper is unavailable, compare visually in this session —
+   `rawsmith compare photo.ARW --panel camera --panel recipe:baseline.json --panel recipe:candidate.json -o pick.jpg`
+   at the default size (smaller panels hide the difference) — and keep
    the baseline on doubt. Check selected native detail before delivery and
    restore the baseline if it introduces a defect. Deliver only one image.
 
@@ -174,7 +178,7 @@ elsewhere or to keep several versions.
 
 | To do this | Use |
 |---|---|
-| Strengthen the composition | `crop.left/top/right/bottom` (edge positions 0–1: `crop.top=0.1` removes the top tenth), `rotate` |
+| Strengthen the composition | `crop.left/top/right/bottom` are edge positions 0–1 measured from the left/top: `crop.top=0.1` removes the top tenth, `crop.bottom=0.9` the bottom tenth, `crop.right=0.85` the right 15%; `rotate` |
 | Overall brightness | `exposure` (stops) |
 | Warmth, colour of the light | `temperature` (K, higher is warmer), `tint` (+ magenta, − green) |
 | Tame a bright sky; open dark areas | `highlights` negative; `shadows` positive |
@@ -193,7 +197,11 @@ Tone and colour controls run −100…100 with 0 meaning no change; `schema`
 has exact ranges.
 
 **Palette with HSL.** Hue shifts turn one colour toward its neighbour
-(green toward deep teal, blue toward cyan, yellow toward gold);
+in the order red → orange → yellow → green → aqua → blue → purple →
+magenta → red: positive moves toward the next band, negative toward the
+previous (`hsl.green.hue=15` deep teal, `hsl.blue.hue=-15` cyan,
+`hsl.yellow.hue=-15` gold). Which band a colour falls in is listed in
+the full (non-brief) report's `hues_pct` and compare's `look.colours`;
 luminance makes a colour heavier or lighter (darker blue for a deeper
 sky, lighter yellow so leaves glow); saturation quietens colours that
 compete with the subject. This is how a picture gets a considered
@@ -342,6 +350,28 @@ full-resolution export's report as well.
 - With the sun or a blown sky in frame, keep `highlights` above about
   −40: further down the lost area turns into a grey slab or a disc with
   a hard edge, and fine branches against it pick up coloured specks.
+- A deep blue night or dusk sky often already sits at the edge of what
+  sRGB can show, so `saturation`, `vibrance` and `hsl.blue.saturation`
+  barely move it. Turn it towards purple first (`hsl.blue.hue` +10…+20)
+  and lift it a little (`hsl.blue.luminance` +10…+20); then it can take
+  more colour. compare's "blue has turned towards aqua" note points here.
+- `dehaze` also strengthens colour: on a blue haze it quickly turns the
+  whole frame a saturated blue. Pair it with less `vibrance` or
+  `hsl.blue.saturation`, and raise `denoise` a little if the haze turns
+  grainy.
+- `blacks` moves the black point by at most 8% of the display range, so
+  on a hazy or lifted picture whose darkest tones sit far above black it
+  barely changes anything; anchor the dark with a curve point
+  (`[0.3,0.2]`) or `dehaze` instead.
+- Snow, frost and white cloud: check them at 100% after raising `whites`
+  or `exposure`; texture goes before the preview shows it. Hold them with
+  `highlights` instead.
+- A top `gradient` stacked with a strong `vignette` turns sky corners
+  navy or black; use one, or back both off.
+- `colors` masks select by hue, so `yellow` also takes yellow-green
+  foliage and `blue` takes blue water. Muted colour is only partly
+  selected — it fades in with chroma — so shaded or olive leaves respond
+  less than the vivid ones.
 - Purple or pink edges and coloured specks on twigs against a blown sky:
   `defringe` 50–90, up to 100 for twigs around the sun; look at a 100%
   `--region` of the twigs, since previews hide it (check purple flowers,

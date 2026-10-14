@@ -331,14 +331,15 @@ because their JPEG is not developed by rawsmith.
 Every panel has a `look`: lightness percentiles `p1`, `p5`, `p50`, `p95`,
 `p99` and `spread`, mean chroma, pure white and pure black percentages, and
 `colours`, the share, chroma and lightness of each colour family holding at
-least 5% of the colourful pixels. When the row has a camera panel with
+least 5% of the colourful pixels, with its mean Oklab `hue` in degrees. When the row has a camera panel with
 established colour, each developed panel in the camera's framing also has
 `losses_against_camera`: plain sentences for what that version gave up
 against the camera's rendering — darkest tones lifted by five points or
 more, lightness spread below 80% of the camera's, one point more pure white
 or two more pure black, a colour family at under 80% of its chroma (and
-whether it also became paler), or one that nearly disappeared. A colour at
-over 150% is reported as well. These are measurements to check by eye, not
+whether it also became paler), one whose mean hue moved by eight degrees or
+more (named by the neighbouring band it turned towards), or one that nearly
+disappeared. A colour at over 150% is reported as well. These are measurements to check by eye, not
 faults: fog is meant to be soft. An empty list means none of these was
 measured, not that the edit is better. Panels with another framing have no
 such list.

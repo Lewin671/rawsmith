@@ -66,9 +66,10 @@ fn original_finish(mut image: Image, params: &Params, spaces: &Spaces) -> Image 
         if black != 0.0 || white_point != 1.0 || curve.is_some() {
             p = p.map(|v| {
                 let mut e = srgb_encode(v);
-                e = ((e - black) / (white_point - black)).clamp(0.0, 1.0);
+                // 0.6: light above white passes the black point and curve.
+                e = ((e - black) / (white_point - black)).max(0.0);
                 if let Some(lut) = &curve {
-                    e = tone::lut_eval(lut, e);
+                    e = if e <= 1.0 { tone::lut_eval(lut, e) } else { tone::lut_eval(lut, 1.0) + (e - 1.0) };
                 }
                 color::srgb_decode(e)
             });

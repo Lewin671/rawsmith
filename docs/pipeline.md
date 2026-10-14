@@ -249,7 +249,10 @@ the reduced automatic analysis path remains an approximation.
   bounded colour separation. There is no fixed saturation/vibrance boost or
   camera-style colour table.
   `contrast` changes the slope; `whites` adjusts the display white point.
-- `blacks` and the optional point `curve` act on display values.
+- `blacks` and the optional point `curve` act on display values. Light
+  above display white passes through them unclipped (the curve continues
+  with slope one above 1) and reaches gamut mapping as it does without
+  them; clipping each channel there drew a hard-edged disc around low suns.
 
 ## 8. Colour rendering and adjustments — `color.rs`, `adjust.rs`
 
@@ -398,6 +401,8 @@ The measurements and policy are:
   are heuristic gate strengths, not calibrated probabilities.
 - **Exposure and highlight cost:** local shadow/highlight adjustments precede
   exposure. Shadow lifting also uses backlight confidence and a dark median,
+  and is cut by up to 65% for night scenes (EV100 from aperture, shutter and
+  ISO, fading in from 7 down to 3), which are meant to stay dark,
   rather than just p10, to open a shaded subject (up to +50). Small bright
   regions cannot justify negative global EV. Only a broadly bright median
   (L50 > 85), weak high-key evidence (< 0.35) and < 1% complete sensor loss

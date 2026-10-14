@@ -245,11 +245,51 @@ fn denoise_with(image: &mut Image, strength: f32, luma_threshold: f32) {
         // Restoring all of that Y would bring the removed noise back as grain.
         input.data.par_iter_mut().zip(&guide.data).for_each(|(v, g)| *v += (*g - *v) * luma_blend);
         drop(guide);
+        remove_dark_impulses(&mut input, 3.0 * luma_sigma);
         let luma = crate::image::wavelet_denoise(input, luma_sigma, luma_threshold);
         image.data.par_iter_mut().enumerate().for_each(|(i, p)| {
             let gain = luma.data[i].max(0.0).powi(2) / color::luma(*p).max(1e-10);
             *p = p.map(|v| v * gain);
         });
+    }
+}
+
+/// Single dark pixels well below all eight neighbours (in square-root
+/// luminance) take the median of those neighbours. Wavelet shrinkage
+/// leaves such impulses behind as pepper on smooth fog and sky at high
+/// ISO. Only dark ones: a bright isolated pixel may be a star or a glint.
+fn remove_dark_impulses(plane: &mut Plane, margin: f32) {
+    let (w, h) = (plane.width, plane.height);
+    if w < 3 || h < 3 || margin <= 0.0 {
+        return;
+    }
+    let source = &plane.data;
+    let fixed: Vec<(usize, f32)> = (1..h - 1)
+        .into_par_iter()
+        .flat_map_iter(|y| {
+            (1..w - 1).filter_map(move |x| {
+                let v = source[y * w + x];
+                let mut around = [0.0f32; 8];
+                let mut n = 0;
+                for dy in [-1isize, 0, 1] {
+                    for dx in [-1isize, 0, 1] {
+                        if dx != 0 || dy != 0 {
+                            around[n] = source[(y as isize + dy) as usize * w + (x as isize + dx) as usize];
+                            n += 1;
+                        }
+                    }
+                }
+                let lowest = around.iter().copied().fold(f32::MAX, f32::min);
+                if v >= lowest - margin {
+                    return None;
+                }
+                around.sort_unstable_by(f32::total_cmp);
+                Some((y * w + x, 0.5 * (around[3] + around[4])))
+            })
+        })
+        .collect();
+    for (i, v) in fixed {
+        plane.data[i] = v;
     }
 }
 
@@ -601,6 +641,30 @@ fn finish_owned(mut image: Image, params: &Params, spaces: &Spaces) -> Image {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dark_impulses_go_but_bright_points_and_dark_lines_stay() {
+        let mut plane = Plane { width: 9, height: 9, data: vec![0.5; 81] };
+        plane.data[2 * 9 + 2] = 0.3; // dark speck
+        plane.data[6 * 9 + 6] = 0.9; // star
+        for y in 0..9 {
+            plane.data[y * 9 + 4] = 0.2; // a one-pixel dark line has dark neighbours
+        }
+        let before = plane.data.clone();
+        remove_dark_impulses(&mut plane, 0.05);
+        assert_eq!(plane.data[2 * 9 + 2], 0.5);
+        assert_eq!(plane.data[6 * 9 + 6], 0.9);
+        for y in 0..9 {
+            assert_eq!(plane.data[y * 9 + 4], 0.2);
+        }
+        let changed = plane.data.iter().zip(&before).filter(|(a, b)| a != b).count();
+        assert_eq!(changed, 1);
+        // Within the margin nothing moves.
+        let mut faint = Plane { width: 3, height: 3, data: vec![0.5; 9] };
+        faint.data[4] = 0.47;
+        remove_dark_impulses(&mut faint, 0.05);
+        assert_eq!(faint.data[4], 0.47);
+    }
 
     #[test]
     fn black_point_and_curve_do_not_draw_an_edge_inside_white_light() {

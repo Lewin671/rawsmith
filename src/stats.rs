@@ -166,6 +166,8 @@ pub struct BandLook {
     pub share_pct: f64,
     pub chroma: f64,
     pub lightness: f64,
+    /// Mean Oklab hue angle in degrees (0..360).
+    pub hue: f64,
 }
 
 /// A compact description of a rendering for comparing two versions of the
@@ -189,7 +191,7 @@ pub fn look(image: &Image, spaces: &Spaces) -> Look {
     let stats = image_stats(image, spaces);
     let step = ((image.width * image.height) as f32 / 400_000.0).sqrt().ceil().max(1.0) as usize;
     // Weight, chroma and lightness sums per band, on the same grid as the tones.
-    let mut bands = [[0.0f64; 3]; 8];
+    let mut bands = [[0.0f64; 5]; 8];
     for y in (0..image.height).step_by(step) {
         for x in (0..image.width).step_by(step) {
             let lab = spaces.to_oklab(apply(&spaces.srgb_to_work, image.at(x, y).map(srgb_decode)));
@@ -201,6 +203,9 @@ pub fn look(image: &Image, spaces: &Spaces) -> Look {
                     bands[band][0] += weight;
                     bands[band][1] += weight * c as f64 * 100.0;
                     bands[band][2] += weight * lab[0] as f64 * 100.0;
+                    // Unit hue vectors average without wrapping at 0/360.
+                    bands[band][3] += weight * (lab[1] / c) as f64;
+                    bands[band][4] += weight * (lab[2] / c) as f64;
                 }
             }
         }
@@ -221,19 +226,23 @@ pub fn look(image: &Image, spaces: &Spaces) -> Look {
             .iter()
             .zip(bands)
             .filter(|(_, [weight, ..])| *weight / total >= 0.05)
-            .map(|(name, [weight, chroma, lightness])| {
+            .map(|(name, [weight, chroma, lightness, a, b])| {
                 (
                     name.to_string(),
                     BandLook {
                         share_pct: tenth(weight / total * 100.0),
                         chroma: tenth(chroma / weight),
                         lightness: tenth(lightness / weight),
+                        hue: tenth(b.atan2(a).to_degrees().rem_euclid(360.0)),
                     },
                 )
             })
             .collect(),
     }
 }
+
+/// Oklab hue change, in degrees, that a colour family must show to be noted.
+const HUE_SHIFT: f64 = 8.0;
 
 /// Where an edit gave something up against a reference rendering of the same
 /// framing. These are the losses an editor tends not to see while pursuing
@@ -277,6 +286,20 @@ pub fn losses(reference: &Look, edit: &Look) -> Vec<String> {
             ));
             continue;
         };
+        // Hue order runs red, orange, yellow, green, aqua, blue, purple,
+        // magenta: a positive shift moves a colour towards the next band.
+        let shift = (now.hue - was.hue + 540.0).rem_euclid(360.0) - 180.0;
+        if shift.abs() >= HUE_SHIFT && was.chroma >= 6.0 {
+            let index = HSL_BANDS.iter().position(|b| b == name).unwrap_or(0);
+            let towards = HSL_BANDS[(index + if shift > 0.0 { 1 } else { HSL_BANDS.len() - 1 }) % HSL_BANDS.len()];
+            notes.push(format!(
+                "{name} has turned towards {towards}: hue {:.0} against {:.0}, {:+.0} degrees (hsl.{name}.hue {} brings it back; white balance and grading move it too)",
+                now.hue,
+                was.hue,
+                shift,
+                if shift > 0.0 { "negative" } else { "positive" }
+            ));
+        }
         let paler = now.lightness >= was.lightness + 6.0;
         if now.chroma < was.chroma * 0.8 {
             notes.push(format!(

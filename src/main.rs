@@ -738,7 +738,20 @@ fn main() -> ExitCode {
             print!("{e}");
             return ExitCode::SUCCESS;
         }
-        Err(e) => return fail("usage", e.to_string().trim()),
+        Err(e) => {
+            let mut message = e.to_string().trim().to_owned();
+            // A bare `name=value` after a --set assignment means a second
+            // assignment without its own --set.
+            if e.kind() == clap::error::ErrorKind::UnknownArgument
+                && e.get(clap::error::ContextKind::InvalidArg)
+                    .is_some_and(|arg| arg.to_string().contains('=') && !arg.to_string().starts_with('-'))
+            {
+                message.push_str(
+                    "\n\nhint: give every assignment its own --set, e.g. --set exposure=0.3 --set shadows=20",
+                );
+            }
+            return fail("usage", &message);
+        }
     };
     rawsmith::cache::configure(rawsmith::cache::Config::from_env());
     match run(cli) {

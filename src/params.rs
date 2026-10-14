@@ -389,17 +389,17 @@ pub fn fields() -> Vec<Field> {
             45.0,
             "Straighten: clockwise rotation in degrees; the frame is cropped to stay rectangular.",
         ),
-        field("crop.left", 0.0, 1.0, "Crop edge as a fraction of the upright image width."),
-        field("crop.top", 0.0, 1.0, "Crop edge as a fraction of the upright image height."),
-        field("crop.right", 0.0, 1.0, "Crop edge as a fraction of the upright image width."),
-        field("crop.bottom", 0.0, 1.0, "Crop edge as a fraction of the upright image height."),
+        field("crop.left", 0.0, 1.0, "Left edge position as a fraction of the upright width: 0.1 removes the left tenth."),
+        field("crop.top", 0.0, 1.0, "Top edge position as a fraction of the upright height: 0.1 removes the top tenth."),
+        field("crop.right", 0.0, 1.0, "Right edge position from the left, as a fraction of the upright width: 0.9 removes the right tenth."),
+        field("crop.bottom", 0.0, 1.0, "Bottom edge position from the top, as a fraction of the upright height: 0.9 removes the bottom tenth."),
     ];
     for band in HSL_BANDS {
         out.push(Field {
             path: format!("hsl.{band}.hue"),
             min: -100.0,
             max: 100.0,
-            doc: "Shifts this colour range's hue towards its neighbours.",
+            doc: "Shifts this colour range's hue: positive towards the next band in red, orange, yellow, green, aqua, blue, purple, magenta (yellow towards green, blue towards purple), negative towards the previous (yellow towards orange, blue towards aqua).",
         });
         out.push(Field {
             path: format!("hsl.{band}.saturation"),

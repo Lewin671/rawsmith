@@ -134,8 +134,11 @@ fn recoverable_coloured_highlights_do_not_require_dark_foreground() {
     // Hue-preserving gamut mapping can pin a channel at the sRGB boundary
     // even after tone compression. Do not demand desaturation to lower this
     // count: test highlight lightness, foreground cost and disclosure instead.
+    // Before 0.6 the black point clipped each channel at white, which
+    // darkened this coloured highlight as a side effect (and drew hard
+    // discs around low suns). Local compression alone moves it less.
     assert!(
-        report.tones.p99 < baseline.tones.p99 - 1.0,
+        report.tones.p99 < baseline.tones.p99 - 0.5,
         "local compression should create highlight tonal room without global darkening"
     );
     assert!(

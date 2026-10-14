@@ -1462,3 +1462,13 @@ fn byte_limit_handles_non_monotonic_tiny_jpegs() {
     ]);
     assert!(report["error"]["message"].as_str().unwrap().contains(&format!("{smallest} bytes")));
 }
+
+#[test]
+fn a_second_assignment_without_set_explains_the_fix() {
+    let (success, error) = run(&["render", "photo.ARW", "--set", "exposure=1", "shadows=20", "-o", "x.jpg"]);
+    assert!(!success);
+    assert_eq!(error["error"]["kind"], "usage");
+    assert!(error["error"]["message"].as_str().unwrap().contains("its own --set"), "{error}");
+    let (_, other) = run(&["render", "photo.ARW", "--bogus"]);
+    assert!(!other["error"]["message"].as_str().unwrap().contains("its own --set"));
+}

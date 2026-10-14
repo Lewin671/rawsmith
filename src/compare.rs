@@ -327,6 +327,12 @@ mod tests {
         assert!(washed.iter().any(|n| n.starts_with("blue is weaker and paler")), "{washed:?}");
         let grey = losses(&reference, &picture(0.02, 0.9, [0.45; 3]));
         assert!(grey.iter().any(|n| n.starts_with("blue has nearly gone")), "{grey:?}");
+        // The same sky turned cyan (towards aqua), then a slight shift that stays quiet.
+        let cyan = losses(&reference, &picture(0.02, 0.9, [0.15, 0.45, 0.75]));
+        assert!(cyan.iter().any(|n| n.starts_with("blue has turned towards aqua")), "{cyan:?}");
+        let purple = losses(&reference, &picture(0.02, 0.9, [0.3, 0.35, 0.85]));
+        assert!(purple.iter().any(|n| n.starts_with("blue has turned towards purple")), "{purple:?}");
+        assert!(!losses(&reference, &picture(0.02, 0.9, [0.2, 0.41, 0.8])).iter().any(|n| n.contains("turned")));
     }
 
     // Frozen pre-streaming implementation: render all panels at native size,
