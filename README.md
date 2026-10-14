@@ -16,9 +16,18 @@ The assistant preserves a finished baseline, tries a focused alternative,
 then keeps a candidate only when comparison supports it. The optional
 `rawsmith-select` helper uses blind, order-swapped Codex comparisons followed
 by fresh acceptance and control checks; uncertainty or failure retains the
-baseline. Rendering code and defaults are unchanged in 0.5.0. The selector
-requires Python 3.8+, Codex and explicit cloud consent; `rawsmith` itself
-continues to render offline.
+baseline. The selector requires Python 3.8+, Codex and explicit cloud
+consent; `rawsmith` itself continues to render offline.
+
+0.6.0 came out of rounds of AI editing on held-out photos, fixing what the
+editors tripped on: `compare --region` puts the camera's pixels beside
+yours at full resolution, `compare` notes colours that turned to another
+hue, black point and curve no longer draw a hard disc around the sun,
+high-ISO noise reduction clears specks on smooth water and fog, `auto`
+keeps night scenes dark and defringes clipped twigs harder, and the skill
+teaches readable shadows, decisive crops and a dozen recurring pitfalls.
+Rendering of existing recipes changes only where those fixes apply
+([acceptance](docs/benchmark.md#060-editing-acceptance)).
 
 rawsmith supports Sony A7 IV (ILCE-7M4) Bayer ARW on macOS and Linux.
 

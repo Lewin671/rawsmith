@@ -9,11 +9,37 @@ none of them substitutes for the others.
 | `examples/quality.rs` | Are the algorithms correct and better than naive baselines, against known answers? | No (synthetic) |
 | `bench/photos.py` | Do real photos come out better than the camera's own rendering and the system RAW converter, and does AI editing help? | Your own RAW files |
 
-Real-photo results are reported per release: the 0.2.0 acceptance run
-first, then the earlier sealed evaluation, the validation set used to
+Real-photo results are reported per release, newest first: the 0.6.0
+and 0.5.0 acceptance runs, the 0.2.0 acceptance run, then the earlier sealed evaluation, the validation set used to
 guide fixes, and historical development runs. Decoder and synthetic
 measurements date from 0.1.0 unless noted. Timings were measured on an
 Intel i7-10700 (8 cores / 16 threads), macOS, release build.
+
+## 0.6.0 editing acceptance
+
+Codex `gpt-6.1-sol` (high effort) edited the ten sealed photos with the
+0.6.0 binary and skill from a plain "please edit these photos" request,
+without the selector. Its renders were judged blind in both orders by
+Codex `gpt-6.1-sol` at low effort with the standard prompt, against the
+camera JPEG and against the accepted 0.2.0 edits of the same photos
+rendered by 0.5.0. Spoiled controls (2.5 stops under, colour cast,
+oversaturation) and identical pairs were included.
+
+| Comparison | Wins | Losses | Ties | Controls rejected | Identical pairs tied |
+|---|---|---|---|---|---|
+| 0.6.0 edit vs camera JPEG | 10 | 0 | 0 | 59/60 | 6/6 |
+| 0.6.0 edit vs accepted 0.2.0 edit | 6 | 2 | 2 | 60/60 | 6/6 |
+| Same 0.2.0 recipes, 0.6.0 vs 0.5.0 renderer | 0 | 0 | 10 | 16/18 | 6/6 |
+
+The first two edit runs under earlier skill drafts lost 3-5-2 and 4-4-2
+to the 0.2.0 edits — murky backlit foliage, then loose framing — which led
+to the skill's guidance on readable shadows and decisive crops. One of the
+two remaining losses came from lowering high-ISO noise reduction far
+below the measured strength, now bounded in the skill. Ten photos, one
+edit run each, with editor and judge sharing a model family: evidence of
+no regression on this set, not a guarantee. (In the renderer row, the
+two missed controls were flattened versions the judge preferred on one
+dark-foreground photo.)
 
 ## 0.5.0 candidate-selection acceptance
 
