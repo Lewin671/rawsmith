@@ -479,10 +479,12 @@ fn settle_stripes(image: &mut Image, reconstructed: &[bool], spill: usize, reach
     }
     let halo = reach + spill;
     // Channel sum, red and blue chromaticity, and whether reconstructed.
+    // A pixel without light has no hue: its chromaticity is neutral, so a
+    // black covering object supports no colour.
     let encode = |(p, &flag): (&[f32; 3], &bool)| -> [f32; 4] {
         let sum = p[0].max(0.0) + p[1].max(0.0) + p[2].max(0.0);
-        let inverse = if sum > 1e-12 { 1.0 / sum } else { 0.0 };
-        [sum, p[0].max(0.0) * inverse, p[2].max(0.0) * inverse, flag as u8 as f32]
+        let (red, blue) = if sum > 1e-12 { (p[0].max(0.0) / sum, p[2].max(0.0) / sum) } else { (THIRD, THIRD) };
+        [sum, red, blue, flag as u8 as f32]
     };
     // Chromaticity offset from neutral.
     let offset = |q: [f32; 4]| [q[1] - THIRD, 1.0 - q[1] - q[2] - THIRD, q[2] - THIRD];
@@ -798,6 +800,22 @@ mod tests {
                 if leaf(x, y).is_some() {
                     assert!(tint(after) > 0.9 * tint(before), "{x},{y}: {before:?} -> {after:?}");
                 }
+            }
+        }
+
+        // A black twig is no evidence of colour: its cyan edges still settle.
+        let mut dark = Image::new(w, h);
+        dark.map_xy(|x, _, _| match x {
+            30 => [0.0; 3],
+            29 | 31 => [0.3, 0.5, 0.5],
+            _ => sky,
+        });
+        let before = dark.clone();
+        let flags = reconstructed_pixels(&dark, clip);
+        settle_borrowed_light(&mut dark, &flags, BORROWED_SPILL, BORROWED_REACH);
+        for y in 0..h {
+            for x in [29, 31] {
+                assert!(tint(dark.at(x, y)) < 0.3 * tint(before.at(x, y)), "{x},{y}: {:?}", dark.at(x, y));
             }
         }
 

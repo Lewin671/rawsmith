@@ -223,7 +223,9 @@ under the true noise keeps only the noise extremes, scattered as dark
 specks and, in the coarse bands, low-frequency "watercolour" blotches on
 fog, overcast sky and still water. Instead the frame is denoised at the
 measured amount and part of what was removed is restored: Rec.2020
-luminance on its square root by `1 - setting / measured`, chromaticity by
+luminance on its square root in proportion to how much luminance
+smoothing the setting would itself apply (all of it below `denoise` 10,
+none at the measured amount), chromaticity by
 `1 - 2 * setting / measured` (none from half the measured amount up), so a
 lighter setting reads as even, finer grain with more texture. At or above
 the measured amount, and for unset `denoise`, the setting is applied

@@ -164,16 +164,27 @@ fn denoise(image: &mut Image, strength: f32, measured: f32) {
     let original = image.clone();
     denoise_at(image, measured);
     let kept = strength / measured;
+    // Luminance follows the same onset as `denoise_at`: up to 0.1 a setting
+    // is chroma-only, so all of the original luminance comes back.
+    let luminance_share = |s: f32| {
+        let t = ((s - 0.1) / 0.3).clamp(0.0, 1.0);
+        s * t * t * (3.0 - 2.0 * t)
+    };
+    let full = luminance_share(measured);
+    let luma_back = if full > 0.0 { 1.0 - luminance_share(strength) / full } else { 1.0 };
     // Colour grain goes first: none is restored from half the measured strength.
-    let (luma_back, chroma_back) = (1.0 - kept, (1.0 - 2.0 * kept).max(0.0));
+    let chroma_back = (1.0 - 2.0 * kept).max(0.0);
     // Luminance is the working space's own (what chroma-only smoothing
     // keeps), restored on its square root where noise is even; colour is
     // restored as chromaticity, which leaves luminance where it was put.
+    // Luminance comes from the signed working-space values (saturated
+    // colours can have a negative channel); chromaticity from the
+    // non-negative ones, normalised to unit luminance.
     let encode = |p: [f32; 3]| {
-        let p = p.map(|v| v.max(0.0));
-        let luma = color::luma(p);
-        let ratio = if luma > 1e-12 { p.map(|v| v / luma) } else { [1.0; 3] };
-        (luma.sqrt(), ratio)
+        let positive = p.map(|v| v.max(0.0));
+        let weight = color::luma(positive);
+        let ratio = if weight > 1e-12 { positive.map(|v| v / weight) } else { [1.0; 3] };
+        (color::luma(p).max(0.0).sqrt(), ratio)
     };
     image.data.par_iter_mut().zip(&original.data).for_each(|(p, o)| {
         let ((y, r), (oy, or)) = (encode(*p), encode(*o));
@@ -822,13 +833,27 @@ mod tests {
         denoise_at(&mut direct, measured);
         assert_eq!(full.data, direct.data);
 
-        // Measured at chroma-only strength, a lighter setting stays
-        // chroma-only: restoring colour grain adds no brightness noise.
-        let mut chroma_only = original.clone();
-        denoise(&mut chroma_only, 0.05, 0.1);
-        for (p, o) in chroma_only.data.iter().zip(&original.data) {
-            let (a, b) = (color::luma(*p), color::luma(*o));
-            assert!((a - b).abs() <= 1e-5 * b.max(1e-3), "{a} against {b}");
+        // A chroma-only setting stays chroma-only whatever the measured
+        // strength: restoring colour grain adds no brightness noise, and a
+        // dark impulse keeps its luminance.
+        let mut impulse = original.clone();
+        impulse.data[80 * w + 96] = [0.01, 0.01, 0.01];
+        for (setting, measured) in [(0.05, 0.1), (0.1, 0.4), (0.08, 0.9)] {
+            let mut chroma_only = impulse.clone();
+            denoise(&mut chroma_only, setting, measured);
+            for (p, o) in chroma_only.data.iter().zip(&impulse.data) {
+                let (a, b) = (color::luma(*p), color::luma(*o));
+                assert!((a - b).abs() <= 1e-5 * b.max(1e-3), "{setting}/{measured}: {a} against {b}");
+            }
+        }
+        // A saturated colour with a negative working channel keeps its
+        // luminance through a lighter setting.
+        let mut saturated = Image::new(w, h);
+        saturated.data.iter_mut().for_each(|p| *p = [0.2435, -0.087, 0.3482]);
+        let before = color::luma(saturated.data[0]);
+        denoise(&mut saturated, 0.05, 0.1);
+        for p in &saturated.data {
+            assert!((color::luma(*p) - before).abs() <= 1e-4 * before, "{p:?}");
         }
     }
 
