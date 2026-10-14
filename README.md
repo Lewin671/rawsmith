@@ -12,6 +12,14 @@ not have to describe a look — say what you want if you know, or just ask
 it to edit the photo. rawsmith runs locally, leaves your RAW untouched and
 saves the edit as a small JSON recipe you can inspect and render again.
 
+The assistant preserves a finished baseline, tries a focused alternative,
+then keeps a candidate only when comparison supports it. The optional
+`rawsmith-select` helper uses blind, order-swapped Codex comparisons followed
+by fresh acceptance and control checks; uncertainty or failure retains the
+baseline. Rendering code and defaults are unchanged in 0.5.0. The selector
+requires Python 3.8+, Codex and explicit cloud consent; `rawsmith` itself
+continues to render offline.
+
 rawsmith supports Sony A7 IV (ILCE-7M4) Bayer ARW on macOS and Linux.
 
 | Sensor encoding | Supported modes |

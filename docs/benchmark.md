@@ -15,6 +15,23 @@ guide fixes, and historical development runs. Decoder and synthetic
 measurements date from 0.1.0 unless noted. Timings were measured on an
 Intel i7-10700 (8 cores / 16 threads), macOS, release build.
 
+## 0.5.0 candidate-selection acceptance
+
+The packaged selector was run on six existing validation photos with
+independently produced baseline and refinement recipes. It adopted two
+candidates after both blind orders, fresh acceptance and all controls;
+the other four outputs retained their baseline recipes. One candidate that
+won the image comparisons was rejected because a spoiled-control verdict
+disagreed. All six native exports were byte-identical to the corresponding
+previously inspected baseline or candidate export. The renderer is unchanged.
+
+The judge was Codex `gpt-6.1-sol` at low effort, with the original judging
+prompt held fixed. These are known photos, one baseline/refinement run each,
+and editor and judge share a model family. This validates conservative
+selection on this set, not a guarantee of improvement or no regression on
+unknown photos. Cloud evaluation uses up to sixteen calls per candidate
+that reaches acceptance; it is optional and requires explicit consent.
+
 ## 1. Decoder cross-check
 
 `examples/dump.rs` writes the decoded sensor samples; they are compared with

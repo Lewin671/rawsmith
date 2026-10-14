@@ -173,7 +173,7 @@ main() {
     tar -tzf "$download_dir/$archive" > "$download_dir/members" || fail "cannot read release archive"
     while IFS= read -r member; do
         case "$member" in
-            bin|bin/|bin/rawsmith|skill|skill/|skill/rawsmith|skill/rawsmith/|skill/rawsmith/SKILL.md|VERSION|LICENSE-MIT|LICENSE-APACHE|README.md) ;;
+            bin|bin/|bin/rawsmith|bin/rawsmith-select|skill|skill/|skill/rawsmith|skill/rawsmith/|skill/rawsmith/SKILL.md|VERSION|LICENSE-MIT|LICENSE-APACHE|README.md) ;;
             *) fail "unexpected archive member: $member" ;;
         esac
     done < "$download_dir/members"
@@ -193,6 +193,8 @@ main() {
     skill_hash=$(sha256 "$skill")
 
     regular_destination "$bin_dir/rawsmith"
+    selector=$download_dir/unpack/bin/rawsmith-select
+    if [ -f "$selector" ]; then regular_destination "$bin_dir/rawsmith-select"; fi
     claude_destination=$claude_root/rawsmith
     codex_destination=$codex_root/rawsmith
     case "$skills" in both|claude) check_skill "$claude_destination" ;; esac
@@ -202,6 +204,10 @@ main() {
     bin_stage_dir=$(mktemp -d "$bin_dir/.rawsmith-install.XXXXXX")
     cp "$binary" "$bin_stage_dir/rawsmith"
     chmod 755 "$bin_stage_dir/rawsmith"
+    if [ -f "$selector" ]; then
+        cp "$selector" "$bin_stage_dir/rawsmith-select"
+        chmod 755 "$bin_stage_dir/rawsmith-select"
+    fi
     case "$skills" in both|claude)
         claude_stage_dir=$(stage_skill "$claude_destination")
         prepare_skill "$claude_stage_dir" ;;
@@ -213,6 +219,10 @@ main() {
     if [ -n "$claude_stage_dir" ]; then commit_skill "$claude_destination" "$claude_stage_dir"; fi
     if [ -n "$codex_stage_dir" ]; then commit_skill "$codex_destination" "$codex_stage_dir"; fi
     mv -f "$bin_stage_dir/rawsmith" "$bin_dir/rawsmith"
+    if [ -f "$selector" ]; then
+        mv -f "$bin_stage_dir/rawsmith-select" "$bin_dir/rawsmith-select"
+        printf 'Installed candidate selector: %s/rawsmith-select (Python 3.8+ and Codex required)\n' "$bin_dir"
+    fi
     printf 'Installed rawsmith %s: %s/rawsmith\n' "$version" "$bin_dir"
     case ":${PATH:-}:" in
         *":$bin_dir:"*) ;;

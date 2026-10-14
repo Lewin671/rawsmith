@@ -123,7 +123,35 @@ keep a version.
    extreme `hsl` luminance, halos, coloured fringes. Back off the setting
    that caused it rather than accepting the artefact.
 
-7. **Export** — `rawsmith render photo.ARW -o final.jpg --brief` (full
+7. **Preserve a baseline and try a focused improvement.** Save your best
+   finished recipe as `baseline.json`, then copy it to `candidate.json`.
+   Try up to two useful changes to a concrete remaining weakness: framing,
+   subject emphasis, local light or noise/detail. Reposition masks after
+   changing crop. Keep the baseline when no worthwhile improvement exists.
+   Do not replace it merely because a candidate is newer.
+   Use distinct per-photo filenames for batches.
+
+   When Codex viewing these previews is already authorized, use the installed
+   `rawsmith-select` (or `~/.local/bin/rawsmith-select`):
+
+   ```sh
+   rawsmith-select photo.ARW --baseline baseline.json --candidate candidate.json \
+     --recipe selected.json --output final.jpg --allow-cloud
+   ```
+
+   Use new output names: the helper refuses existing destinations and leaves
+   all inputs alone. It compares both orders, then requires fresh acceptance
+   and control checks before adopting a candidate. Ties, failures and
+   disagreement keep the baseline. Read its JSON report; fallback is not a
+   successful improvement. It requires Python 3.8+ and Codex and sends previews
+   to Codex. Do not pass `--allow-cloud` without authorization. If authorization
+   or the helper is unavailable, compare visually in this session and keep
+   the baseline on doubt. Check selected native detail before delivery and
+   restore the baseline if it introduces a defect. Deliver only one image.
+
+8. **Export** — the helper already exported its selected native JPEG. If
+   you selected visually, render the chosen recipe with
+   `rawsmith render photo.ARW --recipe chosen.json -o final.jpg --brief` (full
    resolution, sRGB). Default JPEG quality 92 is right for almost everything.
    For “smaller file”, “for the web” or “under N MB”, use `--max-bytes` (decimal MB)
    or `--quality 85` with a `--size`; choose the settings without asking for a number.

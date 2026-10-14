@@ -124,7 +124,7 @@ else:
 
     def release(
         self, version, missing=None, binary_version=None, extra=None,
-        manifest_version=None,
+        manifest_version=None, selector=False,
     ):
         folder = self.downloads / ("v" + version)
         folder.mkdir(exist_ok=True)
@@ -139,6 +139,8 @@ else:
             "README.md": b"Synthetic release readme\n",
         }
         files.pop(missing, None)
+        if selector:
+            files["bin/rawsmith-select"] = b"#!/usr/bin/env python3\nprint('selector fixture')\n"
         names = TARGETS.values() if version == "0.1.0" else PLATFORMS.values()
         for name in names:
             archive = folder / f"rawsmith-{name}.tar.gz"
@@ -161,6 +163,27 @@ else:
                 for path in sorted(folder.glob("*.tar.gz"))
             )
         )
+
+    def test_installs_optional_candidate_selector(self):
+        self.release("0.5.0", selector=True)
+        self.install("--version", "0.5.0")
+        helper = self.home / ".local/bin/rawsmith-select"
+        self.assertTrue(helper.is_file())
+        self.assertTrue(os.access(helper, os.X_OK))
+        self.assertIn(b"selector fixture", helper.read_bytes())
+
+    def test_selector_symlink_blocks_install_without_replacing_binary(self):
+        self.release("0.4.0")
+        self.install("--version", "0.4.0")
+        binary = self.home / ".local/bin/rawsmith"
+        before = binary.read_bytes()
+        target = self.base / "user selector"
+        target.write_bytes(b"preserve user data")
+        (binary.parent / "rawsmith-select").symlink_to(target)
+        self.release("0.5.0", selector=True)
+        self.install("--version", "0.5.0", success=False)
+        self.assertEqual(binary.read_bytes(), before)
+        self.assertEqual(target.read_bytes(), b"preserve user data")
 
     def install(self, *args, success=True):
         result = subprocess.run(

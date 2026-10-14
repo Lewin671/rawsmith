@@ -12,6 +12,10 @@ static musl binaries). Requires `curl`, `tar`, `awk`, `mktemp` and
 `sha256sum` or `shasum`.
 No Rust toolchain or `sudo` is needed. Downloads are pinned to one release
 and checked against its SHA-256 manifest before installation.
+Releases from 0.5.0 also install `rawsmith-select` beside the binary. This
+optional selector requires Python 3.8+ and the Codex CLI; the RAW renderer
+does not require them. `rawsmith-select --help` describes its inputs and
+explicit `--allow-cloud` consent for sending rendered previews to Codex.
 Downloads are staged under `TMPDIR` (default `/tmp`) and cleaned up on exit.
 Choose a writable directory with enough space by setting `TMPDIR` for the
 installer process, for example `| TMPDIR=/path/to/scratch sh` in the
@@ -51,6 +55,8 @@ To build from source instead:
 git clone https://github.com/Lewin671/rawsmith
 cd rawsmith
 cargo install --locked --path .
+mkdir -p ~/.local/bin
+install -m 755 skill/rawsmith/scripts/select_candidate.py ~/.local/bin/rawsmith-select
 ```
 
 Source builds require a recent stable Rust toolchain. No other dependencies.

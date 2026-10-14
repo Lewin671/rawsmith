@@ -43,10 +43,12 @@ stage=$(mktemp -d "$output/.rawsmith-package.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/bin" "$stage/skill/rawsmith"
 cp "$binary" "$stage/bin/rawsmith"
+cp "$root/skill/rawsmith/scripts/select_candidate.py" "$stage/bin/rawsmith-select"
 cp "$root/skill/rawsmith/SKILL.md" "$stage/skill/rawsmith/SKILL.md"
 cp "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$root/README.md" "$stage/"
 printf '%s\n' "$version" > "$stage/VERSION"
 chmod 755 "$stage/bin/rawsmith"
+chmod 755 "$stage/bin/rawsmith-select"
 chmod 644 "$stage/skill/rawsmith/SKILL.md" "$stage/LICENSE-MIT" "$stage/LICENSE-APACHE" "$stage/README.md" "$stage/VERSION"
 # macOS otherwise adds AppleDouble metadata files (._*) to the distribution.
 COPYFILE_DISABLE=1 tar -czf "$stage/archive.tar.gz" -C "$stage" bin skill LICENSE-MIT LICENSE-APACHE README.md VERSION

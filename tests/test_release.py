@@ -30,6 +30,8 @@ class ReleasePackageTests(unittest.TestCase):
         skill = self.root / "skill/rawsmith"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("assistant instructions\n")
+        (skill / "scripts").mkdir()
+        (skill / "scripts/select_candidate.py").write_text("#!/usr/bin/env python3\nprint('selector fixture')\n")
         for name in ("LICENSE-MIT", "LICENSE-APACHE", "README.md"):
             (self.root / name).write_text(name + "\n")
         # Files outside the explicit distribution list must never enter the tar.
@@ -62,11 +64,12 @@ class ReleasePackageTests(unittest.TestCase):
         with tarfile.open(archive) as package:
             files = {entry.name for entry in package.getmembers() if entry.isfile()}
             self.assertEqual(files, {
-                "bin/rawsmith", "skill/rawsmith/SKILL.md", "LICENSE-MIT",
+                "bin/rawsmith", "bin/rawsmith-select", "skill/rawsmith/SKILL.md", "LICENSE-MIT",
                 "LICENSE-APACHE", "README.md", "VERSION",
             })
             self.assertEqual(package.extractfile("VERSION").read(), b"1.2.3\n")
             self.assertEqual(package.getmember("bin/rawsmith").mode, 0o755)
+            self.assertEqual(package.getmember("bin/rawsmith-select").mode, 0o755)
         self.assertEqual(list(self.output.iterdir()), [archive])
 
     def test_existing_archive_is_preserved(self):
