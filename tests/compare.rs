@@ -737,3 +737,16 @@ fn region_shows_the_same_part_of_every_panel() {
     assert_eq!(error["error"]["kind"], "params");
     assert!(!f.path("bad.jpg").exists());
 }
+
+#[test]
+fn brief_keeps_losses_and_drops_looks() {
+    let f = Fixture::new("brief");
+    let raw = f.raw(1, Some(&jpeg(96, 64, true)));
+    let output = f.path("brief.jpg");
+    let report = run(&["compare", s(&raw), "--brief", "-o", s(&output)], true);
+    let panels = report["panels"].as_array().unwrap();
+    assert!(panels.iter().all(|p| p.get("look").is_none() && p["kind"].is_string()));
+    assert!(panels[1]["losses_against_camera"].is_array());
+    assert!(panels[0].get("losses_against_camera").is_none());
+    assert_eq!(report["output"], s(&output));
+}

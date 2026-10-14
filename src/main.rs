@@ -147,6 +147,9 @@ struct Compare {
     /// Bound each panel's longest edge; panels shrink to one shared height (at least 1)
     #[arg(long, default_value_t = 1400)]
     size: usize,
+    /// Compact report: per panel only kind, recipe file, size and losses_against_camera; warnings and output fields stay.
+    #[arg(long)]
+    brief: bool,
     /// Compare one part of the picture at full resolution: x0,y0,x1,y1 of each panel's finished frame. Every panel shows the same part; panels larger than --size are still reduced, so pick a small region (about 0.15 wide) to see native pixels.
     #[arg(long, value_name = "X0,Y0,X1,Y1")]
     region: Option<String>,
@@ -729,6 +732,15 @@ fn compare_versions(args: Compare) -> Result<Value> {
     report["quality"] = json!(output::is_jpeg(&args.output).then_some(args.quality));
     report["output"] = json!(args.output);
     report["output_color_space"] = json!(if srgb { "sRGB" } else { "mixed-unmanaged" });
+    if args.brief {
+        for panel in report["panels"].as_array_mut().expect("compare panels") {
+            let mut fields = vec!["kind", "recipe_file", "width", "height"];
+            if panel.get("losses_against_camera").is_some() {
+                fields.push("losses_against_camera");
+            }
+            *panel = select_fields(panel, &fields);
+        }
+    }
     Ok(report)
 }
 

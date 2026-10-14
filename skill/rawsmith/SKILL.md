@@ -105,7 +105,8 @@ keep a version.
    `--size` bounds each panel's longest edge (default 1400), not the whole row.
    Keep a change only if the picture is better. Apply the test in
    "What finished means" here.
-   Read `losses_against_camera` in the report for your panel: it lists
+   Read `panels[i].losses_against_camera` in the report for your panel
+   (`--brief` keeps only that and the panel sizes): it lists
    what the edit gave up against the camera's rendering — a lifted black
    point, flatter tones, new pure white or black, a colour gone weak and
    pale. An edit that opens shadows and brightens a subject usually pays
@@ -383,6 +384,11 @@ full-resolution export's report as well.
   `highlights` instead.
 - A top `gradient` stacked with a strong `vignette` turns sky corners
   navy or black; use one, or back both off.
+- Lifting lamps or lit windows with a `colors` mask quickly blows their
+  centres to white; pull `highlights` down in the same mask and check them
+  with `compare --region`. Lifting textured subjects (leaves, feathers) at
+  ISO 3200 and above also lifts how smooth noise reduction left them:
+  look at 100% and lower `denoise` by 10–20 if they turn to flat patches.
 - `colors` masks select by hue, so `yellow` also takes yellow-green
   foliage and `blue` takes blue water. Muted colour is only partly
   selected — it fades in with chroma — so shaded or olive leaves respond
