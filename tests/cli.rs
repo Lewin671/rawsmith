@@ -1146,6 +1146,7 @@ fn denoise_schema_reports_and_legacy_recipe_migration_are_explicit() {
         Some("0.3.0"),
         Some("0.4.0"),
         Some("0.5.0"),
+        Some("0.6.0"),
         Some("99.0.0"),
         Some(env!("CARGO_PKG_VERSION")),
     ] {
@@ -1160,7 +1161,7 @@ fn denoise_schema_reports_and_legacy_recipe_migration_are_explicit() {
         assert_eq!(compatibility["written_version"], serde_json::json!(version));
         assert_eq!(compatibility["rendering_version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(compatibility["policy"], "current_defaults");
-        // Rendering last changed in 0.6.0: only older, unknown or future writers get a note.
+        // Rendering last changed in 0.6.1: only older, unknown or future writers get a note.
         assert_eq!(compatibility["note"].is_null(), version == Some(env!("CARGO_PKG_VERSION")));
         assert_eq!(rendered["recipe"]["exposure"], 0.1);
         let compared = ok(&[
