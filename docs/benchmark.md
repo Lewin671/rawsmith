@@ -9,11 +9,23 @@ none of them substitutes for the others.
 | `examples/quality.rs` | Are the algorithms correct and better than naive baselines, against known answers? | No (synthetic) |
 | `bench/photos.py` | Do real photos come out better than the camera's own rendering and the system RAW converter, and does AI editing help? | Your own RAW files |
 
-Real-photo results are reported per release, newest first: the 0.6.0
-and 0.5.0 acceptance runs, the 0.2.0 acceptance run, then the earlier sealed evaluation, the validation set used to
+Real-photo results are reported per release, newest first: the 0.6.1
+renderer check, the 0.6.0 and 0.5.0 acceptance runs, the 0.2.0 acceptance run, then the earlier sealed evaluation, the validation set used to
 guide fixes, and historical development runs. Decoder and synthetic
 measurements date from 0.1.0 unless noted. Timings were measured on an
 Intel i7-10700 (8 cores / 16 threads), macOS, release build.
+
+## 0.6.1 renderer check
+
+0.6.1 changes rendering near clipped highlights and in noise reduction.
+The final 0.6.0 acceptance recipes for the same ten photos were rendered
+by 0.6.0 and 0.6.1 and judged blind in both orders as above: 1 win, 0
+losses, 9 ties for 0.6.1, with 18/18 spoiled controls rejected and 6/6
+identical pairs tied. The win is the ISO 6400 photo whose recipe set
+`denoise` far below the measured strength. Changes visible only at 100%
+(twig edges against blown sky) are mostly below what this preview-size
+comparison resolves; they were checked by eye at native resolution beside
+the camera JPEG.
 
 ## 0.6.0 editing acceptance
 

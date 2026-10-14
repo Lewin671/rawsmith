@@ -29,6 +29,11 @@ teaches readable shadows, decisive crops and a dozen recurring pitfalls.
 Rendering of existing recipes changes only where those fixes apply
 ([acceptance](docs/benchmark.md#060-editing-acceptance)).
 
+0.6.1 removes pale cyan and pink tints from twigs and leaf edges against a
+blown sky, keeps thin trunks and branches through high-ISO noise
+reduction, and turns a `denoise` set below the measured strength into
+even fine grain instead of specks and blotches on fog and water.
+
 rawsmith supports Sony A7 IV (ILCE-7M4) Bayer ARW on macOS and Linux.
 
 | Sensor encoding | Supported modes |
