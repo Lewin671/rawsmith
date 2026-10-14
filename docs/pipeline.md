@@ -198,7 +198,13 @@ finest band, where isolated extremes would survive as specks) are removed
 with a non-negative garrote. Where a band's local energy clearly exceeds
 its noise the threshold falls to noise squared over signal, which keeps
 low-contrast texture, and where the smoother plane has a clear slope an
-edge is passing through and its detail is left alone. The threshold fades
+edge is passing through and its detail is left alone. Thin dark trunks,
+branches and feather barbs against fog or water are too faint per sample
+for either test, but they run straight: in the three finer bands each
+coefficient is also averaged along 17-tap segments (taps one band step
+apart) in four directions, and where the best mean exceeds 0.9 band noise
+levels (fully from 1.4; demosaiced grain reaches 0.9 at a few percent of
+samples) the threshold fades out as at an edge. The threshold fades
 in between strengths 10 and 40: ISO 100 frames keep their faint grain and
 finest texture, and up to 10 chroma changes preserve linear Rec.2020
 luminance exactly. Above 50 the input to this step also blends toward the
@@ -207,6 +213,18 @@ colour noise as luminance grain. Final luminance is set through a common
 RGB gain. Texture weaker than the noise cannot be told from it and is
 smoothed with it; settings above the measured amount ask for more smoothing
 than the noise needs and take proportionally more fine texture.
+
+An explicit `denoise` below the amount the native noise policy measures for
+the frame does not lower the thresholds into the noise: a threshold set
+under the true noise keeps only the noise extremes, scattered as dark
+specks and, in the coarse bands, low-frequency "watercolour" blotches on
+fog, overcast sky and still water. Instead the frame is denoised at the
+measured amount and part of what was removed is restored in square-root
+space: luminance by `1 - setting / measured`, chroma by
+`1 - 2 * setting / measured` (none from half the measured amount up), so a
+lighter setting reads as even, finer grain with more texture. At or above
+the measured amount, and for unset `denoise`, the setting is applied
+directly. This keeps one extra frame copy while denoising.
 Orientation, `rotate` and `crop` follow. Output rendering keeps native resolution here;
 the reduced automatic analysis path remains an approximation.
 

@@ -382,7 +382,7 @@ pub fn fields() -> Vec<Field> {
         field("vignette", -100.0, 100.0, "Brightens (positive) or darkens (negative) the corners, on top of the lens correction."),
         field("sharpen", 0.0, 100.0, "Native-resolution output sharpening amount; previews resize after sharpening."),
         field("defringe", 0.0, 100.0, "Additional suppression of thin purple/blue chroma outliers at strong luminance edges and of coloured specks on bright dots between fine dark structure, on top of automatic neutral-edge demosaic protection; 0 disables only the additional filter. Preserves broad coloured subjects, but may affect genuinely coloured detail only one or two sensor pixels wide (purple lines, distant coloured lamps). Check at full resolution."),
-        field("denoise", 0.0, 100.0, "Noise reduction strength (chroma grain first, luminance grain from 10 to full effect at 40, broader chroma above 25; higher values smooth more fine texture). null or omitted measures native sensor noise with an ISO prior; an explicit number is exact, including 0. Read noise_reduction.strength in render reports before adjusting."),
+        field("denoise", 0.0, 100.0, "Noise reduction strength (chroma grain first, luminance grain from 10 to full effect at 40, broader chroma above 25; higher values smooth more fine texture). null or omitted measures native sensor noise with an ISO prior; an explicit number is exact, including 0; below the measured strength it keeps an even share of fine grain rather than thresholding into the noise. Read noise_reduction.strength in render reports before adjusting."),
         field(
             "rotate",
             -45.0,

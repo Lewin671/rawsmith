@@ -411,8 +411,9 @@ full-resolution export's report as well.
   with `compare --region`. Lifting textured subjects (leaves, feathers) at
   ISO 3200 and above also lifts how smooth noise reduction left them:
   if they turn to flat patches at 100%, lower `denoise` by at most 10–15
-  below the measured strength the report gives. Further down, grain and
-  coloured speckle come back across the whole frame, which reads worse
+  below the measured strength the report gives. Further down, grain comes
+  back evenly across the whole frame (coloured below half the measured
+  strength), which reads worse
   than smooth leaves; lifted shadows and `sharpen` make that grain
   stronger still, so a lifted high-ISO picture wants the measured
   strength or more.
