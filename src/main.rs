@@ -247,7 +247,7 @@ impl RecipeOrigin {
             "rendering_version": current,
             "policy": "current_defaults",
             "note": if self.version.as_deref().is_some_and(same_defaults) { None } else {
-                Some("Recipe rendered with current defaults (0.2: luminance tone mapping, stronger base contrast, contrast-linked colour, measured denoise when unset; 0.4: denoise also removes luminance grain from strength 10 up, defringe also calms coloured specks). Writer version does not pin rendering. Default migration retains explicit values; auto still replaces tone and colour. Use the original binary for the original look.")
+                Some("Recipe rendered with current defaults (0.2: luminance tone mapping, stronger base contrast, contrast-linked colour, measured denoise when unset; 0.4: denoise also removes luminance grain from strength 10 up, defringe also calms coloured specks; 0.6: defringe, when set, also reduces pink edges). Writer version does not pin rendering. Default migration retains explicit values; auto still replaces tone and colour. Use the original binary for the original look.")
             },
         })
     }
@@ -261,7 +261,7 @@ fn same_defaults(written: &str) -> bool {
         Some((parts.next()??, parts.next()??, parts.next()??))
     };
     match (parse(written), parse(env!("CARGO_PKG_VERSION"))) {
-        (Some(written), Some(current)) => written >= (0, 4, 0) && written <= current,
+        (Some(written), Some(current)) => written >= (0, 6, 0) && written <= current,
         _ => false,
     }
 }

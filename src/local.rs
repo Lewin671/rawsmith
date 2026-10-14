@@ -250,8 +250,12 @@ impl<'a> Masks<'a> {
                 height: image.height,
                 data: lab.par_iter().map(|p| (p[1] * p[1] + p[2] * p[2]).sqrt()).collect(),
             };
+            // The pixel's own chroma must qualify as well, so a thin grey line
+            // among selected colour is not carried in by its neighbours.
             let mut eligible = mask_mean(&chroma, 1);
-            eligible.data.par_iter_mut().for_each(|c| *c = chroma_eligibility(*c));
+            eligible.data.par_iter_mut().zip(&chroma.data).for_each(|(c, own)| {
+                *c = chroma_eligibility(*c).min(chroma_eligibility(*own));
+            });
             let guide = Plane {
                 width: image.width,
                 height: image.height,
@@ -492,6 +496,14 @@ mod tests {
         for x in 62..w {
             assert!(masks.weight(0, x, 20) < 0.01, "grey at {x}: {}", masks.weight(0, x, 20));
         }
+        // A one-pixel grey line inside the colour stays out as well.
+        let mut image = Image { width: w, height: h, data: vec![yellow; w * h] };
+        for y in 0..h {
+            image.data[y * w + 60] = [lo; 3];
+        }
+        let masks = Masks::new(&image, &p, &Spaces::new());
+        assert!(masks.weight(0, 60, 20) < 0.01, "{}", masks.weight(0, 60, 20));
+        assert!(masks.weight(0, 58, 20) > 0.9);
     }
 
     #[test]
