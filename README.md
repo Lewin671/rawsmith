@@ -3,271 +3,178 @@
 [![CI](https://github.com/Lewin671/rawsmith/actions/workflows/ci.yml/badge.svg)](https://github.com/Lewin671/rawsmith/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#licence)
 
-Hand Claude Code or Codex a RAW photo and get back a finished picture.
+**Let Claude Code or Codex edit your RAW photos.**
 
-The assistant works like a photo editor: it looks at the photo, decides
-what the picture should be, crops, sets the light and the colour, compares
-its work with the camera's JPEG and checks detail before exporting. You do
-not have to describe a look — say what you want if you know, or just ask
-it to edit the photo. rawsmith runs locally, leaves your RAW untouched and
-saves the edit as a small JSON recipe you can inspect and render again.
+rawsmith is a command-line RAW developer built for AI assistants, plus a
+skill that teaches the assistant how to edit. Ask it to edit a photo and it
+works like a photo editor: it looks at the picture, decides what it should
+be, crops, sets light and colour, checks the result against the camera's
+JPEG and exports. You don't need to describe a look; if you have one in
+mind, say so and it comes first.
 
-The assistant preserves a finished baseline, tries a focused alternative,
-then keeps a candidate only when comparison supports it. The optional
-`rawsmith-select` helper uses blind, order-swapped Codex comparisons followed
-by fresh acceptance and control checks; uncertainty or failure retains the
-baseline. The selector requires Python 3.8+, Codex and explicit cloud
-consent; `rawsmith` itself continues to render offline.
+- **Local.** Photos are developed on your machine; the RAW is never modified.
+- **Reproducible.** Each edit is a small JSON recipe; the same recipe and
+  binary give the same output, bit for bit.
+- **Made for agents.** Every command returns JSON, and renders report tone,
+  clipping and colour statistics, so the assistant can check its work by
+  numbers as well as by eye.
 
-0.6.0 came out of rounds of AI editing on real photos, fixing what the
-editors tripped on: `compare --region` puts the camera's pixels beside
-yours at full resolution, `compare` notes colours that turned to another
-hue, black point and curve no longer draw a hard disc around the sun,
-high-ISO noise reduction clears specks on smooth water and fog, `auto`
-keeps night scenes dark and defringes clipped twigs harder, and the skill
-teaches readable shadows, decisive crops and a dozen recurring pitfalls.
-Rendering of existing recipes changes only where those fixes apply
-([acceptance](docs/benchmark.md#060-editing-acceptance)).
+![Garden pond: camera JPEG on the left, assistant edit on the right](docs/images/pond-comparison.jpg)
 
-0.6.1 removes pale cyan and pink tints from twigs and leaf edges against a
-blown sky, keeps thin trunks and branches through high-ISO noise
-reduction, and turns a `denoise` set below the measured strength into
-even fine grain instead of specks and blotches on fog and water.
+*Left: the camera's JPEG. Right: the assistant's edit, asked only to “edit
+this photo”. [More examples](#examples).*
 
-rawsmith supports Sony A7 IV (ILCE-7M4) Bayer ARW on macOS and Linux.
+## Quick start
 
-| Sensor encoding | Supported modes |
-|---|---|
-| Uncompressed | Full frame and APS-C |
-| Lossy-compressed | Full frame and APS-C |
-| Lossless-compressed | Full-frame L and APS-C M (14-bit Bayer) |
-| Reduced-size lossless YCbCr | Unsupported: full-frame M/S and APS-C S |
-
-[Format details and sample verification](docs/formats.md).
-
-## Try it
-
-Install the CLI and the editing skill for both Claude Code and Codex:
+Install the CLI and the skill for Claude Code and Codex (macOS or Linux,
+no Rust needed):
 
 ```sh
 curl -fsSL https://github.com/Lewin671/rawsmith/releases/latest/download/install.sh | sh
 ```
 
-Then tell your assistant: **“Use rawsmith to edit ~/Pictures/DSC0001.ARW.”**
-Add a direction if you have one — *“keep it dark and quiet”*, *“the
-foreground is too dark”* — and it takes precedence.
+Then ask your assistant:
 
-[Installation options, PATH setup and skill locations](docs/install.md).
+> Use rawsmith to edit ~/Pictures/DSC0001.ARW.
 
-## Before and after
+Add a direction if you like: *“keep it dark and quiet”*, *“the foreground
+is too dark”*. See [installation options](docs/install.md) for PATH setup,
+single-agent installs and building from source.
 
-Camera JPEG on the left, assistant edit on the right. In each case the
-request was only *“edit this photo”*; the camera panel is cropped to the
-edit's framing.
+**Supported cameras:** Sony A7 IV (ILCE-7M4) Bayer ARW: uncompressed,
+lossy-compressed, and lossless-compressed full-frame L / APS-C M.
+Lossless full-frame M/S and APS-C S are not supported.
+[Format details](docs/formats.md) · [Add a camera](CONTRIBUTING.md)
 
-![Garden pond: camera JPEG on the left, assistant edit on the right](docs/images/pond-comparison.jpg)
+## How it works
 
-*A garden pond under an overcast sky. The assistant opened the dark trees
-on the left, made the greens deeper and let the autumn maple and the
-pavilion's timber carry the warmth.*
+```text
+RAW file + recipe.json  ──rawsmith──▶  JPEG / 16-bit PNG + JSON report
+```
 
-<details>
-<summary>More assistant edits</summary>
+The assistant edits by changing the recipe, rendering a preview, looking at
+it and repeating. A typical session:
 
-*Rime on pines — the camera rendered the frost blue-grey; the edit makes
-it white against a deeper sky.*
+```sh
+rawsmith inspect photo.ARW                      # camera settings, exposure, clipping
+rawsmith auto photo.ARW -o start.jpg            # measured starting recipe + preview
+rawsmith edit photo.ARW --set shadows=40 \
+  --set temperature=5900 -o edit.jpg            # change and save settings, render a preview
+rawsmith compare photo.ARW -o compare.jpg       # camera JPEG beside the edit
+rawsmith render photo.ARW --region 0.4,0.3,0.6,0.5 -o detail.jpg   # 100% detail check
+rawsmith render photo.ARW -o final.jpg          # full-resolution export
+```
+
+| Command | What it does |
+|---|---|
+| `inspect` | Describe the RAW: compression, camera settings, white balance, sensor exposure |
+| `schema` | List every recipe parameter with its range, default and meaning |
+| `auto` | Analyse the scene and save an automatic starting recipe |
+| `edit` | Change recipe parameters, save the recipe, optionally render a preview |
+| `render` | Render from the recipe (or try settings with `--set` without saving) and report image statistics |
+| `compare` | Show camera and recipe versions side by side and note what each gave up |
+| `extract-jpeg` | Copy the camera's embedded JPEG unchanged |
+
+The recipe is saved next to the RAW as `<raw>.rawsmith.json` and holds
+only what differs from the defaults, for example:
+
+```json
+{
+  "crop": { "top": 0.1, "left": 0.06, "bottom": 0.97 },
+  "shadows": 45, "highlights": -55, "contrast": 12,
+  "temperature": 5900, "tint": 28, "vibrance": 25,
+  "hsl": { "orange": { "saturation": 30 } },
+  "vignette": -25
+}
+```
+
+Recipes cover exposure, white balance, tone and curves, clarity, dehaze,
+HSL, colour grading, crop and rotation, noise reduction, sharpening,
+defringing, vignette, and local edits with graduated filters and
+linear/radial masks. `rawsmith schema` lists them all.
+
+[Editing skill](skill/rawsmith/SKILL.md) · [CLI and recipe reference](docs/cli.md) · [Developing pipeline](docs/pipeline.md)
+
+## Examples
+
+Camera JPEG on the left, assistant edit on the right; each request was only
+*“edit this photo”*. Sony A7 IV photographs, reproduced with permission.
+
+*Rime on pines: the camera rendered the frost blue-grey; the edit makes it
+white against a deeper sky.*
 
 ![Rime: camera JPEG on the left, assistant edit on the right](docs/images/rime-comparison.jpg)
 
-*Ginkgo at dusk (ISO 4000) — the surroundings go cool and quiet so the
-gold leaves carry the picture.*
+*Ginkgo at dusk (ISO 4000): the surroundings go cool and quiet so the gold
+leaves carry the picture.*
 
 ![Ginkgo: camera JPEG on the left, assistant edit on the right](docs/images/ginkgo-comparison.jpg)
 
-</details>
-
-Sony A7 IV photographs, reproduced with permission; rendered by 0.2.0.
-[Exact recipes](docs/recipes) · [Photo permissions and a one-command CC0 example](docs/images/README.md).
-
-## One edit, from request to export
-
-These are the steps behind the pond picture above
-([its recipe](docs/recipes/pond.json)), with `pond.ARW` standing for the
-source photo.
-
-```sh
-rawsmith inspect pond.ARW
-rawsmith auto pond.ARW -o start.jpg --size 1400
-rawsmith compare pond.ARW -o compare.jpg
-```
-The assistant reads how the sensor was exposed (the sky is blown and
-cannot be recovered), takes `auto`'s measured starting point and looks at
-it beside the camera's JPEG. Then it decides the picture: *a quiet
-pavilion over the pond on an overcast day, deep greens with a touch of
-autumn.*
-
-```sh
-rawsmith edit pond.ARW \
-  --set crop.top=0.1 --set crop.left=0.06 --set crop.bottom=0.97 \
-  --set shadows=45 --set highlights=-55 --set contrast=12 --set blacks=-12 \
-  --set 'curve=[[0.2,0.17],[0.5,0.53],[0.8,0.83]]' \
-  --set 'gradients=[{"from":[0,0.5],"to":[0.3,0.5],"exposure":-0.3}]' \
-  --set temperature=5900 --set tint=28 --set vibrance=25 \
-  --set hsl.green.hue=12 --set hsl.green.luminance=-8 \
-  --set hsl.orange.saturation=30 --set hsl.red.saturation=20 \
-  --set grade.shadows.hue=190 --set grade.shadows.saturation=18 \
-  --set grade.highlights.hue=50 --set grade.highlights.saturation=14 \
-  --set vignette=-25 \
-  -o edit.jpg --size 1400
-```
-Composition first (a strip of blown sky and dark tree goes), then light
-(open the shadows, hold the left edge with a graduated filter), then
-colour (greens toward a deeper teal, the maple's orange and red brought
-forward, cool shadows under warm highlights). In practice this takes a
-few rounds, each one rendered and looked at; the published recipe has a
-few more settings than shown here.
-
-```sh
-rawsmith compare pond.ARW -o compare.jpg
-rawsmith render pond.ARW --region 0.4,0.3,0.6,0.5 -o detail.jpg
-rawsmith render pond.ARW -o final.jpg
-```
-It checks the edit against the camera's JPEG in the same framing, inspects
-100% detail for noise, halos and coloured edges, and exports at full
-resolution (`.png` gives 16-bit output).
-
-The edit is a small JSON file next to the RAW, holding only what differs
-from the defaults.
-
-[Editing skill](skill/rawsmith/SKILL.md) · [CLI and recipe reference](docs/cli.md).
-
-## Why it is built this way
-
-- **Images and numbers together.** Render reports include tone percentiles,
-  clipping, colour cast and a 3×3 brightness grid. An assistant can look
-  at the picture and check what its last adjustment did.
-- **Previews match resized exports.** Previews develop at full resolution,
-  including noise reduction, tone and sharpening, then area-resize the
-  finished sRGB pixels. Check 100% detail for artefacts hidden by resizing.
-- **Rounds are quick.** The developed frame of a photo is kept in the
-  temporary directory between commands, so changing tone, colour, crop or
-  masks does not develop the RAW again, and the picture is the same bytes
-  either way ([details](docs/cli.md#reusing-the-developed-frame)).
-- **It says what an edit cost.** `compare` lists what each version gave up
-  against the camera's rendering: a lifted black point, flatter tones, new
-  clipping, a colour gone weak. An assistant chasing an idea tends not to
-  see those.
-- **An edit is a recipe.** `render --set` tries
-  settings; `edit` saves them. The same rawsmith binary, RAW and recipe produce
-  the same file, bit for bit ([exact terms](docs/cli.md)).
-  Separate recipes keep separate edits. Recipes store only what differs
-  from the defaults, so a release that changes the defaults changes how
-  older recipes render; reports say so in `recipe_compatibility`.
-- **A discoverable CLI.** Successful subcommands return JSON on stdout;
-  errors return JSON on stderr with exit status 1 and empty stdout. `--help` and
-  `--version` print plain text. `rawsmith schema` gives parameter ranges
-  and meanings, including `vignette` graduated filters (`gradients`) and local linear/radial/luminance masks (`masks`).
-  RAW, recipe and output paths must be valid UTF-8; invalid paths return a
-  `params` error before any file is written, with the path named lossily.
-  Reports identify the recipe file, declared output colour space and RAW
-  compression. Validation and staging failures leave recipes and outputs
-  unchanged; paired saves roll back ordinary commit failures. See the
-  [CLI reference](docs/cli.md) for crash and rollback limits.
-- **The developing engine is here.** Rust modules implement RAW decoding,
-  demosaicing, highlight reconstruction, lens corrections, colour, tone,
-  local contrast, dehaze, automatic neutral-edge colour protection, optional additional defringing, noise reduction and sharpening.
-  [See the stages](docs/pipeline.md).
+[Recipes for these edits](docs/recipes) · [Photo permissions](docs/images/README.md)
 
 ## Results
 
-Ten Sony A7 IV photos kept out of development were edited by an assistant
-following the skill, with no direction beyond *“edit these photos”*, and
-judged blind against the camera's JPEG, the macOS RAW converter and
-rawsmith's own automatic and default renderings. Counts are wins – losses
-– ties per photo.
+Ten Sony A7 IV photos were edited by an assistant following the
+skill, with no direction beyond *“edit these photos”*, then judged blind
+against other renderings. Counts are wins – losses – ties.
 
-| Comparison | All 10 | The 6 never used in development |
+| Comparison | All 10 photos | 6 never used in development |
 |---|---|---|
 | Assistant edit vs camera JPEG | 10 – 0 – 0 | 6 – 0 – 0 |
 | Assistant edit vs macOS RAW converter | 10 – 0 – 0 | 6 – 0 – 0 |
 | Assistant edit vs `auto` | 8 – 0 – 2 | 5 – 0 – 1 |
 | `auto` vs camera JPEG | 6 – 0 – 4 | 2 – 0 – 4 |
-| `auto` vs macOS RAW converter | 7 – 2 – 1 | 4 – 1 – 1 |
-| Default recipe vs camera JPEG | 4 – 3 – 3 | 2 – 2 – 2 |
 
-Read this with its limits. Four of the ten photos were looked at while
-0.2.0's `auto` and skill were being tuned, so the right-hand column is the
-cleaner evidence, and six photos is a small sample. The judge was Codex
-`gpt-6.1-sol` at low effort, shown both image orders with spoiled controls
-and identical pairs; the editor was the same model, which may favour its
-own edits. Camera JPEGs were converted from Adobe RGB to sRGB.
+The sample is small, and the judge (Codex `gpt-6.1-sol`, both image orders,
+with control pairs) was the same model as the editor. The main gain comes
+from the assistant's choices of crop, brightness and palette; the engine
+alone is roughly level with the camera.
+[Method, limits and full results](docs/benchmark.md).
 
-What the numbers say: the developing engine alone is roughly level with
-the camera, `auto` is at least as good as the camera, and the clear gain
-comes from the assistant's judgement — cropping, deciding what should be
-bright, and choosing a palette.
-
-On the reference Intel i7-10700 (8 cores / 16 threads, macOS), the first
-render of a 33 MP ISO 100 file takes 2.90 s for a 1400 px default preview,
-4.65 s for `auto` with a preview, and 3.50 s for a native JPEG export; an
-ISO 4000 file takes 4.25 / 6.22 / 4.88 s. Every later render of the same
-photo in an editing session reuses its developed frame: 1.29 s for a
-preview and 1.86–1.90 s for a native export at either ISO, with peak RSS
-of 0.97–1.19 GB instead of 1.91–2.30 GB. A typical edited recipe (curve,
-colour, masks) adds about 0.8 s. These are medians of three serial runs
-with allocation diagnostics enabled. Reused renders are byte-identical to
-fresh ones; previews still develop at native resolution and resize last.
-[Stages, method and what was tried](docs/performance.md).
-
-Decoder samples matched LibRaw on the original 18 test files and two
-additional CC0 lossless Bayer files (55,050,240/55,050,240 samples).
-Synthetic tests also check demosaicing, highlight reconstruction, colour, noise reduction and
-sharpening against known answers. [Full measurements, method and limits](docs/benchmark.md).
+The decoder matches LibRaw sample for sample on all 20 test files. On an
+8-core Intel i7-10700, a 33 MP photo's first preview takes 3–4 s, and
+later previews in the same session about 1.3 s.
+[Performance details](docs/performance.md).
 
 ## Limits
 
-Only Sony A7 IV Bayer ARW is supported. Lossless full-frame M/S and APS-C
-S store reduced-size YCbCr rather than Bayer and return `unsupported`.
-Other cameras need a colour matrix and a test file; see
-[CONTRIBUTING.md](CONTRIBUTING.md).
-
-Local edits support four legacy graduated filters and eight linear/radial
-masks with optional luminance and colour (hue band) selection. There are no
-brushes, semantic subject masks, local white balance, spot removal or dust removal.
-
-Known rendering weaknesses: with the sun in frame, pulling `highlights`
-far down shows the blown core as a disc with a visible edge where the
-camera shows a soft glow; fine branches against a blown sky can keep some
-pastel specks at 100% even with `defringe`; at high ISO, texture weaker
-than the noise is smoothed away with it.
-
-Output is sRGB JPEG or 16-bit PNG, without
-camera metadata.
-JPEG embeds a compact ICC v2 sRGB profile; PNG uses its standard sRGB chunk.
-Preview clipping statistics can differ slightly from the full-resolution
-export, as small clipped areas average away in small previews.
+- Only Sony A7 IV Bayer ARW for now; other cameras need a colour matrix and
+  a test file ([CONTRIBUTING.md](CONTRIBUTING.md)).
+- No brushes, subject masks, local white balance, or spot and dust removal.
+- Output is sRGB JPEG or 16-bit PNG, without camera metadata.
+- Known weak spots: a blown sun pulled far down can show a hard-edged disc;
+  fine branches against a blown sky can keep faint coloured specks; at high
+  ISO, texture weaker than the noise is smoothed away.
 
 ## Privacy
 
-rawsmith develops photos locally without network access. Images produced
-by `render`, `edit`, `auto` and `compare` contain no EXIF, GPS or serial numbers.
-`extract-jpeg` copies the camera JPEG unchanged, including its metadata;
-check or remove it before sharing.
-It also leaves stored pixels unrotated and reports `raw_orientation`,
-`needs_rotation` and `rotation_degrees_clockwise` for upright comparison.
-Check whether your viewer already applies orientation before rotating.
+rawsmith works offline. Images from `render`, `edit`, `auto` and `compare`
+contain no EXIF, GPS or serial numbers; `extract-jpeg` keeps the camera
+JPEG's metadata. If your assistant runs in the cloud, the previews it looks
+at are sent to its provider, like any image you show it.
 
-If a cloud-hosted assistant views your previews, those images are sent to
-its provider, like any other image you show it.
+The optional `rawsmith-select` helper, installed alongside, compares
+candidate edits with Codex and only runs with explicit cloud consent.
+
+## Documentation
+
+| | |
+|---|---|
+| [docs/install.md](docs/install.md) | Install options, skill locations, building from source |
+| [docs/cli.md](docs/cli.md) | Commands, recipe parameters, reports, error handling |
+| [skill/rawsmith/SKILL.md](skill/rawsmith/SKILL.md) | The editing workflow the assistant follows |
+| [docs/pipeline.md](docs/pipeline.md) | Developing stages, from decoding to sharpening |
+| [docs/formats.md](docs/formats.md) | Supported ARW formats |
+| [docs/benchmark.md](docs/benchmark.md) | Quality measurements and photo judging |
+| [docs/performance.md](docs/performance.md) | Speed and memory measurements |
+| [CHANGELOG.md](CHANGELOG.md) | Release notes |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Building, testing, adding a camera |
 
 ## Licence
 
-Choose [Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT).
-Contributions use the same terms. Photographs have
-[separate permissions](docs/images/README.md).
-The embedded sRGB profile is CC0; see its
-[source and licence](assets/profiles/README.md).
-
-The camera colour matrix is sensor characterisation data published in
-Adobe's DNG Converter and reproduced by open-source RAW software. The
-one-command demo photo is a CC0 sample from [raw.pixls.us](https://raw.pixls.us).
+Code: [Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your
+option; contributions use the same terms. The example photographs have
+[separate permissions](docs/images/README.md). The embedded sRGB profile is
+CC0 ([source](assets/profiles/README.md)). The camera colour matrix is
+sensor characterisation data published in Adobe's DNG Converter and
+reproduced by open-source RAW software.

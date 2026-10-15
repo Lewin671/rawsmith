@@ -5,7 +5,8 @@ tag must match the version in Cargo.toml exactly. All release jobs check
 out the resolved commit, not a moving branch.
 
 1. Update Cargo.toml and Cargo.lock for a new version and commit the
-   changes with the release notes. Run the checks in CONTRIBUTING.md.
+   changes with the release notes in CHANGELOG.md. Run the checks in
+   CONTRIBUTING.md.
 2. Push main, create an annotated version tag and push that tag:
 
    ```sh
