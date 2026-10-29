@@ -116,6 +116,22 @@ fn png(path: &Path) -> (Image, bool) {
 }
 
 #[test]
+fn camera_panel_uses_the_raw_crop_edges_when_shapes_differ() {
+    let f = Fixture::new("aspect-shapes");
+    // A 3:2 RAW whose embedded JPEG is 4:3: 1:1 resolves against the RAW.
+    let raw = f.raw(1, Some(&jpeg(96, 72, true)));
+    f.recipe("frame.ARW.rawsmith.json", json!({"crop": {"aspect": "1:1"}}));
+    let output = f.path("shapes.png");
+    let report =
+        run(&["compare", s(&raw), "-o", s(&output), "--size", "96", "--panel", "camera", "--panel", "saved"], true);
+    let panels = report["panels"].as_array().unwrap();
+    let size = |p: &Value| (p["width"].as_u64().unwrap(), p["height"].as_u64().unwrap());
+    assert_eq!(size(&panels[1]), (64, 64));
+    // Cut at the RAW's fractions [1/6, 5/6] to 64x72, then scaled to the row height.
+    assert_eq!(size(&panels[0]), (57, 64), "camera fitted on its own shape would be square");
+}
+
+#[test]
 fn camera_pixels_are_upright_and_default_report_is_ordered() {
     let f = Fixture::new("orientations");
     let embedded = jpeg(96, 64, true);

@@ -202,8 +202,8 @@ fn sensor(raw: &RawImage, params: &Params) -> Sensor {
         std::mem::swap(&mut previous, &mut current);
     }
     accumulate(&previous, crop.height / 2 - 1, &mut edges);
-    let framed = pipeline::framed(tiles, raw.meta.orientation, params);
-    let edges = pipeline::framed(edges, raw.meta.orientation, params);
+    let framed = pipeline::framed(tiles, raw.meta.orientation, params.rotate, pipeline::applied_crop(raw, params));
+    let edges = pipeline::framed(edges, raw.meta.orientation, params.rotate, pipeline::applied_crop(raw, params));
     // Frame counts together before dividing, so partial intervals carry
     // their actual native area and rotation interpolates both consistently.
     let (risky, total) =
@@ -283,7 +283,7 @@ pub fn auto_with_file(raw: &RawImage, base: &Params, file: &[u8]) -> Result<Auto
         Ok((image, report, true)) => {
             // The single camera panel is already upright. Apply the recipe's
             // rotation/crop once, without running developing controls on it.
-            let image = pipeline::framed(image, 1, base);
+            let image = pipeline::framed(image, 1, base.rotate, pipeline::applied_crop(raw, base));
             let long = image.width.max(image.height);
             let image = if long > ANALYSIS_EDGE {
                 let scale = ANALYSIS_EDGE as f64 / long as f64;

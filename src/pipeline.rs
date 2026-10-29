@@ -148,14 +148,29 @@ pub fn applied_crop(raw: &RawImage, params: &Params) -> crate::params::Crop {
     params.crop.fitted(w, h)
 }
 
-/// Shared rotation and crop geometry, also applied to the camera comparison.
-pub(crate) fn framed(image: Image, orientation: u16, params: &Params) -> Image {
-    let mut image = image.oriented(orientation);
-    if params.rotate != 0.0 {
-        image = rotated(&image, params.rotate as f32);
+/// Rejects a crop whose fitted edges keep less than 5% of either dimension.
+pub fn check_crop(raw: &RawImage, params: &Params) -> Result<()> {
+    let crop = applied_crop(raw, params);
+    let narrow = crop.right - crop.left < 0.05 || crop.bottom - crop.top < 0.05;
+    // The requested box itself is validated with the recipe.
+    if narrow && crop != params.crop {
+        return Err(Error::Params(format!(
+            "crop.aspect {} narrows these edges to less than 5% of the picture; widen the crop box",
+            params.crop.aspect
+        )));
     }
-    let crop = params.crop.fitted(image.width, image.height);
-    if crop != Default::default() {
+    Ok(())
+}
+
+/// Shared rotation and crop geometry, also applied to the camera comparison.
+/// `crop` holds edges already resolved against the RAW (`applied_crop`), so
+/// a camera JPEG of another shape is cut at the same fractions.
+pub(crate) fn framed(image: Image, orientation: u16, rotate: f64, crop: crate::params::Crop) -> Image {
+    let mut image = image.oriented(orientation);
+    if rotate != 0.0 {
+        image = rotated(&image, rotate as f32);
+    }
+    if [crop.left, crop.top, crop.right, crop.bottom] != [0.0, 0.0, 1.0, 1.0] {
         let ((x0, cw), (y0, ch)) =
             (crop_span(crop.left, crop.right, image.width), crop_span(crop.top, crop.bottom, image.height));
         image = image.crop(x0, y0, cw, ch);
@@ -440,6 +455,7 @@ pub fn render(raw: &RawImage, params: &Params, size: Size) -> Result<Render> {
 /// approximation for automatic candidate analysis only; use `render` for
 /// previews and exports so every spatial/nonlinear stage precedes resizing.
 pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
+    check_crop(raw, params)?;
     let stage = crate::profile::Stage::new("noise/prepare");
     let noise_reduction = crate::noise::resolve(raw, params.denoise);
     // A lighter explicit setting is applied as a fraction of the measured one.
@@ -545,7 +561,7 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
     };
 
     let stage = crate::profile::Stage::new("geometry/scene resize");
-    let mut image = framed(image, raw.meta.orientation, params);
+    let mut image = framed(image, raw.meta.orientation, params.rotate, applied_crop(raw, params));
     let mut scale = if half { 0.5 } else { 1.0 };
     if let Some(edge) = size.max_edge {
         let long = image.width.max(image.height);

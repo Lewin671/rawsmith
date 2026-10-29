@@ -560,6 +560,7 @@ fn save_edit(raw: &arw::RawImage, recipe: &Path, params: &Params, target: &Targe
         report
     } else {
         pipeline::white_balance(raw, params)?;
+        pipeline::check_crop(raw, params)?;
         output::replace(recipe, &recipe_data)?;
         json!({"recipe": params.to_sparse(), "crop": crop_report(raw, params), "noise_reduction": rawsmith::noise::resolve(raw, params.denoise), "output_color_space": null, "output_replaced": null, "output_bytes": null, "quality": null, "quality_limited_by": null})
     };

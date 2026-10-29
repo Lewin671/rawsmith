@@ -219,7 +219,12 @@ fn row_with(
             .and_then(|end| file.get(offset..end))
             .ok_or_else(|| Error::Format("embedded JPEG is out of bounds".into()))?;
         let (image, report) = camera(jpeg, file, reduce_camera.then_some(size))?;
-        let framed = pipeline::framed(image, raw.meta.orientation, camera_params);
+        let framed = pipeline::framed(
+            image,
+            raw.meta.orientation,
+            camera_params.rotate,
+            pipeline::applied_crop(raw, camera_params),
+        );
         Some((
             match region {
                 Some(r) => crop_region(&framed, r),
@@ -411,7 +416,15 @@ mod tests {
                 .and_then(|end| file.get(offset..end))
                 .ok_or_else(|| Error::Format("embedded JPEG is out of bounds".into()))?;
             let (image, report) = camera(jpeg, file, None)?;
-            Some((pipeline::framed(image, raw.meta.orientation, camera_params), report))
+            Some((
+                pipeline::framed(
+                    image,
+                    raw.meta.orientation,
+                    camera_params.rotate,
+                    pipeline::applied_crop(raw, camera_params),
+                ),
+                report,
+            ))
         } else {
             None
         };

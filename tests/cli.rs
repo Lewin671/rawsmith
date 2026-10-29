@@ -274,6 +274,16 @@ fn crops_keep_the_frame_shape_unless_asked() {
     assert_eq!(size(&ok(&["render", s(&f.raw)])), (320, 180));
     let v = ok(&["render", s(&f.raw), "--set", "crop.top=0", "--set", "crop.aspect=1:1"]);
     assert_eq!((size(&v), &v["crop"]["applied"]), ((240, 240), &serde_json::json!([0.125, 0.0, 0.875, 1.0])));
+    // Fitting must not slip under the 5% minimum, and a failed edit keeps the recipe.
+    let before = std::fs::read(f.recipe()).unwrap();
+    for args in [
+        vec!["edit", s(&f.raw), "--set", "crop.right=0.06", "--set", "crop.aspect=10:1"],
+        vec!["render", s(&f.raw), "--set", "crop.right=0.06", "--set", "crop.aspect=10:1"],
+    ] {
+        let (success, error) = run(&args);
+        assert!(!success && error["error"]["message"].as_str().unwrap().contains("less than 5%"), "{error}");
+    }
+    assert_eq!(std::fs::read(f.recipe()).unwrap(), before);
 }
 
 #[test]
