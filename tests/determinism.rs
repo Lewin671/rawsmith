@@ -35,7 +35,7 @@ fn recipe() -> Params {
         "exposure": -0.55, "contrast": 8, "highlights": -25,
         "dehaze": 6, "clarity": 3, "vibrance": 18,
         "sharpen": 30, "denoise": 12,
-        "crop": {"top": 0.12, "bottom": 0.90},
+        "crop": {"top": 0.12, "bottom": 0.90, "aspect": "free"},
         "gradients": [
             {"from": [0.5, 0.0], "to": [0.5, 0.5], "exposure": -0.15},
             {"from": [0.5, 1.0], "to": [0.5, 0.6], "exposure": 0.18}

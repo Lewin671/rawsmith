@@ -61,11 +61,89 @@ pub struct Crop {
     pub top: f64,
     pub right: f64,
     pub bottom: f64,
+    pub aspect: Aspect,
 }
 
 impl Default for Crop {
     fn default() -> Self {
-        Crop { left: 0.0, top: 0.0, right: 1.0, bottom: 1.0 }
+        Crop { left: 0.0, top: 0.0, right: 1.0, bottom: 1.0, aspect: Aspect::Original }
+    }
+}
+
+impl Crop {
+    /// The edges actually cut from a `width` x `height` frame: the largest
+    /// rectangle of the kept aspect inside the requested box, centred in it.
+    pub fn fitted(&self, width: usize, height: usize) -> Crop {
+        let (w, h) = (width.max(1) as f64, height.max(1) as f64);
+        let target = match self.aspect {
+            Aspect::Free => return *self,
+            Aspect::Original => w / h,
+            Aspect::Ratio(rw, rh) => rw / rh,
+        };
+        let (box_w, box_h) = ((self.right - self.left) * w, (self.bottom - self.top) * h);
+        let mut fitted = *self;
+        if box_w > box_h * target * (1.0 + 1e-9) {
+            let (mid, half) = ((self.left + self.right) * 0.5, box_h * target / w * 0.5);
+            (fitted.left, fitted.right) = (mid - half, mid + half);
+        } else if box_h > box_w / target * (1.0 + 1e-9) {
+            let (mid, half) = ((self.top + self.bottom) * 0.5, box_w / target / h * 0.5);
+            (fitted.top, fitted.bottom) = (mid - half, mid + half);
+        }
+        fitted
+    }
+}
+
+/// Shape kept by the crop: the picture's own (default), any box, or a
+/// fixed width:height.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Aspect {
+    #[default]
+    Original,
+    Free,
+    Ratio(f64, f64),
+}
+
+const ASPECT_HELP: &str =
+    "crop.aspect must be \"original\", \"free\" or a width:height ratio between 1:10 and 10:1 such as \"4:5\"";
+
+impl std::str::FromStr for Aspect {
+    type Err = String;
+
+    fn from_str(text: &str) -> std::result::Result<Self, String> {
+        match text.trim() {
+            "original" => Ok(Aspect::Original),
+            "free" => Ok(Aspect::Free),
+            ratio => {
+                let (w, h) = ratio.split_once(':').ok_or(ASPECT_HELP)?;
+                let parse = |v: &str| v.trim().parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0);
+                match (parse(w), parse(h)) {
+                    (Some(w), Some(h)) if (0.1..=10.0).contains(&(w / h)) => Ok(Aspect::Ratio(w, h)),
+                    _ => Err(ASPECT_HELP.into()),
+                }
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for Aspect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Aspect::Original => f.write_str("original"),
+            Aspect::Free => f.write_str("free"),
+            Aspect::Ratio(w, h) => write!(f, "{w}:{h}"),
+        }
+    }
+}
+
+impl Serialize for Aspect {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for Aspect {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        String::deserialize(deserializer)?.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -587,7 +665,9 @@ impl Params {
                 }
                 continue;
             }
-            let mut new: Value = serde_json::from_str(text.trim_start_matches('+')).map_err(|_| {
+            // `crop.aspect=4:5` and `crop.aspect=free` need no JSON quotes.
+            let bare = (path == "crop.aspect" && step == 0.0 && !text.starts_with('"')).then(|| json!(text));
+            let mut new: Value = bare.map_or_else(|| serde_json::from_str(text.trim_start_matches('+')), Ok).map_err(|_| {
                 Error::Params(format!("'{text}' is not valid JSON; use a number, true/false, null, or an array (object keys and strings need double quotes)"))
             })?;
             if path == "gradients" {
@@ -683,6 +763,7 @@ pub fn schema() -> Value {
             {"path": "curve", "default": [], "description": "Optional tone curve applied after tone mapping: [[input, output], ...] points in 0..1 on display brightness, strictly increasing inputs, joined smoothly. [0,0] and [1,1] are implied when not given. Points pull their whole neighbourhood, so pin the tones you want unchanged, e.g. lift only shadows with [[0.15,0.2],[0.4,0.4]]. Empty means none."},
             {"path": "gradients", "default": [], "description": "Up to 4 graduated filters, e.g. [{\"from\":[0.5,0],\"to\":[0.5,0.55],\"exposure\":-0.7,\"saturation\":15}] darkens and enriches a sky: full effect at and beyond `from`, fading to none at `to`; points are [x, y] fractions of the final picture from the top left. exposure is in stops (-3..3), saturation -100..100. --set gradients=[...] replaces the list; gradients+={...} appends one object; gradients-=INDEX removes a zero-based current-list index. Assignments run in order."},
             {"path": "masks", "default": [], "max_entries": MAX_MASKS, "description": "Local shape times luminance and colour selection. masks=[...] replaces; masks+={...} appends; masks-=INDEX removes a zero-based index. See local_masks for fields and ranges; render --show-mask INDEX checks placement."},
+            {"path": "crop.aspect", "default": "original", "values": ["original", "free", "W:H"], "description": "Shape the crop keeps. original (default) keeps the picture's own aspect ratio: crop edges that do not match it are narrowed to the largest rectangle of that ratio, centred in the requested box. A ratio such as 4:5 or 1:1 keeps that width:height instead; free uses the edges exactly. Change it only when the user asks for a different shape. Render reports give the applied edges in crop.applied."},
             {"path": "lens_corrections", "default": true, "description": "Apply the camera's embedded distortion, vignetting and chromatic aberration corrections."},
         ],
         "hsl_bands": HSL_BANDS,
@@ -723,6 +804,35 @@ mod tests {
     fn empty_recipe_is_the_default() {
         assert_eq!(Params::from_json("{}").unwrap(), Params::default());
         assert_eq!(Params::default().to_sparse(), json!({}));
+    }
+
+    #[test]
+    fn crop_keeps_the_aspect_ratio_unless_told_otherwise() {
+        let close = |a: Crop, b: [f64; 4]| {
+            let got = [a.left, a.top, a.right, a.bottom];
+            assert!(got.iter().zip(b).all(|(g, w)| (g - w).abs() < 1e-9), "{got:?} != {b:?}");
+        };
+        // Removing the top tenth of a 3:2 frame also trims the sides, centred.
+        let p = Params::default().with_assignments(&["crop.top=0.1".into()]).unwrap();
+        close(p.crop.fitted(6000, 4000), [0.05, 0.1, 0.95, 1.0]);
+        // A box narrower than the frame keeps its width and loses height.
+        let p = Params::default().with_assignments(&["crop.left=0.25".into(), "crop.right=0.75".into()]).unwrap();
+        close(p.crop.fitted(6000, 4000), [0.25, 0.25, 0.75, 0.75]);
+        // A matching box is untouched; free uses the edges as given.
+        let p = Params::from_json(r#"{"crop":{"left":0.1,"top":0.2,"right":0.7,"bottom":0.8}}"#).unwrap();
+        assert_eq!(p.crop.fitted(6000, 4000), p.crop);
+        let p = Params::default().with_assignments(&["crop.top=0.1".into(), "crop.aspect=free".into()]).unwrap();
+        assert_eq!(p.crop.fitted(6000, 4000), p.crop);
+        // A ratio is in output pixels: 1:1 from 3:2 leaves the middle two thirds.
+        let p = Params::default().with_assignments(&["crop.aspect=1:1".into()]).unwrap();
+        close(p.crop.fitted(6000, 4000), [1.0 / 6.0, 0.0, 5.0 / 6.0, 1.0]);
+        assert_eq!(p.to_sparse(), json!({"crop": {"aspect": "1:1"}}));
+        let quoted = Params::default().with_assignments(&[r#"crop.aspect="4:5""#.into()]).unwrap();
+        assert_eq!(quoted.crop.aspect, Aspect::Ratio(4.0, 5.0));
+        assert_eq!(Params::from_json(r#"{"crop":{"aspect":"free"}}"#).unwrap().crop.aspect, Aspect::Free);
+        for bad in ["crop.aspect=wide", "crop.aspect=0:1", "crop.aspect=20:1", "crop.aspect=1:", "crop.aspect+=1"] {
+            assert!(Params::default().with_assignments(&[bad.into()]).is_err(), "{bad} should be rejected");
+        }
     }
 
     #[test]

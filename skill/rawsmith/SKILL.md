@@ -186,7 +186,7 @@ elsewhere or to keep several versions.
 
 | To do this | Use |
 |---|---|
-| Strengthen the composition | `crop.left/top/right/bottom` are edge positions 0–1 of the upright picture (after the camera's rotation), measured from the left/top: `crop.top=0.1` removes the top tenth, `crop.bottom=0.9` the bottom tenth, `crop.right=0.85` the right 15%; `rotate` |
+| Strengthen the composition | `crop.left/top/right/bottom` are edge positions 0–1 of the upright picture (after the camera's rotation), measured from the left/top; `rotate`. The crop keeps the photo's aspect ratio: a box of another shape is narrowed to the largest rectangle of that ratio centred in it (`crop.top=0.1` alone also trims 5% from each side). Keeping the ratio means equal fractions, e.g. `left=0.05 top=0.08 right=0.95 bottom=0.98`; the report's `crop.applied` shows the edges used. Set `crop.aspect` to `4:5`, `1:1` or `free` only when the user asks for another shape |
 | Overall brightness | `exposure` (stops) |
 | Warmth, colour of the light | `temperature` (K, higher is warmer), `tint` (+ magenta, − green) |
 | Tame a bright sky; open dark areas | `highlights` negative; `shadows` positive |
@@ -351,6 +351,9 @@ full-resolution export's report as well.
   trunks, leaves, railings) pull the eye from a sharp subject; crop past
   them unless they frame it on purpose, keeping the subject's
   surroundings.
+  Keep the photo's aspect ratio: trimming sky also trims the sides, so
+  place all four edges where the picture wants them. Never change the
+  shape unless the user asked for it.
 - Light before colour: decide what is bright and what recedes first.
 - Daylight scenes with backlight or deep shade (trees against the sky, a
   garden, a riverbank, a subject under leaves) want their shadows

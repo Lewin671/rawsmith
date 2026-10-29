@@ -253,22 +253,21 @@ impl RecipeOrigin {
             "rendering_version": current,
             "policy": "current_defaults",
             "note": if self.version.as_deref().is_some_and(same_defaults) { None } else {
-                Some("Recipe rendered with current defaults (0.2: luminance tone mapping, stronger base contrast, contrast-linked colour, measured denoise when unset; 0.4: denoise also removes luminance grain from strength 10 up, defringe also calms coloured specks; 0.6: defringe, when set, also reduces pink edges; 0.6.1: edges against clipped highlights lose borrowed tints, denoise keeps thin lines and a setting below the measured strength leaves even grain). Writer version does not pin rendering. Default migration retains explicit values; auto still replaces tone and colour. Use the original binary for the original look.")
+                Some("Recipe rendered with current defaults (0.2: luminance tone mapping, stronger base contrast, contrast-linked colour, measured denoise when unset; 0.4: denoise also removes luminance grain from strength 10 up, defringe also calms coloured specks; 0.6: defringe, when set, also reduces pink edges; 0.6.1: edges against clipped highlights lose borrowed tints, denoise keeps thin lines and a setting below the measured strength leaves even grain; 0.7: crops keep the picture's aspect ratio unless crop.aspect says otherwise). Writer version does not pin rendering. Default migration retains explicit values; auto still replaces tone and colour. Use the original binary for the original look.")
             },
         })
     }
 }
 
-/// Rendering last changed in 0.6.1 (borrowed light near clipped highlights
-/// and noise reduction); recipes written by that version or later (up to
-/// this one) render the same pixels here.
+/// Rendering last changed in 0.7.0 (crops keep the aspect ratio); recipes
+/// written by that version or later (up to this one) render the same pixels here.
 fn same_defaults(written: &str) -> bool {
     let parse = |v: &str| -> Option<(u64, u64, u64)> {
         let mut parts = v.split('.').map(|p| p.parse().ok());
         Some((parts.next()??, parts.next()??, parts.next()??))
     };
     match (parse(written), parse(env!("CARGO_PKG_VERSION"))) {
-        (Some(written), Some(current)) => written >= (0, 6, 1) && written <= current,
+        (Some(written), Some(current)) => written >= (0, 7, 0) && written <= current,
         _ => false,
     }
 }
@@ -297,6 +296,21 @@ fn short_decision(note: &str) -> String {
     summary
 }
 
+/// The edges cut from the picture, when the recipe crops; `narrowed` says
+/// the requested box was trimmed to keep the aspect ratio.
+fn crop_report(raw: &arw::RawImage, params: &Params) -> Value {
+    let (requested, applied) = (params.crop, pipeline::applied_crop(raw, params));
+    if requested == Default::default() {
+        return Value::Null;
+    }
+    let edges = |c: rawsmith::params::Crop| json!([c.left, c.top, c.right, c.bottom].map(|v| (v * 1e4).round() / 1e4));
+    json!({
+        "aspect": requested.aspect.to_string(),
+        "applied": edges(applied),
+        "narrowed": applied != requested,
+    })
+}
+
 fn editing_report(report: Value, target: &Target, recipe_saved: bool) -> Value {
     if !target.brief {
         return report;
@@ -313,6 +327,7 @@ fn editing_report(report: Value, target: &Target, recipe_saved: bool) -> Value {
             "recipe_file",
             "white_balance",
             "region",
+            "crop",
             "sensor_clipped_pct",
             "sensor_clipped_scope",
         ],
@@ -511,6 +526,7 @@ fn prepare_render(raw: &arw::RawImage, params: &Params, target: &Target) -> Resu
         "sensor_clipped_scope": "full_active_area",
         "scene_reuse": rendered.scene_reuse,
         "region": region,
+        "crop": crop_report(raw, params),
         "stats": stats::image_stats(&image, &spaces),
         "elapsed_ms": started.elapsed().as_millis() as u64,
     });
@@ -545,7 +561,7 @@ fn save_edit(raw: &arw::RawImage, recipe: &Path, params: &Params, target: &Targe
     } else {
         pipeline::white_balance(raw, params)?;
         output::replace(recipe, &recipe_data)?;
-        json!({"recipe": params.to_sparse(), "noise_reduction": rawsmith::noise::resolve(raw, params.denoise), "output_color_space": null, "output_replaced": null, "output_bytes": null, "quality": null, "quality_limited_by": null})
+        json!({"recipe": params.to_sparse(), "crop": crop_report(raw, params), "noise_reduction": rawsmith::noise::resolve(raw, params.denoise), "output_color_space": null, "output_replaced": null, "output_bytes": null, "quality": null, "quality_limited_by": null})
     };
     if target.output.is_some() {
         report["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);

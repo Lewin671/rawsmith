@@ -119,6 +119,15 @@ colour (`vibrance`, `saturation`, eight `hsl` bands, shadow/highlight
 `grade`), detail (`sharpen`, `denoise`, `defringe`), local adjustments (`vignette`,
 `gradients`, `masks`), and geometry (`rotate`, `crop`, `lens_corrections`).
 
+`crop` keeps the picture's aspect ratio by default (`crop.aspect` is
+`"original"`): edges whose box has another shape are narrowed to the
+largest rectangle of that ratio, centred in the box, so `crop.top=0.1`
+alone also trims 5% from each side of the frame. `crop.aspect` may instead be
+a width:height ratio such as `4:5` or `1:1`, or `free` to use the edges
+exactly; `--set crop.aspect=4:5` needs no quotes. Render, edit and auto
+reports give `crop` when the recipe crops: `aspect`, the `applied` edges
+`[left, top, right, bottom]` and whether the box was `narrowed`.
+
 `denoise` defaults to `null`: omitted/null means native noise measurement
 with an ISO prior, shared by default rendering and `auto`. `auto` preserves
 an explicit amount. Any number in 0–100 is exact, including 0 and the former

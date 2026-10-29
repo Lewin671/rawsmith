@@ -353,8 +353,10 @@ fn camera_tone_floor_respects_recipe_crop_and_orientation() {
     let file = synthetic.to_bytes();
     let raw = arw::decode(&file).unwrap();
     let mut base = Params::default();
-    // Clockwise orientation puts the dark left half at the top.
+    // Clockwise orientation puts the dark left half at the top; keep the
+    // full width so the camera sample matches the original bound.
     base.crop.bottom = 0.45;
+    base.crop.aspect = rawsmith::params::Aspect::Free;
     let result = auto::auto_with_file(&raw, &base, &file).unwrap();
     assert_eq!(result.params.crop.bottom, base.crop.bottom);
     let bound = result.notes.iter().find(|n| n.starts_with("camera tone bound:")).unwrap();

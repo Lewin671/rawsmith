@@ -530,7 +530,7 @@ mod tests {
         synthetic.orientation = 6;
         let raw = crate::arw::decode(&synthetic.to_bytes()).unwrap();
         let mut p = params(r#"{"masks":[{"shape":"radial","center":[0.5,0.5],"radii":[0.25,0.25]}]}"#);
-        p.crop = Crop { left: 0.2, top: 0.25, right: 0.8, bottom: 0.75 };
+        p.crop = Crop { left: 0.2, top: 0.25, right: 0.8, bottom: 0.75, ..Crop::default() };
         p.rotate = 7.0;
         let scene = pipeline::scene(&raw, &p, Size::default()).unwrap().image;
         let view = pipeline::render_mask(&raw, &p, Size::default(), 0).unwrap().image;

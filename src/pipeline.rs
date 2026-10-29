@@ -130,18 +130,32 @@ pub(crate) fn framed_dimensions(width: usize, height: usize, orientation: u16, p
     if params.rotate != 0.0 {
         (w, h) = rotated_dimensions(w, h, params.rotate as f32);
     }
-    let crop = &params.crop;
+    let crop = params.crop.fitted(w, h);
     (crop_span(crop.left, crop.right, w).1, crop_span(crop.top, crop.bottom, h).1)
+}
+
+/// The crop edges applied to this photo: the recipe's box narrowed to the
+/// kept aspect ratio of its upright, rotated frame.
+pub fn applied_crop(raw: &RawImage, params: &Params) -> crate::params::Crop {
+    let (mut w, mut h) = if matches!(raw.meta.orientation, 6 | 8) {
+        (raw.crop.height, raw.crop.width)
+    } else {
+        (raw.crop.width, raw.crop.height)
+    };
+    if params.rotate != 0.0 {
+        (w, h) = rotated_dimensions(w, h, params.rotate as f32);
+    }
+    params.crop.fitted(w, h)
 }
 
 /// Shared rotation and crop geometry, also applied to the camera comparison.
 pub(crate) fn framed(image: Image, orientation: u16, params: &Params) -> Image {
-    let crop = &params.crop;
     let mut image = image.oriented(orientation);
     if params.rotate != 0.0 {
         image = rotated(&image, params.rotate as f32);
     }
-    if *crop != Default::default() {
+    let crop = params.crop.fitted(image.width, image.height);
+    if crop != Default::default() {
         let ((x0, cw), (y0, ch)) =
             (crop_span(crop.left, crop.right, image.width), crop_span(crop.top, crop.bottom, image.height));
         image = image.crop(x0, y0, cw, ch);
@@ -437,13 +451,13 @@ pub fn scene(raw: &RawImage, params: &Params, size: Size) -> Result<Scene> {
     let (white_balance, gains) = white_balance(raw, params)?;
 
     // What the final picture's long edge will be at full resolution.
-    let crop = &params.crop;
-    let (cw, ch) = ((crop.right - crop.left) as f32, (crop.bottom - crop.top) as f32);
     let upright = if matches!(raw.meta.orientation, 6 | 8) {
         (raw.crop.height, raw.crop.width)
     } else {
         (raw.crop.width, raw.crop.height)
     };
+    let crop = params.crop.fitted(upright.0, upright.1);
+    let (cw, ch) = ((crop.right - crop.left) as f32, (crop.bottom - crop.top) as f32);
     let full_edge = (upright.0 as f32 * cw).max(upright.1 as f32 * ch);
     // Half-resolution demosaicing samples each CFA tile, with automatic
     // neutral-edge colour protection, only for reduced candidate analysis.

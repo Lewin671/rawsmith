@@ -80,7 +80,7 @@ only what differs from the defaults, for example:
 
 ```json
 {
-  "crop": { "top": 0.1, "left": 0.06, "bottom": 0.97 },
+  "crop": { "left": 0.06, "top": 0.08, "right": 0.96, "bottom": 0.98 },
   "shadows": 45, "highlights": -55, "contrast": 12,
   "temperature": 5900, "tint": 28, "vibrance": 25,
   "hsl": { "orange": { "saturation": 30 } },

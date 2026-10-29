@@ -11,7 +11,9 @@
 Comparison images are resized JPEGs without EXIF metadata. No source RAW
 files are included. The left image is the camera's embedded JPEG; the
 right image is developed with rawsmith using the recipes in
-[`../recipes`](../recipes). Both panels use the recipe's crop and rotation.
+[`../recipes`](../recipes). Both panels use the recipe's crop and rotation; the recipes predate
+crops that keep the aspect ratio and set `crop.aspect` to `free` to keep
+that framing.
 The camera panels are converted from the camera's Adobe RGB to sRGB by
 `compare`, which tags the combined JPEG. No text is drawn on the images.
 

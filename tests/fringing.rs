@@ -26,8 +26,10 @@ fn lens_correction_and_defringe_run_before_crops_at_full_and_half_size() {
         let full = pools[0].install(|| pipeline::scene(&raw, &params, size).unwrap().image);
         let off = pipeline::scene(&raw, &Params { lens_corrections: false, ..params.clone() }, size).unwrap().image;
         assert!(full.data != off.data, "lens tables must be applied in the half={half} path");
-        let cropped_params =
-            Params { crop: rawsmith::params::Crop { left: 0.1, top: 0.1, right: 0.9, bottom: 0.9 }, ..params };
+        let cropped_params = Params {
+            crop: rawsmith::params::Crop { left: 0.1, top: 0.1, right: 0.9, bottom: 0.9, ..Default::default() },
+            ..params
+        };
         // 128 selects half demosaic for reduced analysis of the crop too,
         // with no subsequent resize. Output renders always use full demosaic.
         let size = Size { max_edge: half.then_some(128) };

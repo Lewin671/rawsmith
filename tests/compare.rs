@@ -284,7 +284,7 @@ fn camera_matches_saved_crop_and_rotation_without_changing_recipes() {
 fn chosen_panel_order_mismatched_framing_sizes_and_determinism() {
     let f = Fixture::new("versions");
     let raw = f.raw(6, Some(&jpeg(192, 128, true)));
-    let saved = f.recipe("frame.ARW.rawsmith.json", json!({"crop": {"top": 0.25, "bottom": 0.75}}));
+    let saved = f.recipe("frame.ARW.rawsmith.json", json!({"crop": {"top": 0.25, "bottom": 0.75, "aspect": "free"}}));
     let old = f.recipe("earlier.json", json!({"exposure": -0.5}));
     let original = [std::fs::read(&raw).unwrap(), std::fs::read(&saved).unwrap(), std::fs::read(&old).unwrap()];
     let explicit = format!("recipe:{}", old.display());
@@ -667,7 +667,7 @@ fn recipe_option_names_the_saved_panel_like_the_other_commands() {
     let f = Fixture::new("recipe-option");
     let raw = f.raw(1, Some(&jpeg(96, 64, true)));
     let sidecar = f.recipe("frame.ARW.rawsmith.json", json!({"exposure": 1.0}));
-    let chosen = f.recipe("chosen.json", json!({"crop": {"top": 0.25, "bottom": 0.75}}));
+    let chosen = f.recipe("chosen.json", json!({"crop": {"top": 0.25, "bottom": 0.75, "aspect": "free"}}));
     let originals = [std::fs::read(&sidecar).unwrap(), std::fs::read(&chosen).unwrap()];
     let output = f.path("comparison.jpg");
     let report = run(&["compare", s(&raw), "--recipe", s(&chosen), "-o", s(&output)], true);

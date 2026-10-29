@@ -258,6 +258,25 @@ fn edit_saves_a_sparse_recipe_that_render_then_uses() {
 }
 
 #[test]
+fn crops_keep_the_frame_shape_unless_asked() {
+    let f = Fixture::new("crop-aspect");
+    let size = |v: &Value| (v["stats"]["width"].as_u64().unwrap(), v["stats"]["height"].as_u64().unwrap());
+    assert_eq!(ok(&["render", s(&f.raw)])["crop"], Value::Null);
+    // Removing the top quarter of a 4:3 frame also trims an eighth from each side.
+    let v = ok(&["edit", s(&f.raw), "--set", "crop.top=0.25", "-o", s(&f.path("c.png")), "--brief"]);
+    assert_eq!(
+        v["crop"],
+        serde_json::json!({"aspect": "original", "applied": [0.125, 0.25, 0.875, 1.0], "narrowed": true})
+    );
+    assert_eq!(size(&ok(&["render", s(&f.raw)])), (240, 180));
+    let v = ok(&["edit", s(&f.raw), "--set", "crop.aspect=free"]);
+    assert_eq!(v["crop"]["narrowed"], false);
+    assert_eq!(size(&ok(&["render", s(&f.raw)])), (320, 180));
+    let v = ok(&["render", s(&f.raw), "--set", "crop.top=0", "--set", "crop.aspect=1:1"]);
+    assert_eq!((size(&v), &v["crop"]["applied"]), ((240, 240), &serde_json::json!([0.125, 0.0, 0.875, 1.0])));
+}
+
+#[test]
 fn auto_writes_an_explained_recipe() {
     let f = Fixture::new("auto");
     let v = ok(&["auto", s(&f.raw), "-o", s(&f.path("auto.jpg")), "--size", "160"]);
@@ -1147,6 +1166,7 @@ fn denoise_schema_reports_and_legacy_recipe_migration_are_explicit() {
         Some("0.4.0"),
         Some("0.5.0"),
         Some("0.6.0"),
+        Some("0.6.1"),
         Some("99.0.0"),
         Some(env!("CARGO_PKG_VERSION")),
     ] {
@@ -1161,7 +1181,7 @@ fn denoise_schema_reports_and_legacy_recipe_migration_are_explicit() {
         assert_eq!(compatibility["written_version"], serde_json::json!(version));
         assert_eq!(compatibility["rendering_version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(compatibility["policy"], "current_defaults");
-        // Rendering last changed in 0.6.1: only older, unknown or future writers get a note.
+        // Rendering last changed in 0.7.0: only older, unknown or future writers get a note.
         assert_eq!(compatibility["note"].is_null(), version == Some(env!("CARGO_PKG_VERSION")));
         assert_eq!(rendered["recipe"]["exposure"], 0.1);
         let compared = ok(&[

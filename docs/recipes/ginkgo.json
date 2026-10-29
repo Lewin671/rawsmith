@@ -3,6 +3,7 @@
   "clarity": 12.0,
   "contrast": 15.0,
   "crop": {
+    "aspect": "free",
     "bottom": 0.9,
     "right": 0.96,
     "top": 0.03
