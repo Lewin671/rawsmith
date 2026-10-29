@@ -284,6 +284,20 @@ fn crops_keep_the_frame_shape_unless_asked() {
         assert!(!success && error["error"]["message"].as_str().unwrap().contains("less than 5%"), "{error}");
     }
     assert_eq!(std::fs::read(f.recipe()).unwrap(), before);
+    // A fitted span of exactly 5% is still allowed.
+    let v = ok(&[
+        "render",
+        s(&f.raw),
+        "--set",
+        "crop.right=0.05",
+        "--set",
+        "crop.top=0.1",
+        "--set",
+        "crop.bottom=0.3",
+        "--set",
+        "crop.aspect=original",
+    ]);
+    assert_eq!(v["crop"]["narrowed"], true);
 }
 
 #[test]

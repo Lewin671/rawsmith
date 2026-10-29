@@ -151,7 +151,8 @@ pub fn applied_crop(raw: &RawImage, params: &Params) -> crate::params::Crop {
 /// Rejects a crop whose fitted edges keep less than 5% of either dimension.
 pub fn check_crop(raw: &RawImage, params: &Params) -> Result<()> {
     let crop = applied_crop(raw, params);
-    let narrow = crop.right - crop.left < 0.05 || crop.bottom - crop.top < 0.05;
+    // Tolerate rounding: a fitted span of exactly 5% may land just below it.
+    let narrow = crop.right - crop.left < 0.05 - 1e-9 || crop.bottom - crop.top < 0.05 - 1e-9;
     // The requested box itself is validated with the recipe.
     if narrow && crop != params.crop {
         return Err(Error::Params(format!(
